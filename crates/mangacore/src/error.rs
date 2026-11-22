@@ -28,7 +28,7 @@ pub enum ScrapeError {
         url: Url,
     },
 
-    /// The site presented a bot-verification or anti-bot challenge (e.g. Cloudflare).
+    /// The site presented a bot-verification or anti-bot challenge.
     #[error("site requires manual verification: {host}")]
     Blocked {
         /// Hostname that presented the challenge.

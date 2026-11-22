@@ -104,18 +104,18 @@ mod tests {
     async fn round_trips_manga_history_and_settings() {
         let db = Database::open_in_memory().await.unwrap();
         let manga = Manga {
-            url: Url::parse("https://truyenqqko.com/truyen-tranh/demo-1").unwrap(),
-            site: SiteId::known("truyenqq"),
+            url: Url::parse("https://example.com/series/demo-1").unwrap(),
+            site: SiteId::generic("example.com"),
             title: "Demo Manga".to_owned(),
-            cover: Some(Url::parse("https://i.hinhhinh.com/demo.jpg").unwrap()),
+            cover: Some(Url::parse("https://cdn.example.com/demo.jpg").unwrap()),
             chapters: vec![
                 ChapterRef {
-                    url: Url::parse("https://truyenqqko.com/truyen-tranh/demo-1-chap-1").unwrap(),
+                    url: Url::parse("https://example.com/series/demo-1-chap-1").unwrap(),
                     name: "Chapter 1".to_owned(),
                     number: Some(1.0),
                 },
                 ChapterRef {
-                    url: Url::parse("https://truyenqqko.com/truyen-tranh/demo-1-chap-2").unwrap(),
+                    url: Url::parse("https://example.com/series/demo-1-chap-2").unwrap(),
                     name: "Chapter 2".to_owned(),
                     number: Some(2.0),
                 },
@@ -131,7 +131,7 @@ mod tests {
 
         db.save_history(
             id,
-            "https://truyenqqko.com/truyen-tranh/demo-1-chap-1",
+            "https://example.com/series/demo-1-chap-1",
             "Chapter 1",
             0.42,
         )
@@ -151,19 +151,19 @@ mod tests {
 
         // Mark chapter 1 read, then re-upsert with chapter 2's URL renamed; verify stale slug is pruned
         // while chapter 1's read flag is preserved.
-        db.mark_chapter_read(id, "https://truyenqqko.com/truyen-tranh/demo-1-chap-1")
+        db.mark_chapter_read(id, "https://example.com/series/demo-1-chap-1")
             .await
             .unwrap();
         let mut updated = manga;
         updated.chapters[1].url =
-            Url::parse("https://truyenqqko.com/truyen-tranh/demo-1-chap-2-fixed").unwrap();
+            Url::parse("https://example.com/series/demo-1-chap-2-fixed").unwrap();
         db.upsert_manga(&updated).await.unwrap();
         let after = db.list_chapters(id).await.unwrap();
         assert_eq!(after.len(), 2, "stale chapter slug must be pruned");
         assert_eq!(after[0].read, 1, "existing read flag must be preserved");
         assert_eq!(
             after[1].url,
-            "https://truyenqqko.com/truyen-tranh/demo-1-chap-2-fixed"
+            "https://example.com/series/demo-1-chap-2-fixed"
         );
     }
 }

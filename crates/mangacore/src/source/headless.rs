@@ -1,4 +1,4 @@
-//! Headless browser fallback powered by Microsoft Edge or Chrome via Chrome `DevTools` Protocol.
+//! Headless browser fallback powered by an installed Chromium-based browser via `DevTools` Protocol.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -103,7 +103,7 @@ impl HeadlessBrowser {
     ) -> Result<(), ScrapeError> {
         validate_public_http_url(url)?;
         let exe = find_browser_executable().ok_or_else(|| {
-            ScrapeError::Headless("Microsoft Edge or Chrome not found".to_owned())
+            ScrapeError::Headless("no compatible local browser executable found".to_owned())
         })?;
 
         let config = BrowserConfig::builder()
@@ -188,7 +188,7 @@ impl HeadlessBrowser {
 
     async fn launch_headless_browser() -> Result<Browser, ScrapeError> {
         let exe = find_browser_executable().ok_or_else(|| {
-            ScrapeError::Headless("Microsoft Edge or Chrome not found".to_owned())
+            ScrapeError::Headless("no compatible local browser executable found".to_owned())
         })?;
         debug!(?exe, "launching headless browser");
 
@@ -300,12 +300,12 @@ async fn copy_page_cookies(page: &chromiumoxide::Page, url: &Url, http: &HttpCli
 fn looks_like_rendered_challenge(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
     lower.contains("cf-browser-verification")
-        || lower.contains("challenges.cloudflare.com")
-        || lower.contains("just a moment...")
         || lower.contains("cf_chl_opt")
+        || lower.contains("just a moment...")
+        || lower.contains("verify you are human")
 }
 
-/// Locates an installed Microsoft Edge or Google Chrome executable on the host system.
+/// Locates a locally installed Chromium-based browser executable on the host system.
 pub fn find_browser_executable() -> Option<PathBuf> {
     let candidates = [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",

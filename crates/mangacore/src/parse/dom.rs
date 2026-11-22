@@ -19,22 +19,14 @@ const IMAGE_ATTRS: &[&str] = &[
     "src",
 ];
 
-/// Known ad/tracker/icon host fragments filtered out from chapter image candidates.
+/// Generic ad/tracker subdomain prefixes filtered out from chapter image candidates.
 const AD_HOST_FRAGMENTS: &[&str] = &[
-    "doubleclick.net",
-    "googlesyndication.com",
-    "google-analytics.com",
-    "googletagmanager.com",
-    "facebook.com",
-    "fbcdn.net",
     "adservice.",
     "ads.",
-    "popads",
-    "exoclick",
-    "juicyads",
-    "mgid.com",
-    "taboola.com",
-    "outbrain.com",
+    "adserver.",
+    "popads.",
+    "tracker.",
+    "analytics.",
 ];
 
 /// Path/filename fragments strongly indicating non-manga UI or promotional images.
@@ -212,7 +204,7 @@ pub fn url_pattern_key(url: &Url) -> String {
     format!("{host}{normalized_path}")
 }
 
-/// Strips trailing site name suffixes such as `" - TruyenQQ"` or `" | NetTruyen"` from `<title>`.
+/// Strips trailing site name suffixes such as `" - SiteName"` or `" | Example"` from `<title>`.
 pub fn strip_site_suffix(title: &str) -> String {
     let cleaned = clean_text(title);
     for sep in [" | ", " - ", " — ", " :: "] {

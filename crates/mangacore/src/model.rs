@@ -10,7 +10,7 @@ use url::Url;
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SiteId {
-    /// A built-in site adapter such as `"truyenqq"`.
+    /// A registered custom site adapter such as `"custom"`.
     Known(String),
     /// The generic heuristic parser, tagged with the normalized hostname.
     Generic(String),
@@ -27,7 +27,7 @@ impl SiteId {
         Self::Generic(host.into())
     }
 
-    /// Returns a compact storage representation such as `"truyenqq"` or `"generic:example.com"`.
+    /// Returns a compact storage representation such as `"custom"` or `"generic:example.com"`.
     pub fn as_storage_key(&self) -> String {
         match self {
             Self::Known(id) => id.clone(),

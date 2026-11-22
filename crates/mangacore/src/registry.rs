@@ -1,4 +1,4 @@
-//! Source registry coordinating known site adapters, generic heuristics, and headless fallback.
+//! Source registry coordinating pluggable site adapters, generic heuristics, and headless fallback.
 
 use std::sync::Arc;
 
@@ -12,20 +12,19 @@ use crate::source::Source;
 use crate::source::generic::GenericSource;
 #[cfg(feature = "headless")]
 use crate::source::headless::HeadlessBrowser;
-use crate::source::truyenqq::TruyenQqSource;
 
 /// Controls whether the registry may launch a headless browser when static HTML parsing fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum HeadlessPolicy {
-    /// Fall back to headless Edge/Chrome when static parsing fails to recognize content.
+    /// Fall back to a headless browser when static parsing fails to recognize content.
     #[default]
     Enabled,
     /// Never launch a headless browser; fail fast on JS-only pages.
     Disabled,
 }
 
-/// Central coordinator that resolves arbitrary manga or chapter URLs across three tiers.
+/// Central coordinator that resolves arbitrary series or chapter URLs across three tiers.
 #[derive(Debug, Clone)]
 pub struct Registry {
     http: HttpClient,
@@ -36,7 +35,7 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Creates a [`Registry`] with the built-in site adapters (`TruyenQQ`) and shared HTTP client.
+    /// Creates a [`Registry`] with a default [`HttpClient`] and the generic heuristic pipeline.
     ///
     /// # Errors
     ///
@@ -48,7 +47,11 @@ impl Registry {
 
     /// Creates a [`Registry`] using an existing [`HttpClient`].
     pub fn with_http(http: HttpClient) -> Self {
-        let adapters: Vec<Box<dyn Source>> = vec![Box::new(TruyenQqSource)];
+        Self::with_adapters(http, Vec::new())
+    }
+
+    /// Creates a [`Registry`] with custom [`Source`] adapters checked before the generic fallback.
+    pub fn with_adapters(http: HttpClient, adapters: Vec<Box<dyn Source>>) -> Self {
         Self {
             http,
             adapters: adapters.into(),
@@ -63,8 +66,8 @@ impl Registry {
         &self.http
     }
 
-    /// Resolves any user-pasted manga or chapter link through the 3-tier pipeline:
-    /// 1. Matching dedicated adapter (e.g. `TruyenQQ`)
+    /// Resolves any user-pasted series or chapter link through the 3-tier pipeline:
+    /// 1. Any matching registered custom [`Source`] adapter
     /// 2. Generic static HTML heuristics
     /// 3. Headless browser rendering (when `headless_policy` is [`HeadlessPolicy::Enabled`])
     ///
@@ -79,9 +82,9 @@ impl Registry {
     ) -> Result<Resolved, ScrapeError> {
         let url = normalize_url(raw_url)?;
 
-        // Tier 1: dedicated adapter.
+        // Tier 1: registered custom adapter (if any).
         if let Some(adapter) = self.find_adapter(&url) {
-            debug!(adapter = adapter.id(), %url, "trying dedicated adapter");
+            debug!(adapter = adapter.id(), %url, "trying registered adapter");
             match adapter.resolve(&self.http, &url).await {
                 Ok(resolved) => return Ok(resolved),
                 Err(err @ ScrapeError::Blocked { .. }) => return Err(err),
@@ -118,7 +121,7 @@ impl Registry {
         headless_policy: HeadlessPolicy,
     ) -> Result<Chapter, ScrapeError> {
         if let Some(adapter) = self.find_adapter(url) {
-            debug!(adapter = adapter.id(), %url, "fetching chapter via dedicated adapter");
+            debug!(adapter = adapter.id(), %url, "fetching chapter via registered adapter");
             match adapter.chapter(&self.http, url).await {
                 Ok(chapter) => return Ok(chapter),
                 Err(err @ ScrapeError::Blocked { .. }) => return Err(err),

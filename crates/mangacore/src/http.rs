@@ -409,17 +409,17 @@ pub fn validate_public_http_url(url: &Url) -> Result<(), ScrapeError> {
     Ok(())
 }
 
-/// Detects whether an HTTP response looks like a Cloudflare or anti-bot challenge page.
+/// Detects whether an HTTP response looks like an anti-bot verification challenge page.
 pub fn looks_like_challenge(status: StatusCode, html: &str) -> bool {
     if status != StatusCode::FORBIDDEN && status != StatusCode::SERVICE_UNAVAILABLE {
         return false;
     }
     let lower = html.to_ascii_lowercase();
     lower.contains("cf-browser-verification")
-        || lower.contains("challenges.cloudflare.com")
-        || lower.contains("just a moment...")
         || lower.contains("cf_chl_opt")
+        || lower.contains("just a moment...")
         || lower.contains("ddos-guard")
+        || lower.contains("verify you are human")
 }
 
 fn is_acceptable_image_mime(content_type: &str) -> bool {
@@ -465,11 +465,11 @@ mod tests {
 
     #[test]
     fn normalize_adds_https_and_strips_tracking() {
-        let got = normalize_url("  truyenqqko.com/truyen-tranh/demo?utm_source=fb&page=2#top ")
+        let got = normalize_url("  example.com/series/demo?utm_source=share&page=2#top ")
             .expect("valid url");
         assert_eq!(
             got.as_str(),
-            "https://truyenqqko.com/truyen-tranh/demo?page=2",
+            "https://example.com/series/demo?page=2",
             "should normalize scheme, fragment, and tracking params"
         );
     }

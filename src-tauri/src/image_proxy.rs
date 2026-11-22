@@ -171,9 +171,9 @@ mod tests {
     fn signed_token_round_trips_and_rejects_tampering() {
         let key = [42_u8; 32];
         let img = PageImage {
-            url: Url::parse("https://i178.truyenvua.com/16695/44/0.jpg").unwrap(),
-            fallbacks: vec![Url::parse("https://i178.truyenvua.com/16695/44/0.jpg?cdn=1").unwrap()],
-            referer: Url::parse("https://truyenqqko.com/truyen-tranh/demo-chap-44").unwrap(),
+            url: Url::parse("https://cdn.example.com/16695/44/0.jpg").unwrap(),
+            fallbacks: vec![Url::parse("https://cdn2.example.com/16695/44/0.jpg?cdn=1").unwrap()],
+            referer: Url::parse("https://example.com/series/demo-chap-44").unwrap(),
         };
 
         let token = encode_page_token(&img, &key);

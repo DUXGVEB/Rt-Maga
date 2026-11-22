@@ -3,7 +3,6 @@
 pub mod generic;
 #[cfg(feature = "headless")]
 pub mod headless;
-pub mod truyenqq;
 
 use async_trait::async_trait;
 use url::Url;
@@ -15,7 +14,7 @@ use crate::model::{Chapter, Resolved};
 /// A site adapter capable of resolving manga/chapter URLs and fetching chapter images.
 #[async_trait]
 pub trait Source: Send + Sync + std::fmt::Debug {
-    /// Short stable identifier for this source (e.g. `"truyenqq"`).
+    /// Short stable identifier for this source (e.g. `"generic"` or a custom adapter key).
     fn id(&self) -> &'static str;
 
     /// Returns `true` if this adapter handles the given `url`.
