@@ -148,5 +148,22 @@ mod tests {
         };
         db.save_settings(&s).await.unwrap();
         assert_eq!(db.load_settings().await.unwrap().theme, Theme::Dark);
+
+        // Mark chapter 1 read, then re-upsert with chapter 2's URL renamed; verify stale slug is pruned
+        // while chapter 1's read flag is preserved.
+        db.mark_chapter_read(id, "https://truyenqqko.com/truyen-tranh/demo-1-chap-1")
+            .await
+            .unwrap();
+        let mut updated = manga;
+        updated.chapters[1].url =
+            Url::parse("https://truyenqqko.com/truyen-tranh/demo-1-chap-2-fixed").unwrap();
+        db.upsert_manga(&updated).await.unwrap();
+        let after = db.list_chapters(id).await.unwrap();
+        assert_eq!(after.len(), 2, "stale chapter slug must be pruned");
+        assert_eq!(after[0].read, 1, "existing read flag must be preserved");
+        assert_eq!(
+            after[1].url,
+            "https://truyenqqko.com/truyen-tranh/demo-1-chap-2-fixed"
+        );
     }
 }

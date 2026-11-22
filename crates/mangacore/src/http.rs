@@ -109,7 +109,15 @@ impl HttpClient {
             .default_headers(headers)
             .cookie_provider(Arc::clone(&jar))
             .timeout(policy.timeout)
-            .redirect(reqwest::redirect::Policy::limited(10))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    return attempt.error("too many redirects");
+                }
+                if let Err(err) = validate_public_http_url(attempt.url()) {
+                    return attempt.error(err);
+                }
+                attempt.follow()
+            }))
             .build()?;
 
         Ok(Self {
@@ -257,6 +265,12 @@ impl HttpClient {
                                         .to_owned()
                                 },
                             );
+                        if !is_acceptable_image_mime(&content_type) {
+                            return Err(ScrapeError::HttpStatus {
+                                status: StatusCode::UNSUPPORTED_MEDIA_TYPE.as_u16(),
+                                url: url.clone(),
+                            });
+                        }
                         let bytes = response.bytes().await?;
                         return Ok(FetchedBytes {
                             bytes,
@@ -408,6 +422,20 @@ pub fn looks_like_challenge(status: StatusCode, html: &str) -> bool {
         || lower.contains("ddos-guard")
 }
 
+fn is_acceptable_image_mime(content_type: &str) -> bool {
+    let lower = content_type.to_ascii_lowercase();
+    if lower.starts_with("text/")
+        || lower.contains("html")
+        || lower.contains("json")
+        || lower.contains("javascript")
+    {
+        return false;
+    }
+    lower.starts_with("image/")
+        || lower == "application/octet-stream"
+        || lower == "binary/octet-stream"
+}
+
 fn guess_mime_from_url(url: &Url) -> &'static str {
     let ext = std::path::Path::new(url.path())
         .extension()
@@ -452,5 +480,15 @@ mod tests {
         assert!(normalize_url("http://localhost/a").is_err());
         assert!(normalize_url("http://192.168.1.5/a").is_err());
         assert!(normalize_url("http://10.0.0.1/a").is_err());
+    }
+
+    #[test]
+    fn rejects_non_image_mime_types() {
+        assert!(is_acceptable_image_mime("image/jpeg"));
+        assert!(is_acceptable_image_mime("image/webp"));
+        assert!(is_acceptable_image_mime("application/octet-stream"));
+        assert!(!is_acceptable_image_mime("text/html"));
+        assert!(!is_acceptable_image_mime("application/xhtml+xml"));
+        assert!(!is_acceptable_image_mime("application/json"));
     }
 }

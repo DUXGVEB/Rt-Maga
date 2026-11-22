@@ -40,8 +40,10 @@
   let lastScrollTop = 0;
   let prefetched = new Map<string, ChapterView>();
   let saveTimer: number | null = null;
+  let restoreTimer: number | null = null;
   let markedReadSet = new Set<string>();
   let restoredInitialScroll = false;
+  let loadSeq = 0;
 
   const readerSettings = $derived(settingsStore.value.reader);
   const t = $derived(settingsStore.t);
@@ -68,11 +70,25 @@
 
   const preloadMarginPx = $derived(Math.max(800, readerSettings.preloadImages * 520));
 
+  function clearPendingTimers() {
+    if (saveTimer !== null) {
+      window.clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (restoreTimer !== null) {
+      window.clearTimeout(restoreTimer);
+      restoreTimer = null;
+    }
+  }
+
   async function loadInitial(targetUrl: string, scrollRatio: number) {
+    const seq = ++loadSeq;
+    clearPendingTimers();
     loadingInitial = true;
     errorState = null;
     strip = [];
     prefetched.clear();
+    markedReadSet.clear();
     restoredInitialScroll = false;
 
     try {
@@ -80,6 +96,8 @@
         api.getManga(mangaId).catch(() => null),
         api.getChapter(targetUrl, mangaId),
       ]);
+      if (seq !== loadSeq) return;
+
       manga = mangaData;
       strip = [chapterData];
       activeUrl = chapterData.url;
@@ -88,10 +106,12 @@
       await api
         .saveProgress(mangaId, chapterData.url, chapterData.name, scrollRatio)
         .catch(() => {});
+      if (seq !== loadSeq) return;
 
       if (scrollRatio > 0.02 && scrollEl) {
-        window.setTimeout(() => {
-          if (scrollEl && !restoredInitialScroll) {
+        restoreTimer = window.setTimeout(() => {
+          restoreTimer = null;
+          if (seq === loadSeq && scrollEl && !restoredInitialScroll) {
             const maxScroll = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
             scrollEl.scrollTop = Math.round(maxScroll * scrollRatio);
             restoredInitialScroll = true;
@@ -100,11 +120,16 @@
       } else if (scrollEl) {
         scrollEl.scrollTop = 0;
         restoredInitialScroll = true;
+      } else {
+        restoredInitialScroll = true;
       }
     } catch (err) {
+      if (seq !== loadSeq) return;
       errorState = formatAppError(err, settingsStore.value.language);
     } finally {
-      loadingInitial = false;
+      if (seq === loadSeq) {
+        loadingInitial = false;
+      }
     }
   }
 
@@ -112,13 +137,20 @@
     void mangaId;
     void chapterUrl;
     loadInitial(chapterUrl, initialScrollRatio);
+    return () => {
+      loadSeq += 1;
+      clearPendingTimers();
+    };
   });
 
   async function prefetchNext(nextUrl: string) {
     if (prefetched.has(nextUrl) || strip.some((c) => c.url === nextUrl)) return;
+    const seq = loadSeq;
     try {
       const data = await api.getChapter(nextUrl, mangaId);
-      prefetched.set(nextUrl, data);
+      if (seq === loadSeq) {
+        prefetched.set(nextUrl, data);
+      }
     } catch {
       // Prefetch errors will surface only if the user actually transitions.
     }
@@ -129,10 +161,12 @@
     if (!tail?.next || appendingNext) return;
     if (strip.some((c) => c.url === tail.next)) return;
 
+    const seq = loadSeq;
     appendingNext = true;
     try {
       const nextChap =
         prefetched.get(tail.next) ?? (await api.getChapter(tail.next, mangaId));
+      if (seq !== loadSeq) return;
       prefetched.delete(tail.next);
       strip = [...strip, nextChap];
 
@@ -143,16 +177,20 @@
         strip = strip.slice(1);
         if (removedHeight > 0) {
           queueMicrotask(() => {
-            if (scrollEl) {
+            if (seq === loadSeq && scrollEl) {
               scrollEl.scrollTop = Math.max(0, scrollEl.scrollTop - removedHeight);
             }
           });
         }
       }
     } catch (err) {
-      toasts.push(formatAppError(err, settingsStore.value.language).title, "error");
+      if (seq === loadSeq) {
+        toasts.push(formatAppError(err, settingsStore.value.language).title, "error");
+      }
     } finally {
-      appendingNext = false;
+      if (seq === loadSeq) {
+        appendingNext = false;
+      }
     }
   }
 
@@ -191,7 +229,7 @@
       currentSection = sections[sections.length - 1];
     }
 
-    if (currentSection) {
+    if (currentSection && restoredInitialScroll) {
       const chapUrl = currentSection.dataset.chapterUrl ?? activeUrl;
       const chap = strip.find((c) => c.url === chapUrl);
       if (chap) {
@@ -515,7 +553,7 @@
             {/if}
 
             <div class="flex w-full flex-col" style="gap: {readerSettings.gapPx}px;">
-              {#each chap.images as token, imgIdx (token)}
+              {#each chap.images as token, imgIdx (`${chap.url}:${imgIdx}`)}
                 <PageImage
                   {token}
                   index={imgIdx}

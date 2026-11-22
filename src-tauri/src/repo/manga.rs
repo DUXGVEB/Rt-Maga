@@ -1,5 +1,7 @@
 //! Database operations for `manga` and `chapter` tables.
 
+use std::collections::HashSet;
+
 use mangacore::Manga;
 use sqlx::FromRow;
 
@@ -106,6 +108,25 @@ impl Database {
             .bind(idx)
             .execute(&mut *tx)
             .await?;
+        }
+
+        // Prune stale chapter rows if a site renamed or removed old chapter slugs on a full listing.
+        if manga.chapters.len() > 1 {
+            let valid_urls: HashSet<&str> = manga.chapters.iter().map(|c| c.url.as_str()).collect();
+            let stored_urls: Vec<(String,)> =
+                sqlx::query_as("SELECT url FROM chapter WHERE manga_id = ?")
+                    .bind(manga_id)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            for (stored_url,) in stored_urls {
+                if !valid_urls.contains(stored_url.as_str()) {
+                    sqlx::query("DELETE FROM chapter WHERE manga_id = ? AND url = ?")
+                        .bind(manga_id)
+                        .bind(&stored_url)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+            }
         }
 
         tx.commit().await?;

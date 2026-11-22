@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tokio::sync::Notify;
+use tokio::sync::watch;
 use tracing::{debug, warn};
 
 use crate::error::AppError;
@@ -37,7 +38,7 @@ pub(crate) struct CachedImage {
 pub(crate) struct ImageCache {
     dir: PathBuf,
     db: Database,
-    in_flight: Arc<DashMap<String, Arc<Notify>>>,
+    in_flight: Arc<DashMap<String, watch::Sender<bool>>>,
 }
 
 impl ImageCache {
@@ -114,7 +115,8 @@ impl ImageCache {
             return;
         }
 
-        let tmp_path = path.with_extension("tmp");
+        let nonce: u64 = rand::random();
+        let tmp_path = path.with_extension(format!("tmp.{nonce:016x}"));
         if let Err(err) = tokio::fs::write(&tmp_path, bytes).await {
             warn!(%err, "failed to write temp cache file");
             return;
@@ -148,28 +150,27 @@ impl ImageCache {
 
     /// Coordinates concurrent requests for the same key so only one network fetch executes.
     ///
+    /// Uses an atomic `DashMap::entry` paired with a latched `watch` channel so waiters never
+    /// miss a wakeup even if the fetch completes before `.await`.
+    ///
     /// Returns `Some(guard)` when the caller owns the fetch, or `None` after waiting for an
     /// in-flight fetch to complete.
     pub(crate) async fn begin_single_flight(&self, key: &str) -> Option<SingleFlightGuard> {
-        let existing = self
-            .in_flight
-            .get(key)
-            .map(|entry| Arc::clone(entry.value()));
-        if let Some(notify) = existing {
-            notify.notified().await;
-            return None;
-        }
+        let mut rx = match self.in_flight.entry(key.to_owned()) {
+            Entry::Occupied(occ) => occ.get().subscribe(),
+            Entry::Vacant(vac) => {
+                let (tx, _rx) = watch::channel(false);
+                vac.insert(tx.clone());
+                return Some(SingleFlightGuard {
+                    key: key.to_owned(),
+                    in_flight: Arc::clone(&self.in_flight),
+                    tx,
+                });
+            }
+        };
 
-        let notify = Arc::new(Notify::new());
-        let prev = self.in_flight.insert(key.to_owned(), Arc::clone(&notify));
-        if let Some(prev_notify) = prev {
-            prev_notify.notify_waiters();
-        }
-        Some(SingleFlightGuard {
-            key: key.to_owned(),
-            in_flight: Arc::clone(&self.in_flight),
-            notify,
-        })
+        let _ = rx.wait_for(|done| *done).await;
+        None
     }
 
     /// Returns total bytes and file count currently tracked by the disk cache.
@@ -215,7 +216,8 @@ impl ImageCache {
         self.dir.join(prefix).join(key)
     }
 
-    async fn evict_if_needed(&self, max_mb: u32) {
+    /// Evicts oldest cached images until total disk usage is within `max_mb`.
+    pub(crate) async fn evict_if_needed(&self, max_mb: u32) {
         let limit_bytes = i64::from(max_mb).saturating_mul(1024 * 1024);
         let Ok((mut total,)) =
             sqlx::query_as::<_, (i64,)>("SELECT COALESCE(SUM(size), 0) FROM image_cache")
@@ -259,13 +261,48 @@ impl ImageCache {
 #[derive(Debug)]
 pub(crate) struct SingleFlightGuard {
     key: String,
-    in_flight: Arc<DashMap<String, Arc<Notify>>>,
-    notify: Arc<Notify>,
+    in_flight: Arc<DashMap<String, watch::Sender<bool>>>,
+    tx: watch::Sender<bool>,
 }
 
 impl Drop for SingleFlightGuard {
     fn drop(&mut self) {
         self.in_flight.remove(&self.key);
-        self.notify.notify_waiters();
+        let _ = self.tx.send(true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn single_flight_wakes_concurrent_waiter_without_hang() {
+        let db = Database::open_in_memory().await.unwrap();
+        let dir = std::env::temp_dir().join(format!("rtmaga_cache_test_{}", rand::random::<u64>()));
+        let cache = ImageCache::new(dir.clone(), db).await.unwrap();
+
+        let owner_guard = cache
+            .begin_single_flight("img_key_1")
+            .await
+            .expect("first caller owns flight");
+
+        let cache_waiter = cache.clone();
+        let waiter =
+            tokio::spawn(async move { cache_waiter.begin_single_flight("img_key_1").await });
+
+        tokio::task::yield_now().await;
+        drop(owner_guard);
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("waiter must not hang")
+            .expect("waiter task must succeed");
+        assert!(
+            outcome.is_none(),
+            "second caller should wait and receive None"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 }

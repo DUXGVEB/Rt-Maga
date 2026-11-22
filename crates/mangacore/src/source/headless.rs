@@ -22,14 +22,22 @@ const RENDER_SETTLE_DELAY: Duration = Duration::from_millis(900);
 /// Maximum wait time for a user to finish manual site verification in a visible window.
 const MANUAL_VERIFY_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Shut down the idle background headless browser after 5 minutes of inactivity.
+const IDLE_SHUTDOWN_AFTER: Duration = Duration::from_secs(300);
+
 /// Shared lazy-initialized headless browser controller.
 #[derive(Debug, Clone)]
 pub struct HeadlessBrowser {
     inner: Arc<HeadlessInner>,
 }
 
+struct BrowserSlot {
+    browser: Option<Browser>,
+    last_used: tokio::time::Instant,
+}
+
 struct HeadlessInner {
-    browser: Mutex<Option<Browser>>,
+    slot: Mutex<BrowserSlot>,
     tab_permits: Arc<Semaphore>,
 }
 
@@ -50,7 +58,10 @@ impl HeadlessBrowser {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(HeadlessInner {
-                browser: Mutex::new(None),
+                slot: Mutex::new(BrowserSlot {
+                    browser: None,
+                    last_used: tokio::time::Instant::now(),
+                }),
                 tab_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_TABS)),
             }),
         }
@@ -147,45 +158,84 @@ impl HeadlessBrowser {
     }
 
     async fn open_tab(&self, url: &Url) -> Result<chromiumoxide::Page, ScrapeError> {
-        let mut guard = self.inner.browser.lock().await;
-        if guard.is_none() {
-            let exe = find_browser_executable().ok_or_else(|| {
-                ScrapeError::Headless("Microsoft Edge or Chrome not found".to_owned())
-            })?;
-            debug!(?exe, "launching headless browser");
+        let mut guard = self.inner.slot.lock().await;
+        guard.last_used = tokio::time::Instant::now();
 
-            let config = BrowserConfig::builder()
-                .chrome_executable(exe)
-                .arg(format!("--user-agent={DEFAULT_USER_AGENT}"))
-                .arg("--disable-gpu")
-                .arg("--no-first-run")
-                .build()
-                .map_err(|e| ScrapeError::Headless(format!("browser config error: {e}")))?;
-
-            let (browser, mut handler) = Browser::launch(config)
-                .await
-                .map_err(|e| ScrapeError::Headless(format!("failed to launch browser: {e}")))?;
-
-            tokio::spawn(async move {
-                while let Some(event) = handler.next().await {
-                    if let Err(err) = event {
-                        warn!(%err, "headless browser event loop ended");
-                        break;
+        if let Some(browser) = guard.browser.as_ref() {
+            match browser.new_page(url.as_str()).await {
+                Ok(page) => return Ok(page),
+                Err(err) => {
+                    warn!(%err, "existing headless browser failed to open tab; relaunching");
+                    if let Some(mut stale) = guard.browser.take() {
+                        let _ = stale.close().await;
                     }
                 }
-            });
-
-            *guard = Some(browser);
+            }
         }
 
-        let browser = guard
-            .as_ref()
-            .expect("browser initialized immediately above");
-
-        browser
+        let browser = Self::launch_headless_browser().await?;
+        let page = browser
             .new_page(url.as_str())
             .await
-            .map_err(|e| ScrapeError::Headless(format!("failed to open tab: {e}")))
+            .map_err(|e| ScrapeError::Headless(format!("failed to open tab: {e}")))?;
+        guard.browser = Some(browser);
+        guard.last_used = tokio::time::Instant::now();
+        drop(guard);
+
+        self.spawn_idle_reaper();
+        Ok(page)
+    }
+
+    async fn launch_headless_browser() -> Result<Browser, ScrapeError> {
+        let exe = find_browser_executable().ok_or_else(|| {
+            ScrapeError::Headless("Microsoft Edge or Chrome not found".to_owned())
+        })?;
+        debug!(?exe, "launching headless browser");
+
+        let config = BrowserConfig::builder()
+            .chrome_executable(exe)
+            .arg(format!("--user-agent={DEFAULT_USER_AGENT}"))
+            .arg("--disable-gpu")
+            .arg("--no-first-run")
+            .build()
+            .map_err(|e| ScrapeError::Headless(format!("browser config error: {e}")))?;
+
+        let (browser, mut handler) = Browser::launch(config)
+            .await
+            .map_err(|e| ScrapeError::Headless(format!("failed to launch browser: {e}")))?;
+
+        tokio::spawn(async move {
+            while let Some(event) = handler.next().await {
+                if let Err(err) = event {
+                    warn!(%err, "headless browser event loop ended");
+                    break;
+                }
+            }
+        });
+
+        Ok(browser)
+    }
+
+    fn spawn_idle_reaper(&self) {
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                let mut guard = inner.slot.lock().await;
+                if guard.browser.is_none() {
+                    break;
+                }
+                let idle = guard.last_used.elapsed() >= IDLE_SHUTDOWN_AFTER;
+                let no_active_tabs = inner.tab_permits.available_permits() == MAX_CONCURRENT_TABS;
+                if idle && no_active_tabs {
+                    if let Some(mut browser) = guard.browser.take() {
+                        debug!("shutting down idle headless browser");
+                        let _ = browser.close().await;
+                    }
+                    break;
+                }
+            }
+        });
     }
 }
 

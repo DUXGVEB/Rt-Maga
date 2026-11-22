@@ -132,6 +132,7 @@ pub(crate) async fn set_settings(
         *guard = saved.clone();
     }
     let _ = app.emit("settings://changed", &saved);
+    state.images.evict_if_needed(saved.cache.max_mb).await;
     updater::restart_background_loop(app, Arc::clone(&state)).await;
     Ok(saved)
 }
