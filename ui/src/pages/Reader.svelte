@@ -9,12 +9,23 @@
     Minimize,
     SlidersHorizontal,
   } from "lucide-svelte";
+  import { tick, untrack } from "svelte";
   import { api, formatAppError } from "../lib/api";
   import PageImage from "../lib/components/PageImage.svelte";
+  import { focusBrightness, partitionPages } from "../lib/readerLayout";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
-  import type { ChapterView, ImageWidth, MangaView, ReaderBg } from "../lib/types";
+  import type {
+    ChapterView,
+    HorizontalDirection,
+    HorizontalSnapMode,
+    ImageWidth,
+    MangaView,
+    ReaderBg,
+    ReadingOrientation,
+    VerticalLayoutMode,
+  } from "../lib/types";
 
   let {
     mangaId,
@@ -36,24 +47,45 @@
   let quickSettingsOpen = $state(false);
   let isFullscreen = $state(false);
 
+  // Viewport focus tracking (key of focused group or page, plus focused page index for live setting changes).
+  let focusedKeys = $state<Set<string>>(new Set());
+  let focusedPageIdx = 0;
+
   let scrollEl = $state<HTMLDivElement | null>(null);
-  let lastScrollTop = 0;
+  let lastScrollOffset = 0;
   let prefetched = new Map<string, ChapterView>();
   let saveTimer: number | null = null;
   let pendingProgress: { mangaId: number; url: string; name: string; ratio: number } | null = null;
   let restoreTimer: number | null = null;
+  let focusRaf: number | null = null;
   let markedReadSet = new Set<string>();
   let restoredInitialScroll = false;
+  let isUserScrollingBeforeRestore = false;
   let loadSeq = 0;
 
+  function normUrl(u: string): string {
+    return u.endsWith("/") ? u.slice(0, -1) : u;
+  }
+
   const readerSettings = $derived(settingsStore.value.reader);
+  const vCfg = $derived(readerSettings.vertical);
+  const hCfg = $derived(readerSettings.horizontal);
+  const isHorizontal = $derived(readerSettings.orientation === "horizontal");
+  const isRtl = $derived(isHorizontal && hCfg.direction === "rtl");
+  const isVerticalGrouped = $derived(!isHorizontal && vCfg.layoutMode === "vertical_grouped");
   const t = $derived(settingsStore.t);
 
   const activeChapter = $derived(
-    strip.find((c) => c.url === activeUrl) ?? strip[strip.length - 1] ?? null
+    strip.find((c) => normUrl(c.url) === normUrl(activeUrl)) ?? strip[strip.length - 1] ?? null
   );
 
   const lastChapter = $derived(strip[strip.length - 1] ?? null);
+
+  const selectChapterValue = $derived(() => {
+    if (!manga || !activeUrl) return activeUrl;
+    const norm = normUrl(activeUrl);
+    return manga.chapters.find((c) => normUrl(c.url) === norm)?.url ?? activeUrl;
+  });
 
   const readerBackdrop = $derived(() => {
     const bg: ReaderBg = readerSettings.readerBg;
@@ -71,7 +103,129 @@
 
   const preloadMarginPx = $derived(Math.max(800, readerSettings.preloadImages * 520));
 
-  function flushPendingProgress() {
+  const scrollContainerSnapStyle = $derived(() => {
+    if (isHorizontal) {
+      if (hCfg.snapMode === "none") return "scroll-snap-type: none;";
+      return "scroll-snap-type: x proximity;";
+    }
+    if (isVerticalGrouped && vCfg.snapEnabled) {
+      return "scroll-snap-type: y proximity;";
+    }
+    return "scroll-snap-type: none;";
+  });
+
+  function isKeyFocused(key: string): boolean {
+    if (focusedKeys.size === 0) return true;
+    return focusedKeys.has(key);
+  }
+
+  function groupDimBrightness(groupKey: string, dimEnabled: boolean, dimLevel: number): number {
+    return focusBrightness(isKeyFocused(groupKey), dimEnabled, dimLevel);
+  }
+
+  function pageDimBrightness(pageKey: string): number {
+    if (isHorizontal || isVerticalGrouped) return 1; // Dimming is applied per group in grouped modes.
+    return focusBrightness(isKeyFocused(pageKey), vCfg.dimUnfocused, vCfg.dimLevel);
+  }
+
+  function updateFocusNow() {
+    if (!scrollEl || strip.length === 0 || loadingInitial) return;
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const nextFocused = new Set<string>();
+
+    if (isHorizontal) {
+      const centerX = scrollRect.left + scrollRect.width / 2;
+      const groups = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-group-key]"));
+      let best: HTMLElement | null = null;
+      let bestDist = Number.POSITIVE_INFINITY;
+
+      for (const el of groups) {
+        const r = el.getBoundingClientRect();
+        const elCenter = r.left + r.width / 2;
+        const dist = Math.abs(elCenter - centerX);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = el;
+        }
+      }
+      if (best?.dataset.groupKey) {
+        nextFocused.add(best.dataset.groupKey);
+        const firstPage = best.querySelector<HTMLElement>("[data-page-idx]");
+        if (firstPage?.dataset.pageIdx) {
+          focusedPageIdx = Number(firstPage.dataset.pageIdx) || 0;
+        }
+      }
+    } else if (isVerticalGrouped) {
+      const centerY = scrollRect.top + scrollRect.height * 0.45;
+      const groups = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-group-key]"));
+      let best: HTMLElement | null = null;
+      let bestDist = Number.POSITIVE_INFINITY;
+
+      for (const el of groups) {
+        const r = el.getBoundingClientRect();
+        // Keep any group actively crossing the focal center band un-dimmed.
+        if (r.top <= centerY && r.bottom >= centerY && el.dataset.groupKey) {
+          nextFocused.add(el.dataset.groupKey);
+        }
+        const elCenter = r.top + r.height / 2;
+        const dist = Math.abs(elCenter - centerY);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = el;
+        }
+      }
+      if (best?.dataset.groupKey) {
+        nextFocused.add(best.dataset.groupKey);
+        const firstPage = best.querySelector<HTMLElement>("[data-page-idx]");
+        if (firstPage?.dataset.pageIdx) {
+          focusedPageIdx = Number(firstPage.dataset.pageIdx) || 0;
+        }
+      }
+    } else {
+      // Continuous Strip mode: keep images overlapping the focal center band un-dimmed.
+      const centerY = scrollRect.top + scrollRect.height * 0.45;
+      const pages = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-page-key]"));
+      let best: HTMLElement | null = null;
+      let bestDist = Number.POSITIVE_INFINITY;
+
+      for (const el of pages) {
+        const r = el.getBoundingClientRect();
+        if (r.top <= centerY && r.bottom >= centerY && el.dataset.pageKey) {
+          nextFocused.add(el.dataset.pageKey);
+        }
+        const elCenter = r.top + r.height / 2;
+        const dist = Math.abs(elCenter - centerY);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = el;
+        }
+      }
+      if (best?.dataset.pageKey) {
+        nextFocused.add(best.dataset.pageKey);
+        if (best.dataset.pageIdx) {
+          focusedPageIdx = Number(best.dataset.pageIdx) || 0;
+        }
+      }
+    }
+
+    // Only replace reactive Set when contents actually changed to avoid unnecessary re-renders.
+    if (
+      nextFocused.size !== focusedKeys.size ||
+      Array.from(nextFocused).some((k) => !focusedKeys.has(k))
+    ) {
+      focusedKeys = nextFocused;
+    }
+  }
+
+  function scheduleFocusUpdate() {
+    if (focusRaf !== null) return;
+    focusRaf = window.requestAnimationFrame(() => {
+      focusRaf = null;
+      updateFocusNow();
+    });
+  }
+
+  function flushPendingProgress(): Promise<void> {
     if (saveTimer !== null) {
       window.clearTimeout(saveTimer);
       saveTimer = null;
@@ -79,13 +233,14 @@
     if (pendingProgress) {
       const snap = pendingProgress;
       pendingProgress = null;
-      void api.saveProgress(snap.mangaId, snap.url, snap.name, snap.ratio).catch(() => {});
+      return api.saveProgress(snap.mangaId, snap.url, snap.name, snap.ratio).catch(() => {});
     }
+    return Promise.resolve();
   }
 
   function clearPendingTimers(flush = false) {
     if (flush) {
-      flushPendingProgress();
+      void flushPendingProgress();
     } else {
       if (saveTimer !== null) {
         window.clearTimeout(saveTimer);
@@ -97,17 +252,65 @@
       window.clearTimeout(restoreTimer);
       restoreTimer = null;
     }
+    if (focusRaf !== null) {
+      window.cancelAnimationFrame(focusRaf);
+      focusRaf = null;
+    }
+  }
+
+  function markChapterReadLocalAndRemote(url: string) {
+    const norm = normUrl(url);
+    if (markedReadSet.has(norm)) return;
+    markedReadSet.add(norm);
+    if (manga) {
+      const match = manga.chapters.find((c) => normUrl(c.url) === norm);
+      if (match) match.read = true;
+    }
+    void api.markRead(mangaId, url).catch(() => {});
+  }
+
+  function scrollToStartOfContainer() {
+    if (!scrollEl) return;
+    if (isHorizontal) {
+      scrollEl.scrollLeft = 0;
+      lastScrollOffset = 0;
+    } else {
+      scrollEl.scrollTop = 0;
+      lastScrollOffset = 0;
+    }
+  }
+
+  function applyScrollRatio(ratio: number) {
+    if (!scrollEl) return;
+    if (isHorizontal) {
+      const maxX = Math.max(0, scrollEl.scrollWidth - scrollEl.clientWidth);
+      const target = Math.round(maxX * ratio);
+      scrollEl.scrollLeft = isRtl ? -target : target;
+      lastScrollOffset = Math.abs(scrollEl.scrollLeft);
+    } else {
+      const maxY = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+      const target = Math.round(maxY * ratio);
+      scrollEl.scrollTop = target;
+      lastScrollOffset = target;
+    }
   }
 
   async function loadInitial(targetUrl: string, scrollRatio: number) {
     const seq = ++loadSeq;
     clearPendingTimers(true);
     loadingInitial = true;
+    appendingNext = false;
     errorState = null;
     strip = [];
+    focusedKeys = new Set();
+    focusedPageIdx = 0;
     prefetched.clear();
     markedReadSet.clear();
     restoredInitialScroll = false;
+    isUserScrollingBeforeRestore = false;
+    lastScrollOffset = 0;
+
+    scrollToStartOfContainer();
 
     try {
       const [mangaData, chapterData] = await Promise.all([
@@ -119,56 +322,112 @@
       manga = mangaData;
       strip = [chapterData];
       activeUrl = chapterData.url;
+      loadingInitial = false;
 
-      // Save immediate history entry when opening a chapter.
-      await api
-        .saveProgress(mangaId, chapterData.url, chapterData.name, scrollRatio)
-        .catch(() => {});
+      // Wait for Svelte to mount the single chapter's DOM into scrollEl before setting scroll position.
+      await tick();
       if (seq !== loadSeq) return;
 
       if (scrollRatio > 0.02 && scrollEl) {
+        applyScrollRatio(scrollRatio);
         restoreTimer = window.setTimeout(() => {
           restoreTimer = null;
-          if (seq === loadSeq && scrollEl && !restoredInitialScroll) {
-            const maxScroll = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
-            scrollEl.scrollTop = Math.round(maxScroll * scrollRatio);
-            restoredInitialScroll = true;
+          if (seq === loadSeq && scrollEl && !isUserScrollingBeforeRestore) {
+            applyScrollRatio(scrollRatio);
           }
-        }, 320);
-      } else if (scrollEl) {
-        scrollEl.scrollTop = 0;
-        restoredInitialScroll = true;
+          restoredInitialScroll = true;
+          updateFocusNow();
+        }, 220);
       } else {
+        scrollToStartOfContainer();
         restoredInitialScroll = true;
+        updateFocusNow();
+        window.requestAnimationFrame(() => {
+          if (seq === loadSeq && scrollEl && scrollRatio <= 0.02 && lastScrollOffset === 0) {
+            scrollToStartOfContainer();
+            updateFocusNow();
+          }
+        });
       }
 
+      // Save immediate history entry when opening a chapter.
+      void api
+        .saveProgress(mangaId, chapterData.url, chapterData.name, scrollRatio)
+        .catch(() => {});
+
       // Short chapters that fit without scrolling should still be marked read.
-      if (chapterData.images.length <= 2 && !markedReadSet.has(chapterData.url)) {
-        markedReadSet.add(chapterData.url);
-        void api.markRead(mangaId, chapterData.url).catch(() => {});
+      if (chapterData.images.length <= 2) {
+        markChapterReadLocalAndRemote(chapterData.url);
       }
     } catch (err) {
       if (seq !== loadSeq) return;
       errorState = formatAppError(err, settingsStore.value.language);
-    } finally {
-      if (seq === loadSeq) {
-        loadingInitial = false;
-      }
+      loadingInitial = false;
     }
   }
 
   $effect(() => {
-    void mangaId;
-    void chapterUrl;
-    loadInitial(chapterUrl, initialScrollRatio);
+    const _id = mangaId;
+    const url = chapterUrl;
+    const ratio = untrack(() => initialScrollRatio);
+    untrack(() => {
+      void _id;
+      void loadInitial(url, ratio);
+    });
     return () => {
       loadSeq += 1;
       clearPendingTimers(true);
     };
   });
 
+  // Preserve reading page position seamlessly whenever orientation, layout mode, pagesPerGroup, or direction changes!
+  let prevLayoutSig = "";
+  $effect(() => {
+    const sig = `${readerSettings.orientation}|${vCfg.layoutMode}|${vCfg.pagesPerGroup}|${hCfg.pagesPerGroup}|${hCfg.direction}`;
+    if (!prevLayoutSig) {
+      prevLayoutSig = sig;
+      return;
+    }
+    if (sig === prevLayoutSig) return;
+    prevLayoutSig = sig;
+
+    const anchorChap = untrack(() => activeUrl);
+    const anchorPage = focusedPageIdx;
+    if (!anchorChap || untrack(() => loadingInitial || strip.length === 0)) return;
+
+    void (async () => {
+      // If switching to Horizontal mode while multiple chapters were auto-appended, keep only the active chapter.
+      if (untrack(() => isHorizontal && strip.length > 1)) {
+        const current = untrack(() => strip.find((c) => normUrl(c.url) === normUrl(anchorChap)));
+        if (current) {
+          strip = [current];
+        }
+      }
+      await tick();
+      if (!scrollEl) return;
+      const pageEl = scrollEl.querySelector<HTMLElement>(
+        `[data-page-key="${CSS.escape(`${anchorChap}:${anchorPage}`)}"]`
+      );
+      if (pageEl) {
+        pageEl.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+        lastScrollOffset = isHorizontal ? Math.abs(scrollEl.scrollLeft) : scrollEl.scrollTop;
+      }
+      updateFocusNow();
+    })();
+  });
+
+  // Re-evaluate focus when viewport resizes so unfocused dimming never sticks on wrong page/group.
+  $effect(() => {
+    const el = scrollEl;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => scheduleFocusUpdate());
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
   async function prefetchNext(nextUrl: string) {
-    if (prefetched.has(nextUrl) || strip.some((c) => c.url === nextUrl)) return;
+    const normNext = normUrl(nextUrl);
+    if (prefetched.has(normNext) || strip.some((c) => normUrl(c.url) === normNext)) return;
     const seq = loadSeq;
     try {
       const data = await api.getChapter(nextUrl, mangaId);
@@ -177,39 +436,62 @@
           const oldestKey = prefetched.keys().next().value;
           if (oldestKey) prefetched.delete(oldestKey);
         }
-        prefetched.set(nextUrl, data);
+        prefetched.set(normNext, data);
       }
     } catch {
-      // Prefetch errors will surface only if the user actually transitions.
+      // Prefetch errors surface only if user transitions.
     }
   }
 
   async function appendNextChapter() {
+    if (isHorizontal) return;
     const tail = lastChapter;
-    if (!tail?.next || appendingNext) return;
-    if (strip.some((c) => c.url === tail.next)) return;
+    if (!tail?.next || appendingNext || loadingInitial) return;
+    const normNext = normUrl(tail.next);
+    if (strip.some((c) => normUrl(c.url) === normNext)) return;
 
     const seq = loadSeq;
     appendingNext = true;
     try {
       const nextChap =
-        prefetched.get(tail.next) ?? (await api.getChapter(tail.next, mangaId));
+        prefetched.get(normNext) ?? (await api.getChapter(tail.next, mangaId));
       if (seq !== loadSeq) return;
-      prefetched.delete(tail.next);
-      strip = [...strip, nextChap];
+      prefetched.delete(normNext);
 
-      // Trim far-above chapters (> 4) while preserving current scroll offset.
-      if (strip.length > 4 && scrollEl) {
+      if (strip.some((c) => normUrl(c.url) === normUrl(nextChap.url))) {
+        return;
+      }
+
+      // Capture exact scroll position before appending so the viewport NEVER jumps to the top.
+      const anchorScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+      const shouldTrimOldest =
+        strip.length >= 4 && normUrl(strip[0].url) !== normUrl(activeUrl);
+
+      let removedHeight = 0;
+      if (shouldTrimOldest && scrollEl) {
         const firstSection = scrollEl.querySelector<HTMLElement>("[data-chapter-url]");
-        const removedHeight = firstSection ? firstSection.offsetHeight : 0;
-        strip = strip.slice(1);
-        if (removedHeight > 0) {
-          queueMicrotask(() => {
-            if (seq === loadSeq && scrollEl) {
-              scrollEl.scrollTop = Math.max(0, scrollEl.scrollTop - removedHeight);
-            }
-          });
+        if (firstSection) {
+          removedHeight = firstSection.getBoundingClientRect().height;
         }
+      }
+
+      strip = shouldTrimOldest ? [...strip.slice(1), nextChap] : [...strip, nextChap];
+      appendingNext = false;
+
+      await tick();
+      if (seq === loadSeq && scrollEl) {
+        const targetTop = shouldTrimOldest
+          ? Math.max(0, Math.round(anchorScrollTop - removedHeight))
+          : anchorScrollTop;
+        scrollEl.scrollTop = targetTop;
+        lastScrollOffset = targetTop;
+        window.requestAnimationFrame(() => {
+          if (seq === loadSeq && scrollEl && Math.abs(scrollEl.scrollTop - targetTop) > 120) {
+            scrollEl.scrollTop = targetTop;
+            lastScrollOffset = targetTop;
+          }
+          updateFocusNow();
+        });
       }
     } catch (err) {
       if (seq === loadSeq) {
@@ -222,33 +504,110 @@
     }
   }
 
+  /**
+   * Navigates directly to a single target chapter: hides all previous chapters in `strip`,
+   * loads ONLY the target chapter, and resets the scroll container to the start (0).
+   */
   function jumpToChapter(url: string) {
-    flushPendingProgress();
+    if (!url) return;
+    void flushPendingProgress();
     quickSettingsOpen = false;
+    toolbarVisible = true;
+    scrollToStartOfContainer();
+
+    const sameRouteProp = url === chapterUrl && initialScrollRatio === 0;
     router.goReader(mangaId, url, 0);
+    if (sameRouteProp) {
+      void loadInitial(url, 0);
+    }
+  }
+
+  function stepHorizontalGroup(deltaStep: 1 | -1) {
+    if (!scrollEl || !isHorizontal) return;
+    const groups = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-group-key]"));
+    if (groups.length === 0) return;
+
+    const currentIdx = groups.findIndex((g) => g.dataset.groupKey && focusedKeys.has(g.dataset.groupKey));
+    const baseIdx = currentIdx >= 0 ? currentIdx : 0;
+    const nextIdx = baseIdx + deltaStep;
+
+    if (nextIdx >= 0 && nextIdx < groups.length) {
+      groups[nextIdx].scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+      return;
+    }
+    // Past ends of chapter -> transition chapters cleanly.
+    if (deltaStep > 0 && activeChapter?.next) {
+      jumpToChapter(activeChapter.next);
+    } else if (deltaStep < 0 && activeChapter?.prev) {
+      jumpToChapter(activeChapter.prev);
+    }
+  }
+
+  function handleWheel(e: WheelEvent) {
+    if (!isHorizontal || !scrollEl || e.ctrlKey) return;
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      e.preventDefault();
+      scrollEl.scrollLeft += e.deltaY * (isRtl ? -1 : 1);
+    }
   }
 
   function handleScroll() {
-    if (!scrollEl || strip.length === 0) return;
+    if (!scrollEl || strip.length === 0 || loadingInitial) return;
 
+    scheduleFocusUpdate();
+
+    if (isHorizontal) {
+      const absLeft = Math.abs(scrollEl.scrollLeft);
+      const delta = absLeft - lastScrollOffset;
+
+      if (!restoredInitialScroll && restoreTimer !== null && Math.abs(delta) > 15) {
+        isUserScrollingBeforeRestore = true;
+        window.clearTimeout(restoreTimer);
+        restoreTimer = null;
+        restoredInitialScroll = true;
+      }
+
+      if (delta > 20 && absLeft > 80) {
+        toolbarVisible = false;
+        quickSettingsOpen = false;
+      } else if (delta < -20 || absLeft < 40) {
+        toolbarVisible = true;
+      }
+      lastScrollOffset = absLeft;
+
+      if (restoredInitialScroll && activeChapter) {
+        const maxScroll = Math.max(1, scrollEl.scrollWidth - scrollEl.clientWidth);
+        const ratio = Math.min(1, Math.max(0, absLeft / maxScroll));
+        scheduleSaveProgress(activeChapter.url, activeChapter.name, ratio);
+        if (ratio >= 0.85) {
+          markChapterReadLocalAndRemote(activeChapter.url);
+        }
+        if (ratio >= 0.7 && activeChapter.next) {
+          void prefetchNext(activeChapter.next);
+        }
+      }
+      return;
+    }
+
+    // Vertical scroll handling (Continuous Strip & Vertical Grouped Scroll).
     const top = scrollEl.scrollTop;
-    // If the user starts scrolling manually before the initial restore timer fires, honor user scroll.
-    if (!restoredInitialScroll && restoreTimer !== null && top > 4) {
+    const delta = top - lastScrollOffset;
+
+    if (!restoredInitialScroll && restoreTimer !== null && Math.abs(delta) > 15) {
+      isUserScrollingBeforeRestore = true;
       window.clearTimeout(restoreTimer);
       restoreTimer = null;
       restoredInitialScroll = true;
     }
 
-    const delta = top - lastScrollTop;
     if (delta > 16 && top > 80) {
       toolbarVisible = false;
       quickSettingsOpen = false;
     } else if (delta < -16 || top < 60) {
       toolbarVisible = true;
     }
-    lastScrollTop = top;
+    lastScrollOffset = top;
 
-    // Determine which chapter section currently owns the upper viewport.
     const sections = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-chapter-url]"));
     const viewportMid = top + scrollEl.clientHeight * 0.35;
     let currentSection: HTMLElement | null = null;
@@ -262,12 +621,13 @@
       }
     }
     if (!currentSection && sections.length > 0) {
-      currentSection = sections[sections.length - 1];
+      currentSection =
+        viewportMid < sections[0].offsetTop ? sections[0] : sections[sections.length - 1];
     }
 
     if (currentSection && restoredInitialScroll) {
       const chapUrl = currentSection.dataset.chapterUrl ?? activeUrl;
-      const chap = strip.find((c) => c.url === chapUrl);
+      const chap = strip.find((c) => normUrl(c.url) === normUrl(chapUrl));
       if (chap) {
         activeUrl = chap.url;
         const secHeight = Math.max(1, currentSection.offsetHeight - scrollEl.clientHeight);
@@ -275,23 +635,22 @@
 
         scheduleSaveProgress(chap.url, chap.name, ratio);
 
-        if (ratio >= 0.85 && !markedReadSet.has(chap.url)) {
-          markedReadSet.add(chap.url);
-          api.markRead(mangaId, chap.url).catch(() => {});
+        if (ratio >= 0.85) {
+          markChapterReadLocalAndRemote(chap.url);
         }
       }
     }
 
-    // Trigger prefetch at 70% of scroll container, and continuous append within ~1600px of bottom.
+    if (!restoredInitialScroll || appendingNext) return;
     const remaining = scrollEl.scrollHeight - (top + scrollEl.clientHeight);
     const tail = lastChapter;
     if (tail?.next) {
       const progressAll = (top + scrollEl.clientHeight) / Math.max(1, scrollEl.scrollHeight);
       if (progressAll >= 0.7) {
-        prefetchNext(tail.next);
+        void prefetchNext(tail.next);
       }
-      if (readerSettings.autoNextChapter && remaining < 1600) {
-        appendNextChapter();
+      if (readerSettings.autoNextChapter && remaining < 1400) {
+        void appendNextChapter();
       }
     }
   }
@@ -302,7 +661,7 @@
       window.clearTimeout(saveTimer);
     }
     saveTimer = window.setTimeout(() => {
-      flushPendingProgress();
+      void flushPendingProgress();
     }, 900);
   }
 
@@ -318,11 +677,12 @@
   }
 
   async function exitReader() {
-    flushPendingProgress();
+    await flushPendingProgress();
     try {
       const win = getCurrentWindow();
       if (await win.isFullscreen()) {
         await win.setFullscreen(false);
+        isFullscreen = false;
       }
     } catch {
       // Ignore outside Tauri.
@@ -339,6 +699,28 @@
       return;
     }
 
+    if (isHorizontal) {
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        stepHorizontalGroup(isRtl ? -1 : 1);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        stepHorizontalGroup(isRtl ? 1 : -1);
+      } else if (e.key === " ") {
+        e.preventDefault();
+        stepHorizontalGroup(e.shiftKey ? -1 : 1);
+      } else if (e.key === "f" || e.key === "F") {
+        e.preventDefault();
+        void toggleFullscreen();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        if (quickSettingsOpen) quickSettingsOpen = false;
+        else if (isFullscreen) void toggleFullscreen();
+        else void exitReader();
+      }
+      return;
+    }
+
     if (e.key === "ArrowLeft" && activeChapter?.prev) {
       e.preventDefault();
       jumpToChapter(activeChapter.prev);
@@ -351,15 +733,72 @@
       scrollEl.scrollBy({ top: e.shiftKey ? -amount : amount, behavior: "smooth" });
     } else if (e.key === "f" || e.key === "F") {
       e.preventDefault();
-      toggleFullscreen();
+      void toggleFullscreen();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      if (isFullscreen) {
-        toggleFullscreen();
+      if (quickSettingsOpen) {
+        quickSettingsOpen = false;
+      } else if (isFullscreen) {
+        void toggleFullscreen();
       } else {
-        exitReader();
+        void exitReader();
       }
     }
+  }
+
+  function setOrientation(o: ReadingOrientation) {
+    settingsStore.update((d) => {
+      d.reader.orientation = o;
+    });
+  }
+
+  function setVerticalLayout(m: VerticalLayoutMode) {
+    settingsStore.update((d) => {
+      d.reader.vertical.layoutMode = m;
+    });
+  }
+
+  function setPagesPerGroup(n: number) {
+    const clamped = Math.max(1, Math.min(8, n));
+    settingsStore.update((d) => {
+      if (isHorizontal) {
+        d.reader.horizontal.pagesPerGroup = clamped;
+      } else {
+        d.reader.vertical.pagesPerGroup = clamped;
+      }
+    });
+  }
+
+  function setHorizontalDirection(dir: HorizontalDirection) {
+    settingsStore.update((d) => {
+      d.reader.horizontal.direction = dir;
+    });
+  }
+
+  function setHorizontalSnap(mode: HorizontalSnapMode) {
+    settingsStore.update((d) => {
+      d.reader.horizontal.snapMode = mode;
+    });
+  }
+
+  function toggleDim() {
+    settingsStore.update((d) => {
+      if (isHorizontal) {
+        d.reader.horizontal.dimUnfocused = !d.reader.horizontal.dimUnfocused;
+      } else {
+        d.reader.vertical.dimUnfocused = !d.reader.vertical.dimUnfocused;
+      }
+    });
+  }
+
+  function setDimLevel(val: number) {
+    settingsStore.update((d) => {
+      if (isHorizontal) {
+        d.reader.horizontal.dimLevel = val;
+      } else {
+        d.reader.vertical.dimLevel = val;
+      }
+    }, 80);
   }
 
   function updateReaderWidth(px: number) {
@@ -433,8 +872,12 @@
 
       {#if manga && manga.chapters.length > 0}
         <select
-          value={activeUrl}
-          onchange={(e) => jumpToChapter(e.currentTarget.value)}
+          value={selectChapterValue()}
+          onchange={(e) => {
+            const target = e.currentTarget.value;
+            e.currentTarget.blur();
+            jumpToChapter(target);
+          }}
           class="max-w-44 rounded-lg border px-2.5 py-1.5 text-xs font-medium outline-none"
           style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
         >
@@ -488,40 +931,217 @@
   <!-- Quick Reader Settings Popover -->
   {#if quickSettingsOpen}
     <div
-      class="fixed top-14 right-4 z-40 flex w-72 flex-col gap-4 rounded-2xl border p-4 text-xs shadow-xl"
+      class="fixed top-14 right-4 z-40 flex max-h-[80vh] w-80 flex-col gap-3.5 overflow-y-auto rounded-2xl border p-4 text-xs shadow-xl"
       style="background-color: var(--surface); border-color: var(--border);"
     >
-      <div class="flex flex-col gap-2">
-        <div class="flex items-center justify-between font-medium">
-          <span>{t.imageWidth}</span>
-          <span style="color: var(--text-muted);">
-            {readerSettings.width.mode === "px"
-              ? `${readerSettings.width.value}px`
-              : readerSettings.width.mode === "percent"
-                ? `${readerSettings.width.value}%`
-                : t.fitWindow}
-          </span>
+      <!-- Orientation toggle -->
+      <div class="flex flex-col gap-1.5">
+        <span class="font-medium">{t.readingModeLabel}</span>
+        <div class="grid grid-cols-2 gap-1.5">
+          {#each [["vertical", t.modeVertical], ["horizontal", t.modeHorizontal]] as [val, label] (val)}
+            <button
+              type="button"
+              onclick={() => setOrientation(val as ReadingOrientation)}
+              class="rounded-lg border py-1.5 font-medium"
+              style="border-color: {readerSettings.orientation === val
+                ? 'var(--accent)'
+                : 'var(--border)'}; background-color: {readerSettings.orientation === val
+                ? 'var(--accent-soft)'
+                : 'var(--surface-subtle)'}; color: {readerSettings.orientation === val
+                ? 'var(--accent)'
+                : 'var(--text)'};"
+            >
+              {label}
+            </button>
+          {/each}
         </div>
-        <input
-          type="range"
-          min="480"
-          max="1400"
-          step="20"
-          value={readerSettings.width.mode === "px" ? readerSettings.width.value : 800}
-          oninput={(e) => updateReaderWidth(Number(e.currentTarget.value))}
-          class="w-full accent-rose-500"
-        />
       </div>
 
-      <div class="flex items-center justify-between">
-        <span class="font-medium">{t.autoAppendNext}</span>
-        <input
-          type="checkbox"
-          checked={readerSettings.autoNextChapter}
-          onchange={toggleAutoNext}
-          class="h-4 w-4 accent-rose-500"
-        />
+      {#if !isHorizontal}
+        <!-- Vertical sub-mode -->
+        <div class="flex flex-col gap-1.5">
+          <span class="font-medium">{t.verticalStyleLabel}</span>
+          <div class="grid grid-cols-2 gap-1.5">
+            {#each [["continuous_strip", t.verticalContinuous], ["vertical_grouped", t.verticalGrouped]] as [val, label] (val)}
+              <button
+                type="button"
+                onclick={() => setVerticalLayout(val as VerticalLayoutMode)}
+                class="rounded-lg border py-1.5 font-medium"
+                style="border-color: {vCfg.layoutMode === val
+                  ? 'var(--accent)'
+                  : 'var(--border)'}; background-color: {vCfg.layoutMode === val
+                  ? 'var(--accent-soft)'
+                  : 'var(--surface-subtle)'}; color: {vCfg.layoutMode === val
+                  ? 'var(--accent)'
+                  : 'var(--text)'};"
+              >
+                {label}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {:else}
+        <!-- Horizontal direction -->
+        <div class="flex flex-col gap-1.5">
+          <span class="font-medium">{t.horizontalDirLabel}</span>
+          <div class="grid grid-cols-2 gap-1.5">
+            {#each [["ltr", t.dirLtr], ["rtl", t.dirRtl]] as [val, label] (val)}
+              <button
+                type="button"
+                onclick={() => setHorizontalDirection(val as HorizontalDirection)}
+                class="rounded-lg border py-1.5 font-medium"
+                style="border-color: {hCfg.direction === val
+                  ? 'var(--accent)'
+                  : 'var(--border)'}; background-color: {hCfg.direction === val
+                  ? 'var(--accent-soft)'
+                  : 'var(--surface-subtle)'}; color: {hCfg.direction === val
+                  ? 'var(--accent)'
+                  : 'var(--text)'};"
+              >
+                {label}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Pages per group (Horizontal or Vertical Grouped) -->
+      {#if isHorizontal || isVerticalGrouped}
+        {@const activeCount = isHorizontal ? hCfg.pagesPerGroup : vCfg.pagesPerGroup}
+        <div class="flex flex-col gap-1.5">
+          <div class="flex items-center justify-between font-medium">
+            <span>{t.pagesPerGroupLabel}</span>
+            <span style="color: var(--text-muted);">{activeCount}</span>
+          </div>
+          <div class="grid grid-cols-4 gap-1.5">
+            {#each [1, 2, 3] as n (n)}
+              <button
+                type="button"
+                onclick={() => setPagesPerGroup(n)}
+                class="rounded-lg border py-1 font-medium"
+                style="border-color: {activeCount === n
+                  ? 'var(--accent)'
+                  : 'var(--border)'}; background-color: {activeCount === n
+                  ? 'var(--accent-soft)'
+                  : 'var(--surface-subtle)'}; color: {activeCount === n
+                  ? 'var(--accent)'
+                  : 'var(--text)'};"
+              >
+                {n}
+              </button>
+            {/each}
+            <input
+              type="number"
+              min="1"
+              max="8"
+              value={activeCount}
+              onchange={(e) => setPagesPerGroup(Number(e.currentTarget.value))}
+              class="rounded-lg border px-2 py-1 text-center text-xs outline-none"
+              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+            />
+          </div>
+        </div>
+      {/if}
+
+      <!-- Snap controls -->
+      {#if isHorizontal}
+        <div class="flex flex-col gap-1.5">
+          <span class="font-medium">{t.snapModeLabel}</span>
+          <div class="grid grid-cols-3 gap-1.5">
+            {#each [["none", t.snapNone], ["page", t.snapPage], ["group", t.snapGroup]] as [val, label] (val)}
+              <button
+                type="button"
+                onclick={() => setHorizontalSnap(val as HorizontalSnapMode)}
+                class="rounded-lg border py-1 font-medium"
+                style="border-color: {hCfg.snapMode === val
+                  ? 'var(--accent)'
+                  : 'var(--border)'}; background-color: {hCfg.snapMode === val
+                  ? 'var(--accent-soft)'
+                  : 'var(--surface-subtle)'}; color: {hCfg.snapMode === val
+                  ? 'var(--accent)'
+                  : 'var(--text)'};"
+              >
+                {label}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {:else if isVerticalGrouped}
+        <div class="flex items-center justify-between">
+          <span class="font-medium">{t.groupSnapLabel}</span>
+          <input
+            type="checkbox"
+            checked={vCfg.snapEnabled}
+            onchange={(e) => {
+              const checked = e.currentTarget.checked;
+              settingsStore.update((d) => (d.reader.vertical.snapEnabled = checked));
+            }}
+            class="h-4 w-4 accent-rose-500"
+          />
+        </div>
+      {/if}
+
+      <!-- Focus dimming quick toggle + slider -->
+      <div class="flex flex-col gap-1.5">
+        <div class="flex items-center justify-between">
+          <span class="font-medium">{t.dimUnfocusedLabel}</span>
+          <input
+            type="checkbox"
+            checked={isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
+            onchange={toggleDim}
+            class="h-4 w-4 accent-rose-500"
+          />
+        </div>
+        {#if isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
+          {@const dimPct = isHorizontal ? hCfg.dimLevel : vCfg.dimLevel}
+          <div class="flex items-center gap-2">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={dimPct}
+              oninput={(e) => setDimLevel(Number(e.currentTarget.value))}
+              class="w-full accent-rose-500"
+            />
+            <span class="w-9 text-right" style="color: var(--text-muted);">{dimPct}%</span>
+          </div>
+        {/if}
       </div>
+
+      {#if !isHorizontal}
+        <div class="flex flex-col gap-1.5">
+          <div class="flex items-center justify-between font-medium">
+            <span>{t.imageWidth}</span>
+            <span style="color: var(--text-muted);">
+              {readerSettings.width.mode === "px"
+                ? `${readerSettings.width.value}px`
+                : readerSettings.width.mode === "percent"
+                  ? `${readerSettings.width.value}%`
+                  : t.fitWindow}
+            </span>
+          </div>
+          <input
+            type="range"
+            min="480"
+            max="1400"
+            step="20"
+            value={readerSettings.width.mode === "px" ? readerSettings.width.value : 800}
+            oninput={(e) => updateReaderWidth(Number(e.currentTarget.value))}
+            class="w-full accent-rose-500"
+          />
+        </div>
+
+        <div class="flex items-center justify-between">
+          <span class="font-medium">{t.autoAppendNext}</span>
+          <input
+            type="checkbox"
+            checked={readerSettings.autoNextChapter}
+            onchange={toggleAutoNext}
+            class="h-4 w-4 accent-rose-500"
+          />
+        </div>
+      {/if}
 
       <div class="flex flex-col gap-1.5">
         <span class="font-medium">{t.readerBg}</span>
@@ -547,25 +1167,38 @@
     </div>
   {/if}
 
-  <!-- Vertical Continuous Scroll Area -->
+  <!-- Reading Viewport Container -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={scrollEl}
     onscroll={handleScroll}
-    class="h-full w-full overflow-y-auto scroll-smooth"
+    onwheel={handleWheel}
+    onclick={() => {
+      if (quickSettingsOpen) quickSettingsOpen = false;
+    }}
+    dir={isRtl ? "rtl" : "ltr"}
+    class={isHorizontal
+      ? "relative flex h-full w-full overflow-x-auto overflow-y-hidden"
+      : "relative h-full w-full overflow-y-auto"}
+    style={scrollContainerSnapStyle()}
   >
     {#if loadingInitial}
-      <div class="flex h-full flex-col items-center justify-center gap-3 text-sm" style="color: var(--text-muted);">
+      <div
+        class="flex h-full w-full flex-col items-center justify-center gap-3 text-sm"
+        style="color: var(--text-muted);"
+      >
         <Loader2 size={28} class="animate-spin" style="color: var(--accent);" />
         <span>{t.loadingPages}</span>
       </div>
     {:else if errorState}
-      <div class="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+      <div class="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
         <div class="text-base font-semibold">{errorState.title}</div>
         <p class="max-w-md text-xs" style="color: var(--text-muted);">{errorState.detail}</p>
         <div class="mt-2 flex gap-2">
           <button
             type="button"
-            onclick={() => loadInitial(chapterUrl, 0)}
+            onclick={() => loadInitial(chapterUrl, initialScrollRatio)}
             class="rounded-xl px-4 py-2 text-xs font-medium text-white"
             style="background-color: var(--accent);"
           >
@@ -581,8 +1214,74 @@
           </button>
         </div>
       </div>
+    {:else if isHorizontal && activeChapter}
+      <!-- HORIZONTAL READING MODE -->
+      {@const groups = partitionPages(activeChapter.images, hCfg.pagesPerGroup)}
+      <div
+        class="flex h-full w-max items-center pt-12 pb-4 {hCfg.centerGroups ? 'px-[8vw]' : 'px-4'}"
+        style="gap: {hCfg.groupGapPx}px;"
+      >
+        {#each groups as group (`${activeChapter.url}:hg:${group.groupIdx}`)}
+          {@const gKey = `${activeChapter.url}:hg:${group.groupIdx}`}
+          {@const gBright = groupDimBrightness(gKey, hCfg.dimUnfocused, hCfg.dimLevel)}
+          <div
+            data-group-key={gKey}
+            class="flex h-full shrink-0 items-center justify-center"
+            style="gap: {hCfg.pageGapPx}px; {hCfg.snapMode === 'group'
+              ? 'scroll-snap-align: center;'
+              : ''} {gBright < 0.999
+              ? `filter: brightness(${gBright}); transition: filter 160ms ease;`
+              : 'transition: filter 160ms ease;'}"
+          >
+            {#each group.items as entry (`${activeChapter.url}:${entry.pageIdx}`)}
+              <PageImage
+                token={entry.token}
+                index={entry.pageIdx}
+                pageKey={`${activeChapter.url}:${entry.pageIdx}`}
+                {preloadMarginPx}
+                eager={entry.pageIdx < readerSettings.preloadImages}
+                horizontal={true}
+                snapPage={hCfg.snapMode === "page"}
+                groupPageCount={group.items.length}
+              />
+            {/each}
+          </div>
+        {/each}
+
+        <!-- End-of-chapter horizontal card -->
+        <div
+          dir="ltr"
+          class="flex h-full shrink-0 flex-col items-center justify-center px-8"
+          style={hCfg.snapMode !== "none" ? "scroll-snap-align: center;" : ""}
+        >
+          {#if activeChapter.next}
+            <button
+              type="button"
+              onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
+              class="inline-flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
+              style="background-color: var(--accent);"
+            >
+              <span>{t.nextChapter}</span>
+              <ChevronRight size={17} />
+            </button>
+          {:else}
+            <div
+              class="rounded-xl border px-5 py-3 text-xs font-medium"
+              style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
+            >
+              {t.reachedLatest}
+            </div>
+          {/if}
+        </div>
+      </div>
     {:else}
-      <div class="mx-auto flex flex-col items-center pt-14 pb-24" style={contentWidthStyle()}>
+      <!-- VERTICAL READING MODE (Continuous Strip OR Vertical Grouped Scroll) -->
+      <div
+        class="mx-auto flex flex-col pt-14 pb-24 {isVerticalGrouped && vCfg.alignment === 'start'
+          ? 'items-start'
+          : 'items-center'}"
+        style={contentWidthStyle()}
+      >
         {#each strip as chap, chapIdx (chap.url)}
           <section data-chapter-url={chap.url} class="flex w-full flex-col">
             {#if chapIdx > 0}
@@ -596,21 +1295,57 @@
               </div>
             {/if}
 
-            <div class="flex w-full flex-col" style="gap: {readerSettings.gapPx}px;">
-              {#each chap.images as token, imgIdx (`${chap.url}:${imgIdx}`)}
-                <PageImage
-                  {token}
-                  index={imgIdx}
-                  {preloadMarginPx}
-                  eager={chapIdx === 0 && imgIdx < readerSettings.preloadImages}
-                />
-              {/each}
-            </div>
+            {#if isVerticalGrouped}
+              {@const vGroups = partitionPages(chap.images, vCfg.pagesPerGroup)}
+              <div class="flex w-full flex-col" style="gap: {vCfg.groupGapPx}px;">
+                {#each vGroups as group (`${chap.url}:vg:${group.groupIdx}`)}
+                  {@const gKey = `${chap.url}:vg:${group.groupIdx}`}
+                  {@const gBright = groupDimBrightness(gKey, vCfg.dimUnfocused, vCfg.dimLevel)}
+                  <div
+                    data-group-key={gKey}
+                    class="flex w-full flex-col"
+                    style="gap: {vCfg.pageGapPx}px; {vCfg.snapEnabled
+                      ? `scroll-snap-align: ${vCfg.alignment === 'start' ? 'start' : 'center'};`
+                      : ''} {gBright < 0.999
+                      ? `filter: brightness(${gBright}); transition: filter 160ms ease;`
+                      : 'transition: filter 160ms ease;'}"
+                  >
+                    {#each group.items as entry (`${chap.url}:${entry.pageIdx}`)}
+                      <PageImage
+                        token={entry.token}
+                        index={entry.pageIdx}
+                        pageKey={`${chap.url}:${entry.pageIdx}`}
+                        {preloadMarginPx}
+                        eager={chapIdx === 0 && entry.pageIdx < readerSettings.preloadImages}
+                      />
+                    {/each}
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <!-- Continuous Strip: never snaps, customizable page gap, optional per-image focus dimming -->
+              <div class="flex w-full flex-col" style="gap: {vCfg.pageGapPx}px;">
+                {#each chap.images as token, imgIdx (`${chap.url}:${imgIdx}`)}
+                  {@const pKey = `${chap.url}:${imgIdx}`}
+                  <PageImage
+                    {token}
+                    index={imgIdx}
+                    pageKey={pKey}
+                    {preloadMarginPx}
+                    eager={chapIdx === 0 && imgIdx < readerSettings.preloadImages}
+                    dimBrightness={pageDimBrightness(pKey)}
+                  />
+                {/each}
+              </div>
+            {/if}
           </section>
         {/each}
 
         <!-- Footer: Next Chapter Card / Loading / End of Manga -->
-        <div class="mt-10 flex w-full flex-col items-center gap-3 px-4">
+        <div
+          class="mt-10 flex min-h-14 w-full flex-col items-center justify-center gap-3 px-4"
+          style="overflow-anchor: none;"
+        >
           {#if appendingNext}
             <div class="flex items-center gap-2 text-xs" style="color: var(--text-muted);">
               <Loader2 size={16} class="animate-spin" style="color: var(--accent);" />
@@ -620,9 +1355,7 @@
             <button
               type="button"
               onclick={() => {
-                if (readerSettings.autoNextChapter) {
-                  appendNextChapter();
-                } else if (lastChapter?.next) {
+                if (lastChapter?.next) {
                   jumpToChapter(lastChapter.next);
                 }
               }}

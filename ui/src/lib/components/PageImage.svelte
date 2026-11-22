@@ -6,13 +6,23 @@
   let {
     token,
     index,
+    pageKey = "",
     preloadMarginPx = 1800,
     eager = false,
+    horizontal = false,
+    dimBrightness = 1,
+    snapPage = false,
+    groupPageCount = 1,
   }: {
     token: string;
     index: number;
+    pageKey?: string;
     preloadMarginPx?: number;
     eager?: boolean;
+    horizontal?: boolean;
+    dimBrightness?: number;
+    snapPage?: boolean;
+    groupPageCount?: number;
   } = $props();
 
   let containerEl = $state<HTMLDivElement | null>(null);
@@ -31,6 +41,10 @@
     }
     if (!containerEl) return;
 
+    const rootMargin = horizontal
+      ? `0px ${preloadMarginPx}px`
+      : `${preloadMarginPx}px 0px`;
+
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) {
@@ -38,7 +52,7 @@
           observer.disconnect();
         }
       },
-      { rootMargin: `${preloadMarginPx}px 0px` }
+      { rootMargin }
     );
 
     observer.observe(containerEl);
@@ -57,6 +71,18 @@
   const src = $derived(
     retryCount > 0 ? `${imgProxyUrl(token, true)}&t=${retryCount}` : imgProxyUrl(token, false)
   );
+
+  const filterStyle = $derived(
+    dimBrightness < 0.999
+      ? `filter: brightness(${dimBrightness}); transition: filter 160ms ease;`
+      : "transition: filter 160ms ease;"
+  );
+
+  const horizontalBoxStyle = $derived(() => {
+    if (!horizontal) return "";
+    const pct = Math.max(12, Math.floor(92 / Math.max(1, groupPageCount)));
+    return `max-width: ${pct}vw;`;
+  });
 
   function handleLoad(e: Event) {
     const img = e.currentTarget as HTMLImageElement | null;
@@ -92,10 +118,20 @@
   }
 </script>
 
-<div bind:this={containerEl} class="cv-auto relative flex w-full justify-center">
+<div
+  bind:this={containerEl}
+  data-page-key={pageKey}
+  data-page-idx={index}
+  class={horizontal
+    ? "relative flex h-full shrink-0 items-center justify-center"
+    : "relative flex w-full justify-center"}
+  style="{filterStyle} {horizontalBoxStyle()} {snapPage ? 'scroll-snap-align: center;' : ''}"
+>
   {#if failed}
     <div
-      class="flex min-h-[260px] w-full flex-col items-center justify-center gap-3 rounded-lg border px-4 py-8 text-center"
+      class="flex flex-col items-center justify-center gap-3 rounded-lg border px-4 py-8 text-center {horizontal
+        ? 'h-[72vh] w-[52vw] max-w-[420px]'
+        : 'min-h-[260px] w-full'}"
       style="background-color: var(--surface); border-color: var(--border);"
     >
       <span class="text-xs" style="color: var(--text-muted);">
@@ -114,7 +150,9 @@
   {:else if shouldLoad}
     {#if !loaded}
       <div
-        class="aspect-[5/7] w-full animate-pulse"
+        class="animate-pulse {horizontal
+          ? 'h-[78vh] aspect-[5/7] max-w-full rounded'
+          : 'aspect-[5/7] w-full'}"
         style="background-color: rgba(128, 128, 140, 0.14);"
       ></div>
     {/if}
@@ -124,12 +162,16 @@
       decoding="async"
       onload={handleLoad}
       onerror={handleError}
-      class="block h-auto w-full select-none"
+      class={horizontal
+        ? "block max-h-[calc(100vh-5.5rem)] w-auto max-w-full object-contain select-none"
+        : "block h-auto w-full select-none"}
       class:hidden={!loaded}
     />
   {:else}
     <div
-      class="aspect-[5/7] w-full"
+      class={horizontal
+        ? "h-[78vh] aspect-[5/7] max-w-full rounded"
+        : "aspect-[5/7] w-full"}
       style="background-color: rgba(128, 128, 140, 0.08);"
     ></div>
   {/if}

@@ -2,16 +2,18 @@
 
 use std::sync::Arc;
 
+use mangacore::{ProxyEndpoint, ProxyTestResult};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::cache::CacheInfo;
 use crate::error::AppError;
-use crate::services::app_release::{AppReleaseInfo, CURRENT_APP_VERSION};
+use crate::services::app_release::{AppReleaseInfo, CURRENT_APP_VERSION, InstallUpdateOutcome};
 use crate::services::library::{FetchMode, HistoryItemView, MangaView, ResolveResponse};
 use crate::services::reader::ChapterView;
+use crate::services::sync::{SyncDecision, SyncSenderMode, SyncStatusView};
 use crate::services::updater::{CheckScope, UpdateSummary};
-use crate::services::{app_release, library, reader, updater};
+use crate::services::{app_release, library, reader, sync, updater};
 use crate::settings::Settings;
 use crate::state::AppState;
 
@@ -130,19 +132,118 @@ pub(crate) async fn set_settings(
     settings: Settings,
 ) -> Result<Settings, AppError> {
     let saved = state.db.save_settings(&settings).await?;
-    let schedule_changed = {
+    let (schedule_changed, proxy_changed) = {
         let mut guard = state.settings.write().await;
-        let changed = guard.updates.enabled != saved.updates.enabled
+        let sched = guard.updates.enabled != saved.updates.enabled
             || guard.updates.interval_hours != saved.updates.interval_hours;
+        let prox = guard.proxy != saved.proxy;
         *guard = saved.clone();
-        changed
+        (sched, prox)
     };
+    if proxy_changed {
+        state.registry.http().set_proxy_config(saved.proxy.clone());
+    }
     let _ = app.emit("settings://changed", &saved);
     state.images.evict_if_needed(saved.cache.max_mb).await;
     if schedule_changed {
         updater::restart_background_loop(app, Arc::clone(&state)).await;
     }
     Ok(saved)
+}
+
+/// Returns the current runtime platform (`"windows"`, `"android"`, or `"other"`).
+#[tauri::command]
+pub(crate) fn get_platform() -> &'static str {
+    if cfg!(target_os = "android") {
+        "android"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "other"
+    }
+}
+
+/// Tests an in-app proxy endpoint and returns connectivity status and latency in milliseconds.
+#[tauri::command]
+pub(crate) async fn test_proxy(
+    state: State<'_, Arc<AppState>>,
+    endpoint: ProxyEndpoint,
+    test_url: Option<String>,
+) -> Result<ProxyTestResult, AppError> {
+    state
+        .registry
+        .http()
+        .test_proxy(&endpoint, test_url.as_deref())
+        .await
+        .map_err(AppError::from)
+}
+
+/// Returns the current serverless LAN sync status snapshot.
+#[tauri::command]
+pub(crate) async fn sync_get_status(
+    state: State<'_, Arc<AppState>>,
+) -> Result<SyncStatusView, AppError> {
+    Ok(state.sync.status().await)
+}
+
+/// Starts a 5-minute LAN sync sender session (`pc_qr` or `phone_pin`).
+#[tauri::command]
+pub(crate) async fn sync_start_sender(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    mode: SyncSenderMode,
+) -> Result<SyncStatusView, AppError> {
+    sync::start_sender(&app, &state, mode).await
+}
+
+/// Cancels any active LAN sync session and scrubs session tokens & buffers from memory.
+#[tauri::command]
+pub(crate) async fn sync_cancel(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<SyncStatusView, AppError> {
+    Ok(state.sync.cancel(&app).await)
+}
+
+/// Approves or declines a pending peer sync request on the Sender device.
+#[tauri::command]
+pub(crate) async fn sync_host_respond(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    decision: SyncDecision,
+) -> Result<SyncStatusView, AppError> {
+    sync::host_respond(&app, &state, decision).await
+}
+
+/// Connects to a PC QR sender session over LAN using a scanned QR string.
+#[tauri::command]
+pub(crate) async fn sync_connect_qr(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    qr_payload: String,
+) -> Result<SyncStatusView, AppError> {
+    sync::connect_via_qr(&app, &state, &qr_payload).await
+}
+
+/// Connects to a Phone Pairing Code sender over LAN (UDP discovery or optional manual `IP:Port`).
+#[tauri::command]
+pub(crate) async fn sync_connect_pin(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    pin: String,
+    manual_addr: Option<String>,
+) -> Result<SyncStatusView, AppError> {
+    sync::connect_via_pin(&app, &state, &pin, manual_addr.as_deref()).await
+}
+
+/// Approves or declines a paired LAN sync transfer on the Receiver device.
+#[tauri::command]
+pub(crate) async fn sync_receiver_confirm(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    decision: SyncDecision,
+) -> Result<SyncStatusView, AppError> {
+    sync::receiver_confirm(&app, &state, decision).await
 }
 
 /// Returns the compiled `RtMaga` application version string.
@@ -185,6 +286,15 @@ pub(crate) async fn open_release_url(app: AppHandle, url: String) -> Result<(), 
         .map_err(|e| AppError::Internal {
             message: format!("failed to open release link: {e}"),
         })
+}
+
+/// Downloads the verified platform installer, backs up user data, and launches the update.
+#[tauri::command]
+pub(crate) async fn download_and_install_update(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<InstallUpdateOutcome, AppError> {
+    app_release::download_and_install_update(&app, &state).await
 }
 
 /// Returns current disk image cache usage statistics.

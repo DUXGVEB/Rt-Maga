@@ -14,7 +14,10 @@ pub mod registry;
 pub mod source;
 
 pub use error::ScrapeError;
-pub use http::{FetchedBytes, FetchedPage, HttpClient, HttpPolicy, normalize_url};
+pub use http::{
+    DomainProxyRule, DomainRuleAction, FetchedBytes, FetchedPage, HttpClient, HttpPolicy,
+    ProxyConfig, ProxyEndpoint, ProxyProtocol, ProxyTestResult, normalize_url,
+};
 pub use model::{Chapter, ChapterRef, Manga, PageImage, Resolved, SiteId};
 pub use registry::{HeadlessPolicy, Registry};
 pub use source::Source;

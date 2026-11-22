@@ -11,6 +11,7 @@
   import { onMount } from "svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import ToastContainer from "./lib/components/ToastContainer.svelte";
+  import UpdatePromptModal from "./lib/components/UpdatePromptModal.svelte";
   import { appReleaseStore } from "./lib/stores/appRelease.svelte";
   import { router } from "./lib/stores/router.svelte";
   import { settingsStore } from "./lib/stores/settings.svelte";
@@ -37,7 +38,7 @@
   {/if}
 
   <main class="relative flex-1 overflow-y-auto {isReader ? '' : 'pb-16 md:pb-0'}">
-    {#if !isReader && appReleaseStore.shouldShowBanner && appReleaseStore.release}
+    {#if !isReader && !appReleaseStore.promptOpen && appReleaseStore.shouldShowBanner && appReleaseStore.release}
       <div
         class="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2.5 text-xs backdrop-blur-md"
         style="background-color: color-mix(in srgb, var(--surface) 92%, var(--accent-soft)); border-color: var(--border);"
@@ -52,16 +53,16 @@
         <div class="flex shrink-0 items-center gap-2">
           <button
             type="button"
-            onclick={() => appReleaseStore.openDownload(true)}
+            onclick={() => appReleaseStore.openPrompt()}
             class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1 font-semibold text-white transition-opacity hover:opacity-90"
             style="background-color: var(--accent);"
           >
             <Download size={13} />
-            <span>{t.downloadUpdate}</span>
+            <span>{t.updateDownloadAndInstall}</span>
           </button>
           <button
             type="button"
-            onclick={() => appReleaseStore.openDownload(false)}
+            onclick={() => appReleaseStore.openReleasePage()}
             class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 font-medium transition-opacity hover:opacity-85"
             style="border-color: var(--border); background-color: var(--surface);"
           >
@@ -70,7 +71,7 @@
           </button>
           <button
             type="button"
-            onclick={() => appReleaseStore.dismiss()}
+            onclick={() => appReleaseStore.dismissPrompt()}
             class="rounded-lg p-1 opacity-70 transition-opacity hover:opacity-100"
             aria-label={t.dismissUpdate}
             title={t.dismissUpdate}
@@ -133,6 +134,10 @@
         <span>{settingsStore.t.navSettings}</span>
       </button>
     </nav>
+  {/if}
+
+  {#if !isReader && appReleaseStore.promptOpen && appReleaseStore.release}
+    <UpdatePromptModal />
   {/if}
 
   <ToastContainer />

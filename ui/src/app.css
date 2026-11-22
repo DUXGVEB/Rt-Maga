@@ -67,8 +67,3 @@ body,
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
-
-.cv-auto {
-  content-visibility: auto;
-  contain-intrinsic-size: 800px 1120px;
-}

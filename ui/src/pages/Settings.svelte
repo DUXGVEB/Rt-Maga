@@ -1,18 +1,35 @@
 <script lang="ts">
   import { Download, RefreshCw, Sparkles, Trash2 } from "lucide-svelte";
   import { api } from "../lib/api";
+  import LanSyncPanel from "../lib/components/LanSyncPanel.svelte";
+  import ProxySettingsPanel from "../lib/components/ProxySettingsPanel.svelte";
   import { LANGUAGE_OPTIONS } from "../lib/i18n";
   import { appReleaseStore } from "../lib/stores/appRelease.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
-  import type { CacheInfo, Language, ReaderBg, Settings, Theme } from "../lib/types";
+  import type {
+    CacheInfo,
+    GroupAlignment,
+    HorizontalDirection,
+    HorizontalSnapMode,
+    Language,
+    ReaderBg,
+    ReadingOrientation,
+    Settings,
+    Theme,
+    VerticalLayoutMode,
+  } from "../lib/types";
 
   let cache = $state<CacheInfo | null>(null);
   let clearingCache = $state(false);
 
   const s = $derived(settingsStore.value);
   const t = $derived(settingsStore.t);
+  const isHorizontal = $derived(s.reader.orientation === "horizontal");
+  const isVerticalGrouped = $derived(
+    !isHorizontal && s.reader.vertical.layoutMode === "vertical_grouped"
+  );
 
   async function loadCacheInfo() {
     try {
@@ -109,91 +126,435 @@
   <section class="settings-card">
     <h2 class="section-title">{t.readerSection}</h2>
 
+    <!-- Orientation -->
     <div class="row">
       <div>
-        <div class="label">{t.widthModeLabel}</div>
-        <div class="desc">{t.widthModeDesc}</div>
+        <div class="label">{t.readingModeLabel}</div>
+        <div class="desc">{t.readingModeDesc}</div>
       </div>
       <div class="flex gap-1.5">
-        <button
-          type="button"
-          onclick={() => patch((d) => (d.reader.width = { mode: "px", value: 800 }))}
-          class="pill"
-          class:pill-active={s.reader.width.mode === "px"}
-        >
-          {t.widthPixels}
-        </button>
-        <button
-          type="button"
-          onclick={() => patch((d) => (d.reader.width = { mode: "percent", value: 70 }))}
-          class="pill"
-          class:pill-active={s.reader.width.mode === "percent"}
-        >
-          {t.widthPercent}
-        </button>
-        <button
-          type="button"
-          onclick={() => patch((d) => (d.reader.width = { mode: "fit_window" }))}
-          class="pill"
-          class:pill-active={s.reader.width.mode === "fit_window"}
-        >
-          {t.fitWindow}
-        </button>
+        {#each [["vertical", t.modeVertical], ["horizontal", t.modeHorizontal]] as [val, label] (val)}
+          <button
+            type="button"
+            onclick={() => patch((d) => (d.reader.orientation = val as ReadingOrientation))}
+            class="pill"
+            class:pill-active={s.reader.orientation === val}
+          >
+            {label}
+          </button>
+        {/each}
       </div>
     </div>
 
-    {#if s.reader.width.mode === "px"}
+    {#if !isHorizontal}
+      <!-- Vertical layout mode -->
       <div class="row">
-        <div class="label">{t.widthLabelPx(s.reader.width.value)}</div>
+        <div>
+          <div class="label">{t.verticalStyleLabel}</div>
+          <div class="desc">{t.verticalStyleDesc}</div>
+        </div>
+        <div class="flex gap-1.5">
+          {#each [["continuous_strip", t.verticalContinuous], ["vertical_grouped", t.verticalGrouped]] as [val, label] (val)}
+            <button
+              type="button"
+              onclick={() =>
+                patch((d) => (d.reader.vertical.layoutMode = val as VerticalLayoutMode))}
+              class="pill"
+              class:pill-active={s.reader.vertical.layoutMode === val}
+            >
+              {label}
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      {#if isVerticalGrouped}
+        <!-- Vertical grouped: pages per group -->
+        <div class="row">
+          <div>
+            <div class="label">{t.pagesPerGroupLabel}</div>
+            <div class="desc">{t.pagesPerGroupDesc}</div>
+          </div>
+          <div class="flex items-center gap-1.5">
+            {#each [1, 2, 3] as n (n)}
+              <button
+                type="button"
+                onclick={() => patch((d) => (d.reader.vertical.pagesPerGroup = n))}
+                class="pill"
+                class:pill-active={s.reader.vertical.pagesPerGroup === n}
+              >
+                {n}
+              </button>
+            {/each}
+            <input
+              type="number"
+              min="1"
+              max="8"
+              value={s.reader.vertical.pagesPerGroup}
+              onchange={(e) => {
+                const v = Math.max(1, Math.min(8, Math.round(Number(e.currentTarget.value) || 1)));
+                patch((d) => (d.reader.vertical.pagesPerGroup = v));
+              }}
+              class="w-14 rounded-lg border px-2 py-1 text-center text-xs"
+              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+            />
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="label">{t.pageGapLabel(s.reader.vertical.pageGapPx)}</div>
+          <input
+            type="range"
+            min="0"
+            max="48"
+            step="2"
+            value={s.reader.vertical.pageGapPx}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              patch((d) => {
+                d.reader.vertical.pageGapPx = v;
+                d.reader.gapPx = v;
+              }, 150);
+            }}
+            class="w-48 accent-rose-500"
+          />
+        </div>
+
+        <div class="row">
+          <div class="label">{t.groupGapLabel(s.reader.vertical.groupGapPx)}</div>
+          <input
+            type="range"
+            min="8"
+            max="96"
+            step="4"
+            value={s.reader.vertical.groupGapPx}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              patch((d) => (d.reader.vertical.groupGapPx = v), 150);
+            }}
+            class="w-48 accent-rose-500"
+          />
+        </div>
+
+        <div class="row">
+          <div class="label">{t.groupSnapLabel}</div>
+          <input
+            type="checkbox"
+            checked={s.reader.vertical.snapEnabled}
+            onchange={(e) => {
+              const checked = e.currentTarget.checked;
+              patch((d) => (d.reader.vertical.snapEnabled = checked));
+            }}
+            class="h-4 w-4 accent-rose-500"
+          />
+        </div>
+
+        <div class="row">
+          <div class="label">{t.groupAlignLabel}</div>
+          <div class="flex gap-1.5">
+            {#each [["center", t.alignCenter], ["start", t.alignStart]] as [val, label] (val)}
+              <button
+                type="button"
+                onclick={() => patch((d) => (d.reader.vertical.alignment = val as GroupAlignment))}
+                class="pill"
+                class:pill-active={s.reader.vertical.alignment === val}
+              >
+                {label}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {:else}
+        <!-- Continuous strip page gap -->
+        <div class="row">
+          <div>
+            <div class="label">{t.gapLabel(s.reader.vertical.pageGapPx)}</div>
+            <div class="desc">{t.gapDesc}</div>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="48"
+            step="2"
+            value={s.reader.vertical.pageGapPx}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              patch((d) => {
+                d.reader.vertical.pageGapPx = v;
+                d.reader.gapPx = v;
+              }, 150);
+            }}
+            class="w-48 accent-rose-500"
+          />
+        </div>
+      {/if}
+
+      <!-- Vertical focus dimming -->
+      <div class="row">
+        <div>
+          <div class="label">{t.dimUnfocusedLabel}</div>
+          <div class="desc">{t.dimUnfocusedDesc}</div>
+        </div>
+        <input
+          type="checkbox"
+          checked={s.reader.vertical.dimUnfocused}
+          onchange={(e) => {
+            const checked = e.currentTarget.checked;
+            patch((d) => (d.reader.vertical.dimUnfocused = checked));
+          }}
+          class="h-4 w-4 accent-rose-500"
+        />
+      </div>
+
+      {#if s.reader.vertical.dimUnfocused}
+        <div class="row">
+          <div class="label">{t.dimLevelLabel(s.reader.vertical.dimLevel)}</div>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value={s.reader.vertical.dimLevel}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              patch((d) => (d.reader.vertical.dimLevel = v), 120);
+            }}
+            class="w-48 accent-rose-500"
+          />
+        </div>
+      {/if}
+
+      <div class="row">
+        <div>
+          <div class="label">{t.widthModeLabel}</div>
+          <div class="desc">{t.widthModeDesc}</div>
+        </div>
+        <div class="flex gap-1.5">
+          <button
+            type="button"
+            onclick={() => patch((d) => (d.reader.width = { mode: "px", value: 800 }))}
+            class="pill"
+            class:pill-active={s.reader.width.mode === "px"}
+          >
+            {t.widthPixels}
+          </button>
+          <button
+            type="button"
+            onclick={() => patch((d) => (d.reader.width = { mode: "percent", value: 70 }))}
+            class="pill"
+            class:pill-active={s.reader.width.mode === "percent"}
+          >
+            {t.widthPercent}
+          </button>
+          <button
+            type="button"
+            onclick={() => patch((d) => (d.reader.width = { mode: "fit_window" }))}
+            class="pill"
+            class:pill-active={s.reader.width.mode === "fit_window"}
+          >
+            {t.fitWindow}
+          </button>
+        </div>
+      </div>
+
+      {#if s.reader.width.mode === "px"}
+        <div class="row">
+          <div class="label">{t.widthLabelPx(s.reader.width.value)}</div>
+          <input
+            type="range"
+            min="480"
+            max="1400"
+            step="20"
+            value={s.reader.width.value}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              patch((d) => (d.reader.width = { mode: "px", value: v }), 150);
+            }}
+            class="w-48 accent-rose-500"
+          />
+        </div>
+      {:else if s.reader.width.mode === "percent"}
+        <div class="row">
+          <div class="label">{t.widthLabelPct(s.reader.width.value)}</div>
+          <input
+            type="range"
+            min="35"
+            max="100"
+            step="5"
+            value={s.reader.width.value}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              patch((d) => (d.reader.width = { mode: "percent", value: v }), 150);
+            }}
+            class="w-48 accent-rose-500"
+          />
+        </div>
+      {/if}
+
+      <div class="row">
+        <div>
+          <div class="label">{t.autoAppendNext}</div>
+          <div class="desc">{t.autoAppendDesc}</div>
+        </div>
+        <input
+          type="checkbox"
+          checked={s.reader.autoNextChapter}
+          onchange={(e) => {
+            const checked = e.currentTarget.checked;
+            patch((d) => (d.reader.autoNextChapter = checked));
+          }}
+          class="h-4 w-4 accent-rose-500"
+        />
+      </div>
+    {:else}
+      <!-- Horizontal Mode Controls -->
+      <div class="row">
+        <div class="label">{t.horizontalDirLabel}</div>
+        <div class="flex gap-1.5">
+          {#each [["ltr", t.dirLtr], ["rtl", t.dirRtl]] as [val, label] (val)}
+            <button
+              type="button"
+              onclick={() =>
+                patch((d) => (d.reader.horizontal.direction = val as HorizontalDirection))}
+              class="pill"
+              class:pill-active={s.reader.horizontal.direction === val}
+            >
+              {label}
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <div class="label">{t.pagesPerGroupLabel}</div>
+          <div class="desc">{t.pagesPerGroupDesc}</div>
+        </div>
+        <div class="flex items-center gap-1.5">
+          {#each [1, 2, 3] as n (n)}
+            <button
+              type="button"
+              onclick={() => patch((d) => (d.reader.horizontal.pagesPerGroup = n))}
+              class="pill"
+              class:pill-active={s.reader.horizontal.pagesPerGroup === n}
+            >
+              {n}
+            </button>
+          {/each}
+          <input
+            type="number"
+            min="1"
+            max="8"
+            value={s.reader.horizontal.pagesPerGroup}
+            onchange={(e) => {
+              const v = Math.max(1, Math.min(8, Math.round(Number(e.currentTarget.value) || 1)));
+              patch((d) => (d.reader.horizontal.pagesPerGroup = v));
+            }}
+            class="w-14 rounded-lg border px-2 py-1 text-center text-xs"
+            style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+          />
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="label">{t.pageGapLabel(s.reader.horizontal.pageGapPx)}</div>
         <input
           type="range"
-          min="480"
-          max="1400"
-          step="20"
-          value={s.reader.width.value}
+          min="0"
+          max="48"
+          step="2"
+          value={s.reader.horizontal.pageGapPx}
           oninput={(e) => {
             const v = Number(e.currentTarget.value);
-            patch((d) => (d.reader.width = { mode: "px", value: v }), 150);
+            patch((d) => (d.reader.horizontal.pageGapPx = v), 150);
           }}
           class="w-48 accent-rose-500"
         />
       </div>
-    {:else if s.reader.width.mode === "percent"}
+
       <div class="row">
-        <div class="label">{t.widthLabelPct(s.reader.width.value)}</div>
+        <div class="label">{t.groupGapLabel(s.reader.horizontal.groupGapPx)}</div>
         <input
           type="range"
-          min="35"
-          max="100"
-          step="5"
-          value={s.reader.width.value}
+          min="8"
+          max="96"
+          step="4"
+          value={s.reader.horizontal.groupGapPx}
           oninput={(e) => {
             const v = Number(e.currentTarget.value);
-            patch((d) => (d.reader.width = { mode: "percent", value: v }), 150);
+            patch((d) => (d.reader.horizontal.groupGapPx = v), 150);
           }}
           class="w-48 accent-rose-500"
         />
       </div>
+
+      <div class="row">
+        <div class="label">{t.snapModeLabel}</div>
+        <div class="flex gap-1.5">
+          {#each [["none", t.snapNone], ["page", t.snapPage], ["group", t.snapGroup]] as [val, label] (val)}
+            <button
+              type="button"
+              onclick={() =>
+                patch((d) => (d.reader.horizontal.snapMode = val as HorizontalSnapMode))}
+              class="pill"
+              class:pill-active={s.reader.horizontal.snapMode === val}
+            >
+              {label}
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <div class="label">{t.centerGroupsLabel}</div>
+          <div class="desc">{t.centerGroupsDesc}</div>
+        </div>
+        <input
+          type="checkbox"
+          checked={s.reader.horizontal.centerGroups}
+          onchange={(e) => {
+            const checked = e.currentTarget.checked;
+            patch((d) => (d.reader.horizontal.centerGroups = checked));
+          }}
+          class="h-4 w-4 accent-rose-500"
+        />
+      </div>
+
+      <div class="row">
+        <div>
+          <div class="label">{t.dimUnfocusedLabel}</div>
+          <div class="desc">{t.dimUnfocusedDesc}</div>
+        </div>
+        <input
+          type="checkbox"
+          checked={s.reader.horizontal.dimUnfocused}
+          onchange={(e) => {
+            const checked = e.currentTarget.checked;
+            patch((d) => (d.reader.horizontal.dimUnfocused = checked));
+          }}
+          class="h-4 w-4 accent-rose-500"
+        />
+      </div>
+
+      {#if s.reader.horizontal.dimUnfocused}
+        <div class="row">
+          <div class="label">{t.dimLevelLabel(s.reader.horizontal.dimLevel)}</div>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value={s.reader.horizontal.dimLevel}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              patch((d) => (d.reader.horizontal.dimLevel = v), 120);
+            }}
+            class="w-48 accent-rose-500"
+          />
+        </div>
+      {/if}
     {/if}
-
-    <div class="row">
-      <div>
-        <div class="label">{t.gapLabel(s.reader.gapPx)}</div>
-        <div class="desc">{t.gapDesc}</div>
-      </div>
-      <input
-        type="range"
-        min="0"
-        max="32"
-        step="2"
-        value={s.reader.gapPx}
-        oninput={(e) => {
-          const v = Number(e.currentTarget.value);
-          patch((d) => (d.reader.gapPx = v), 150);
-        }}
-        class="w-48 accent-rose-500"
-      />
-    </div>
 
     <div class="row">
       <div>
@@ -215,22 +576,6 @@
     </div>
 
     <div class="row">
-      <div>
-        <div class="label">{t.autoAppendNext}</div>
-        <div class="desc">{t.autoAppendDesc}</div>
-      </div>
-      <input
-        type="checkbox"
-        checked={s.reader.autoNextChapter}
-        onchange={(e) => {
-          const checked = e.currentTarget.checked;
-          patch((d) => (d.reader.autoNextChapter = checked));
-        }}
-        class="h-4 w-4 accent-rose-500"
-      />
-    </div>
-
-    <div class="row">
       <div class="label">{t.readerBg}</div>
       <div class="flex gap-1.5">
         {#each [["dark", t.bgDark], ["light", t.bgLight], ["follow_theme", t.bgAppTheme]] as [val, label] (val)}
@@ -246,6 +591,12 @@
       </div>
     </div>
   </section>
+
+  <!-- Serverless LAN Sync -->
+  <LanSyncPanel />
+
+  <!-- In-App Proxy Mode -->
+  <ProxySettingsPanel />
 
   <!-- Updates -->
   <section class="settings-card">
@@ -325,12 +676,12 @@
         {#if appReleaseStore.release?.updateAvailable}
           <button
             type="button"
-            onclick={() => appReleaseStore.openDownload(true)}
+            onclick={() => appReleaseStore.openPrompt()}
             class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-white"
             style="background-color: var(--accent);"
           >
             <Download size={13} />
-            <span>{t.downloadUpdate} v{appReleaseStore.release.latestVersion}</span>
+            <span>{t.updateDownloadAndInstall} (v{appReleaseStore.release.latestVersion})</span>
           </button>
         {/if}
 

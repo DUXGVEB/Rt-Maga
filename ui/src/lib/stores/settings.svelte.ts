@@ -7,11 +7,32 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "en",
   theme: "system",
   reader: {
+    orientation: "vertical",
     width: { mode: "px", value: 800 },
     gapPx: 0,
     preloadImages: 4,
     autoNextChapter: true,
     readerBg: "dark",
+    vertical: {
+      layoutMode: "continuous_strip",
+      pagesPerGroup: 2,
+      pageGapPx: 0,
+      groupGapPx: 32,
+      snapEnabled: true,
+      alignment: "center",
+      dimUnfocused: false,
+      dimLevel: 50,
+    },
+    horizontal: {
+      pagesPerGroup: 1,
+      pageGapPx: 8,
+      groupGapPx: 36,
+      direction: "ltr",
+      snapMode: "group",
+      centerGroups: true,
+      dimUnfocused: true,
+      dimLevel: 55,
+    },
   },
   updates: {
     enabled: true,
@@ -23,18 +44,52 @@ export const DEFAULT_SETTINGS: Settings = {
     headlessEnabled: true,
     maxConnPerHost: 4,
   },
+  proxy: {
+    enabled: false,
+    defaultProxy: {
+      protocol: "socks5",
+      host: "",
+      port: 1080,
+      username: null,
+      password: null,
+    },
+    allowDirectFallback: false,
+    domainRules: [],
+  },
   cache: {
     maxMb: 1024,
   },
 };
 
 function mergeSettings(raw: Partial<Settings>): Settings {
+  const rawReader = raw.reader ?? ({} as Partial<Settings["reader"]>);
+  const rawProxy = raw.proxy ?? ({} as Partial<Settings["proxy"]>);
   return {
     language: raw.language ?? DEFAULT_SETTINGS.language,
     theme: raw.theme ?? DEFAULT_SETTINGS.theme,
-    reader: { ...DEFAULT_SETTINGS.reader, ...(raw.reader ?? {}) },
+    reader: {
+      ...DEFAULT_SETTINGS.reader,
+      ...rawReader,
+      vertical: {
+        ...DEFAULT_SETTINGS.reader.vertical,
+        ...(rawReader.vertical ?? {}),
+      },
+      horizontal: {
+        ...DEFAULT_SETTINGS.reader.horizontal,
+        ...(rawReader.horizontal ?? {}),
+      },
+    },
     updates: { ...DEFAULT_SETTINGS.updates, ...(raw.updates ?? {}) },
     sources: { ...DEFAULT_SETTINGS.sources, ...(raw.sources ?? {}) },
+    proxy: {
+      ...DEFAULT_SETTINGS.proxy,
+      ...rawProxy,
+      defaultProxy: {
+        ...DEFAULT_SETTINGS.proxy.defaultProxy,
+        ...(rawProxy.defaultProxy ?? {}),
+      },
+      domainRules: Array.isArray(rawProxy.domainRules) ? rawProxy.domainRules : [],
+    },
     cache: { ...DEFAULT_SETTINGS.cache, ...(raw.cache ?? {}) },
   };
 }

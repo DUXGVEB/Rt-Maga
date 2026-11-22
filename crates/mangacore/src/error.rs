@@ -49,4 +49,8 @@ pub enum ScrapeError {
     /// Headless browser fallback failed or no compatible browser executable was found.
     #[error("headless browser error: {0}")]
     Headless(String),
+
+    /// Proxy configuration, authentication, or connection failure.
+    #[error("proxy error: {0}")]
+    Proxy(String),
 }

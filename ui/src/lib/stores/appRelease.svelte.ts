@@ -1,5 +1,5 @@
-import { api } from "../api";
-import type { AppReleaseInfo } from "../types";
+import { api, formatAppError } from "../api";
+import type { AppReleaseInfo, InstallStatus, UpdateDownloadProgress } from "../types";
 import { settingsStore } from "./settings.svelte";
 import { toasts } from "./toast.svelte";
 
@@ -30,11 +30,26 @@ class AppReleaseStore {
   release = $state<AppReleaseInfo | null>(null);
   checking = $state(false);
   dismissedTag = $state<string | null>(loadDismissedTag());
+
+  promptOpen = $state(false);
+  installing = $state(false);
+  progress = $state<UpdateDownloadProgress | null>(null);
+  installStatus = $state<InstallStatus | null>(null);
+  installError = $state<string | null>(null);
+
   private initialized = false;
 
   shouldShowBanner = $derived(
     Boolean(this.release?.updateAvailable && this.dismissedTag !== this.release.tagName)
   );
+
+  private handleDetectedRelease(info: AppReleaseInfo) {
+    this.release = info;
+    this.currentVersion = info.currentVersion;
+    if (info.updateAvailable && this.dismissedTag !== info.tagName) {
+      this.promptOpen = true;
+    }
+  }
 
   async init() {
     if (this.initialized) return;
@@ -48,11 +63,14 @@ class AppReleaseStore {
 
     try {
       await api.onAppReleaseAvailable((info) => {
-        this.release = info;
+        this.handleDetectedRelease(info);
+      });
+      await api.onUpdateDownloadProgress((p) => {
+        this.progress = p;
       });
       const cached = await api.getCachedAppRelease();
       if (cached) {
-        this.release = cached;
+        this.handleDetectedRelease(cached);
       }
     } catch {
       // Outside Tauri runtime.
@@ -70,7 +88,10 @@ class AppReleaseStore {
       if (info.updateAvailable) {
         this.dismissedTag = null;
         saveDismissedTag(null);
-        toasts.push(t.releaseAvailableBanner(info.latestVersion), "success", 5000);
+        this.installError = null;
+        this.installStatus = null;
+        this.progress = null;
+        this.promptOpen = true;
       } else {
         toasts.push(t.releaseUpToDate(info.currentVersion), "info");
       }
@@ -81,20 +102,53 @@ class AppReleaseStore {
     }
   }
 
-  dismiss() {
-    if (!this.release) return;
-    this.dismissedTag = this.release.tagName;
-    saveDismissedTag(this.release.tagName);
+  openPrompt() {
+    if (!this.release?.updateAvailable) return;
+    if (!this.installing) {
+      this.installError = null;
+      this.installStatus = null;
+      this.progress = null;
+    }
+    this.promptOpen = true;
   }
 
-  async openDownload(preferInstaller = true) {
-    if (!this.release) return;
-    const target =
-      preferInstaller && this.release.downloadUrl
-        ? this.release.downloadUrl
-        : this.release.releaseUrl;
+  dismissPrompt() {
+    if (this.installing) return;
+    this.promptOpen = false;
+    if (this.release) {
+      this.dismissedTag = this.release.tagName;
+      saveDismissedTag(this.release.tagName);
+    }
+  }
+
+  async installNow() {
+    if (!this.release || this.installing) return;
+    this.installing = true;
+    this.installError = null;
+    this.installStatus = null;
+    this.progress = {
+      stage: "downloading",
+      downloadedBytes: 0,
+      totalBytes: this.release.downloadSize,
+    };
+
     try {
-      await api.openReleaseUrl(target);
+      const outcome = await api.downloadAndInstallUpdate();
+      this.installStatus = outcome.status;
+      if (outcome.status !== "installing_and_restarting") {
+        this.installing = false;
+      }
+    } catch (err) {
+      const formatted = formatAppError(err, settingsStore.value.language);
+      this.installError = formatted.detail || formatted.title;
+      this.installing = false;
+    }
+  }
+
+  async openReleasePage() {
+    if (!this.release) return;
+    try {
+      await api.openReleaseUrl(this.release.releaseUrl);
     } catch {
       toasts.push(settingsStore.t.releaseOpenFailed, "error");
     }

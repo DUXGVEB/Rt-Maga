@@ -37,6 +37,7 @@
   function handlePaste(e: ClipboardEvent) {
     const pasted = e.clipboardData?.getData("text")?.trim();
     if (pasted && /^https?:\/\//i.test(pasted)) {
+      e.preventDefault();
       urlInput = pasted;
       queueMicrotask(() => submit(pasted));
     }
@@ -72,8 +73,15 @@
     </div>
 
     <input
-      type="url"
+      type="text"
+      inputmode="url"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
       bind:value={urlInput}
+      oninput={() => {
+        if (errorState) errorState = null;
+      }}
       onpaste={handlePaste}
       disabled={loading}
       placeholder={t.linkPlaceholder}

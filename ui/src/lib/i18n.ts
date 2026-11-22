@@ -159,6 +159,18 @@ export interface Dictionary {
   releaseUpToDate: (version: string) => string;
   releaseCheckFailed: string;
   releaseOpenFailed: string;
+  updatePromptQuestion: string;
+  updateDataSafeNote: string;
+  updateDownloadAndInstall: string;
+  updateInstallNow: string;
+  updateLater: string;
+  updateStageDownloading: string;
+  updateStageVerifying: string;
+  updateStageBackingUp: string;
+  updateStageInstalling: string;
+  updateStatusRestarting: string;
+  updateAndroidPermissionHint: string;
+  updateAndroidInstallerOpened: string;
   toastHistoryUpdateFailed: string;
 
   // Errors
@@ -172,6 +184,103 @@ export interface Dictionary {
   errNotFoundTitle: string;
   errAppTitle: string;
   errGenericTitle: string;
+
+  // Reader modes (v2.0)
+  readingModeLabel: string;
+  readingModeDesc: string;
+  modeVertical: string;
+  modeHorizontal: string;
+  verticalStyleLabel: string;
+  verticalStyleDesc: string;
+  verticalContinuous: string;
+  verticalGrouped: string;
+  horizontalDirLabel: string;
+  dirLtr: string;
+  dirRtl: string;
+  pagesPerGroupLabel: string;
+  pagesPerGroupDesc: string;
+  pageGapLabel: (px: number) => string;
+  groupGapLabel: (px: number) => string;
+  snapModeLabel: string;
+  snapNone: string;
+  snapPage: string;
+  snapGroup: string;
+  groupSnapLabel: string;
+  groupAlignLabel: string;
+  alignCenter: string;
+  alignStart: string;
+  centerGroupsLabel: string;
+  centerGroupsDesc: string;
+  dimUnfocusedLabel: string;
+  dimUnfocusedDesc: string;
+  dimLevelLabel: (pct: number) => string;
+
+  // In-app Proxy Mode (v2.0)
+  proxySection: string;
+  proxySubtitle: string;
+  proxyDirect: string;
+  proxyEnabled: string;
+  proxyProtocolLabel: string;
+  proxyHostLabel: string;
+  proxyPortLabel: string;
+  proxyUsernameLabel: string;
+  proxyPasswordLabel: string;
+  proxyFailClosedLabel: string;
+  proxyFailClosedDesc: string;
+  proxyTestUrlLabel: string;
+  proxyTestBtn: string;
+  proxyTesting: string;
+  proxyTestOk: (ms: number, status: number | null) => string;
+  proxyTestFailed: (msg: string) => string;
+  proxyDomainRulesTitle: string;
+  proxyDomainRulesDesc: string;
+  proxyDomainPlaceholder: string;
+  proxyRuleForceProxy: string;
+  proxyRuleForceDirect: string;
+  proxyRuleCustomProxy: string;
+  proxyAddRule: string;
+  proxyRemoveRule: string;
+  proxyNoRules: string;
+
+  // Serverless LAN Sync (v2.0)
+  syncSection: string;
+  syncSubtitle: string;
+  syncDeviceLabel: (name: string) => string;
+  syncPcSendTab: string;
+  syncPcReceiveTab: string;
+  syncPhoneReceiveTab: string;
+  syncPhoneSendTab: string;
+  syncStartQrBtn: string;
+  syncStartPinBtn: string;
+  syncCancelBtn: string;
+  syncExpiresIn: (mmss: string) => string;
+  syncWaitingPeer: string;
+  syncCopyCode: string;
+  syncCopied: string;
+  syncFallbackAddr: (addr: string) => string;
+  syncEnterPinLabel: string;
+  syncEnterPinPlaceholder: string;
+  syncManualAddrToggle: string;
+  syncManualAddrPlaceholder: string;
+  syncConnectBtn: string;
+  syncConnecting: string;
+  syncStartCamera: string;
+  syncStopCamera: string;
+  syncScanImageBtn: string;
+  syncPasteCodePlaceholder: string;
+  syncCameraError: string;
+  syncQrNotFound: string;
+  syncConfirmTitle: string;
+  syncConfirmSendDesc: (peer: string, ip: string, count: number) => string;
+  syncConfirmReceiveDesc: (peer: string, ip: string, count: number) => string;
+  syncApproveBtn: string;
+  syncDeclineBtn: string;
+  syncWaitingOtherConfirm: string;
+  syncTransferring: string;
+  syncCompletedTitle: string;
+  syncReportSummary: (added: number, updated: number, skipped: number, kept: number) => string;
+  syncResetBtn: string;
+  syncSecurityNote: string;
 }
 
 const en: Dictionary = {
@@ -264,7 +373,7 @@ const en: Dictionary = {
   themeSystem: "System",
   themeLight: "Light",
   themeDark: "Dark",
-  readerSection: "Vertical Reader",
+  readerSection: "Reader",
   widthModeLabel: "Image width mode",
   widthModeDesc: "Set a fixed pixel width, viewport percentage, or fit to window.",
   widthPixels: "Pixels",
@@ -317,6 +426,22 @@ const en: Dictionary = {
   releaseUpToDate: (v) => `You are on the latest version (v${v}).`,
   releaseCheckFailed: "Could not check for new releases right now.",
   releaseOpenFailed: "Could not open the release link.",
+  updatePromptQuestion:
+    "Would you like RtMaga to download and install this update automatically now?",
+  updateDataSafeNote:
+    "Your reading history, progress, library, and settings are automatically backed up and preserved.",
+  updateDownloadAndInstall: "Download & Install",
+  updateInstallNow: "Install now",
+  updateLater: "Later",
+  updateStageDownloading: "Downloading update...",
+  updateStageVerifying: "Verifying integrity...",
+  updateStageBackingUp: "Backing up history & settings...",
+  updateStageInstalling: "Launching installer...",
+  updateStatusRestarting: "Installer started. RtMaga will close and relaunch automatically.",
+  updateAndroidPermissionHint:
+    "Please enable 'Install unknown apps' for RtMaga in the opened Settings screen, then return and tap 'Install now' (file is already downloaded).",
+  updateAndroidInstallerOpened:
+    "System installer opened. Confirm installation to upgrade without losing your data.",
   toastHistoryUpdateFailed: "Could not update reading history.",
 
   errInvalidUrlTitle: "Invalid URL",
@@ -331,6 +456,108 @@ const en: Dictionary = {
   errNotFoundTitle: "Not found",
   errAppTitle: "Application error",
   errGenericTitle: "Something went wrong",
+
+  readingModeLabel: "Reading mode",
+  readingModeDesc: "Switch between vertical scrolling and horizontal page or spread scrolling.",
+  modeVertical: "Vertical",
+  modeHorizontal: "Horizontal",
+  verticalStyleLabel: "Vertical layout",
+  verticalStyleDesc: "Choose seamless continuous scrolling or grouped pages per view.",
+  verticalContinuous: "Continuous strip",
+  verticalGrouped: "Grouped pages",
+  horizontalDirLabel: "Reading direction",
+  dirLtr: "Left to Right (LTR)",
+  dirRtl: "Right to Left (RTL)",
+  pagesPerGroupLabel: "Pages per group",
+  pagesPerGroupDesc: "Display 1, 2, 3, or a custom number of pages together (1-8).",
+  pageGapLabel: (px) => `Spacing inside group (${px} px)`,
+  groupGapLabel: (px) => `Spacing between groups (${px} px)`,
+  snapModeLabel: "Snap behavior",
+  snapNone: "Free",
+  snapPage: "Page",
+  snapGroup: "Group",
+  groupSnapLabel: "Snap to group",
+  groupAlignLabel: "Group alignment",
+  alignCenter: "Center",
+  alignStart: "Top / Start",
+  centerGroupsLabel: "Center groups in viewport",
+  centerGroupsDesc: "Center active page spreads horizontally in the viewport.",
+  dimUnfocusedLabel: "Dim unfocused pages",
+  dimUnfocusedDesc: "Softly dim pages or groups outside your current focus area.",
+  dimLevelLabel: (pct) => `Dim intensity (${pct}%)`,
+
+  proxySection: "Network Proxy (Anti-Geo-Block)",
+  proxySubtitle:
+    "In-app proxy only — does not alter system VPN settings or route other applications.",
+  proxyDirect: "Direct",
+  proxyEnabled: "Proxy",
+  proxyProtocolLabel: "Protocol",
+  proxyHostLabel: "Proxy host",
+  proxyPortLabel: "Port",
+  proxyUsernameLabel: "Username (optional)",
+  proxyPasswordLabel: "Password (optional)",
+  proxyFailClosedLabel: "Allow direct fallback on proxy error",
+  proxyFailClosedDesc:
+    "Off by default (recommended) to prevent accidental real-IP leaks if the proxy fails.",
+  proxyTestUrlLabel: "Test URL",
+  proxyTestBtn: "Test connection",
+  proxyTesting: "Testing...",
+  proxyTestOk: (ms, status) =>
+    status ? `Connected via proxy (${ms} ms, HTTP ${status})` : `Connected via proxy (${ms} ms)`,
+  proxyTestFailed: (msg) => `Proxy test failed: ${msg}`,
+  proxyDomainRulesTitle: "Per-source routing rules",
+  proxyDomainRulesDesc: "Override proxy routing for specific manga site domains.",
+  proxyDomainPlaceholder: "Domain (e.g. example.com)",
+  proxyRuleForceProxy: "Force Proxy",
+  proxyRuleForceDirect: "Force Direct",
+  proxyRuleCustomProxy: "Custom Proxy",
+  proxyAddRule: "Add rule",
+  proxyRemoveRule: "Remove",
+  proxyNoRules: "No per-source overrides configured.",
+
+  syncSection: "LAN Sync (Serverless)",
+  syncSubtitle:
+    "Direct device-to-device sync over local Wi-Fi/LAN. No backend server or account required.",
+  syncDeviceLabel: (name) => `This device: ${name}`,
+  syncPcSendTab: "Send to Phone (QR)",
+  syncPcReceiveTab: "Receive from Phone (Code)",
+  syncPhoneReceiveTab: "Receive from PC (Scan QR)",
+  syncPhoneSendTab: "Send to PC (Code)",
+  syncStartQrBtn: "Generate QR Code",
+  syncStartPinBtn: "Generate Pairing Code",
+  syncCancelBtn: "End Session",
+  syncExpiresIn: (mmss) => `Expires in ${mmss}`,
+  syncWaitingPeer: "Waiting for the other device on the same LAN...",
+  syncCopyCode: "Copy fallback code",
+  syncCopied: "Copied!",
+  syncFallbackAddr: (addr) => `LAN address: ${addr}`,
+  syncEnterPinLabel: "6-digit Pairing Code",
+  syncEnterPinPlaceholder: "Enter 6-digit code",
+  syncManualAddrToggle: "Auto-discovery blocked? Enter IP:Port manually",
+  syncManualAddrPlaceholder: "e.g. 192.168.1.42:54321",
+  syncConnectBtn: "Connect",
+  syncConnecting: "Connecting...",
+  syncStartCamera: "Scan QR with Camera",
+  syncStopCamera: "Stop Camera",
+  syncScanImageBtn: "Scan QR from Image",
+  syncPasteCodePlaceholder: "Or paste fallback code from PC...",
+  syncCameraError: "Could not access camera. Use 'Scan QR from Image' or paste the fallback code.",
+  syncQrNotFound: "No valid RtMaga QR code found in the selected image.",
+  syncConfirmTitle: "Confirm Data Transfer",
+  syncConfirmSendDesc: (peer, ip, count) =>
+    `Send ${count} manga entries and reading progress to "${peer}" (${ip})?`,
+  syncConfirmReceiveDesc: (peer, ip, count) =>
+    `Receive and merge ${count} manga entries from "${peer}" (${ip})? Newer chapters win automatically.`,
+  syncApproveBtn: "Confirm & Sync",
+  syncDeclineBtn: "Decline",
+  syncWaitingOtherConfirm: "Waiting for the other device to confirm...",
+  syncTransferring: "Transferring & merging reading history...",
+  syncCompletedTitle: "Sync Completed",
+  syncReportSummary: (added, updated, skipped, kept) =>
+    `Added ${added} new • Updated ${updated} newer chapters • Skipped ${skipped} same • Kept ${kept} local ahead`,
+  syncResetBtn: "Done",
+  syncSecurityNote:
+    "One-time session expires in 5 min • Max 5 failed attempts • Same LAN only • Data sync only, no remote control.",
 };
 
 const vi: Dictionary = {
@@ -423,7 +650,7 @@ const vi: Dictionary = {
   themeSystem: "Hệ thống",
   themeLight: "Sáng",
   themeDark: "Tối",
-  readerSection: "Trình đọc cuộn dọc",
+  readerSection: "Trình đọc truyện",
   widthModeLabel: "Chế độ độ rộng ảnh",
   widthModeDesc: "Giữ cố định theo pixel, theo phần trăm hoặc vừa cửa sổ.",
   widthPixels: "Pixel",
@@ -476,6 +703,21 @@ const vi: Dictionary = {
   releaseUpToDate: (v) => `Bạn đang dùng phiên bản mới nhất (v${v}).`,
   releaseCheckFailed: "Không thể kiểm tra bản phát hành mới lúc này.",
   releaseOpenFailed: "Không thể mở đường dẫn tải xuống.",
+  updatePromptQuestion: "Bạn có muốn RtMaga tự động tải về và cài đặt bản cập nhật này ngay bây giờ không?",
+  updateDataSafeNote:
+    "Lịch sử đọc, tiến độ, danh sách truyện và cài đặt của bạn sẽ được tự động sao lưu và giữ nguyên.",
+  updateDownloadAndInstall: "Tải và cài đặt",
+  updateInstallNow: "Cài đặt ngay",
+  updateLater: "Để sau",
+  updateStageDownloading: "Đang tải bản cập nhật...",
+  updateStageVerifying: "Đang kiểm tra toàn vẹn tệp...",
+  updateStageBackingUp: "Đang sao lưu lịch sử & cài đặt...",
+  updateStageInstalling: "Đang khởi chạy trình cài đặt...",
+  updateStatusRestarting: "Đã mở trình cài đặt. RtMaga sẽ đóng và tự khởi động lại sau khi nâng cấp.",
+  updateAndroidPermissionHint:
+    "Hãy bật quyền 'Cài đặt ứng dụng không rõ nguồn gốc' cho RtMaga trong màn hình Cài đặt vừa mở, sau đó quay lại và bấm 'Cài đặt ngay' (tệp đã tải sẵn).",
+  updateAndroidInstallerOpened:
+    "Đã mở trình cài đặt hệ thống. Xác nhận cài đặt để nâng cấp mà không mất dữ liệu.",
   toastHistoryUpdateFailed: "Không thể cập nhật lịch sử đọc.",
 
   errInvalidUrlTitle: "Đường dẫn không hợp lệ",
@@ -490,6 +732,109 @@ const vi: Dictionary = {
   errNotFoundTitle: "Không tìm thấy dữ liệu",
   errAppTitle: "Lỗi ứng dụng",
   errGenericTitle: "Đã xảy ra lỗi",
+
+  readingModeLabel: "Chế độ đọc",
+  readingModeDesc: "Chuyển đổi giữa cuộn dọc và cuộn ngang theo trang hoặc nhóm trang.",
+  modeVertical: "Cuộn dọc",
+  modeHorizontal: "Cuộn ngang",
+  verticalStyleLabel: "Kiểu cuộn dọc",
+  verticalStyleDesc: "Chọn cuộn liên tục liền mạch hoặc gom nhiều trang thành từng nhóm.",
+  verticalContinuous: "Cuộn liên tục",
+  verticalGrouped: "Gom nhóm trang",
+  horizontalDirLabel: "Hướng đọc ngang",
+  dirLtr: "Trái sang phải (LTR)",
+  dirRtl: "Phải sang trái (RTL)",
+  pagesPerGroupLabel: "Số trang mỗi nhóm",
+  pagesPerGroupDesc: "Hiển thị 1, 2, 3 hoặc số trang tuỳ chỉnh trong mỗi nhóm (1-8).",
+  pageGapLabel: (px) => `Khoảng cách trong nhóm (${px} px)`,
+  groupGapLabel: (px) => `Khoảng cách giữa các nhóm (${px} px)`,
+  snapModeLabel: "Chế độ căn dừng (Snap)",
+  snapNone: "Tự do",
+  snapPage: "Theo trang",
+  snapGroup: "Theo nhóm",
+  groupSnapLabel: "Tự căn dừng theo nhóm",
+  groupAlignLabel: "Căn lề nhóm trang",
+  alignCenter: "Giữa khung",
+  alignStart: "Đầu khung",
+  centerGroupsLabel: "Căn giữa nhóm trang",
+  centerGroupsDesc: "Căn giữa nhóm trang đang đọc theo chiều ngang màn hình.",
+  dimUnfocusedLabel: "Làm tối trang ngoài vùng đọc",
+  dimUnfocusedDesc: "Giảm độ sáng nhẹ cho các trang/nhóm nằm ngoài vùng đang tập trung.",
+  dimLevelLabel: (pct) => `Mức độ làm tối (${pct}%)`,
+
+  proxySection: "Proxy nội bộ (Vượt chặn IP vùng)",
+  proxySubtitle:
+    "Chỉ áp dụng trong RtMaga — không phải VPN hệ thống và không ảnh hưởng ứng dụng khác.",
+  proxyDirect: "Trực tiếp",
+  proxyEnabled: "Bật Proxy",
+  proxyProtocolLabel: "Giao thức",
+  proxyHostLabel: "Địa chỉ Proxy",
+  proxyPortLabel: "Cổng (Port)",
+  proxyUsernameLabel: "Tài khoản (tuỳ chọn)",
+  proxyPasswordLabel: "Mật khẩu (tuỳ chọn)",
+  proxyFailClosedLabel: "Cho phép chuyển sang kết nối trực tiếp khi Proxy lỗi",
+  proxyFailClosedDesc:
+    "Mặc định tắt (khuyên dùng) để tránh vô tình lộ IP thật khi Proxy gặp sự cố.",
+  proxyTestUrlLabel: "Link kiểm tra",
+  proxyTestBtn: "Kiểm tra kết nối",
+  proxyTesting: "Đang kiểm tra...",
+  proxyTestOk: (ms, status) =>
+    status ? `Kết nối thành công (${ms} ms, HTTP ${status})` : `Kết nối thành công (${ms} ms)`,
+  proxyTestFailed: (msg) => `Kiểm tra Proxy thất bại: ${msg}`,
+  proxyDomainRulesTitle: "Quy tắc Proxy theo từng nguồn truyện",
+  proxyDomainRulesDesc: "Thiết lập định tuyến riêng cho từng tên miền trang truyện.",
+  proxyDomainPlaceholder: "Tên miền (vd: example.com)",
+  proxyRuleForceProxy: "Luôn dùng Proxy",
+  proxyRuleForceDirect: "Luôn trực tiếp",
+  proxyRuleCustomProxy: "Proxy riêng",
+  proxyAddRule: "Thêm quy tắc",
+  proxyRemoveRule: "Xoá",
+  proxyNoRules: "Chưa có quy tắc riêng theo nguồn nào.",
+
+  syncSection: "Đồng bộ qua LAN (Không cần server)",
+  syncSubtitle:
+    "Truyền lịch sử đọc trực tiếp giữa các thiết bị cùng Wi-Fi/LAN. Không có backend hay tài khoản.",
+  syncDeviceLabel: (name) => `Thiết bị này: ${name}`,
+  syncPcSendTab: "Gửi sang điện thoại (QR)",
+  syncPcReceiveTab: "Nhận từ điện thoại (Mã ghép nối)",
+  syncPhoneReceiveTab: "Nhận từ máy tính (Quét QR)",
+  syncPhoneSendTab: "Gửi sang máy tính (Mã ghép nối)",
+  syncStartQrBtn: "Tạo mã QR đồng bộ",
+  syncStartPinBtn: "Tạo mã ghép nối 6 số",
+  syncCancelBtn: "Kết thúc phiên",
+  syncExpiresIn: (mmss) => `Hết hạn sau ${mmss}`,
+  syncWaitingPeer: "Đang chờ thiết bị kia kết nối trong cùng mạng LAN...",
+  syncCopyCode: "Sao chép mã dự phòng",
+  syncCopied: "Đã sao chép!",
+  syncFallbackAddr: (addr) => `Địa chỉ LAN: ${addr}`,
+  syncEnterPinLabel: "Mã ghép nối 6 chữ số",
+  syncEnterPinPlaceholder: "Nhập mã 6 số",
+  syncManualAddrToggle: "Không tự tìm thấy? Nhập IP:Port thủ công",
+  syncManualAddrPlaceholder: "vd: 192.168.1.42:54321",
+  syncConnectBtn: "Kết nối",
+  syncConnecting: "Đang kết nối...",
+  syncStartCamera: "Quét QR bằng Camera",
+  syncStopCamera: "Tắt Camera",
+  syncScanImageBtn: "Quét QR từ ảnh",
+  syncPasteCodePlaceholder: "Hoặc dán mã dự phòng từ máy tính...",
+  syncCameraError:
+    "Không truy cập được camera. Hãy dùng 'Quét QR từ ảnh' hoặc dán mã dự phòng.",
+  syncQrNotFound: "Không tìm thấy mã QR RtMaga hợp lệ trong ảnh đã chọn.",
+  syncConfirmTitle: "Xác nhận truyền dữ liệu",
+  syncConfirmSendDesc: (peer, ip, count) =>
+    `Gửi ${count} truyện và tiến độ đọc sang "${peer}" (${ip})?`,
+  syncConfirmReceiveDesc: (peer, ip, count) =>
+    `Nhận và gộp ${count} truyện từ "${peer}" (${ip})? Truyện trùng sẽ giữ chương đọc mới hơn.`,
+  syncApproveBtn: "Xác nhận & Đồng bộ",
+  syncDeclineBtn: "Từ chối",
+  syncWaitingOtherConfirm: "Đang chờ thiết bị kia bấm xác nhận...",
+  syncTransferring: "Đang truyền và gộp lịch sử đọc...",
+  syncCompletedTitle: "Đồng bộ hoàn tất",
+  syncReportSummary: (added, updated, skipped, kept) =>
+    `Thêm mới ${added} • Cập nhật ${updated} chap mới hơn • Bỏ qua ${skipped} trùng chap • Giữ ${kept} bản máy này mới hơn`,
+  syncResetBtn: "Hoàn tất",
+  syncSecurityNote:
+    "Mã dùng 1 lần, tự huỷ sau 5 phút • Tối đa 5 lần nhập sai • Chỉ hoạt động cùng mạng LAN • Chỉ đồng bộ dữ liệu, không điều khiển thiết bị.",
 };
 
 const zh: Dictionary = {
@@ -580,7 +925,7 @@ const zh: Dictionary = {
   themeSystem: "跟随系统",
   themeLight: "浅色",
   themeDark: "深色",
-  readerSection: "条漫阅读器",
+  readerSection: "阅读器",
   widthModeLabel: "图片宽度模式",
   widthModeDesc: "按固定像素、窗口百分比或自适应窗口显示。",
   widthPixels: "像素",
@@ -633,6 +978,19 @@ const zh: Dictionary = {
   releaseUpToDate: (v) => `当前已是最新版本 (v${v})。`,
   releaseCheckFailed: "暂时无法检查新版本。",
   releaseOpenFailed: "无法打开下载链接。",
+  updatePromptQuestion: "是否现在让 RtMaga 自动下载并安装此更新？",
+  updateDataSafeNote: "您的阅读历史、进度、书架和设置将自动备份并完整保留。",
+  updateDownloadAndInstall: "下载并安装",
+  updateInstallNow: "立即安装",
+  updateLater: "稍后",
+  updateStageDownloading: "正在下载更新...",
+  updateStageVerifying: "正在校验文件完整性...",
+  updateStageBackingUp: "正在备份阅读历史与设置...",
+  updateStageInstalling: "正在启动安装程序...",
+  updateStatusRestarting: "安装程序已启动，RtMaga 将自动关闭并在更新后重新启动。",
+  updateAndroidPermissionHint:
+    "请在打开的设置页中允许 RtMaga“安装未知应用”，然后返回点击“立即安装”（安装包已下载完成）。",
+  updateAndroidInstallerOpened: "已打开系统安装界面，确认安装即可保留数据升级。",
   toastHistoryUpdateFailed: "无法更新阅读历史。",
 
   errInvalidUrlTitle: "链接无效",
@@ -645,6 +1003,105 @@ const zh: Dictionary = {
   errNotFoundTitle: "未找到数据",
   errAppTitle: "应用错误",
   errGenericTitle: "发生错误",
+
+  readingModeLabel: "阅读模式",
+  readingModeDesc: "在竖向滚动与横向分页/分组滚动之间切换。",
+  modeVertical: "竖向滚动",
+  modeHorizontal: "横向滚动",
+  verticalStyleLabel: "竖向排版",
+  verticalStyleDesc: "选择无缝连续长图滚动或按页分组显示。",
+  verticalContinuous: "连续长图",
+  verticalGrouped: "分组页面",
+  horizontalDirLabel: "翻页方向",
+  dirLtr: "从左到右 (LTR)",
+  dirRtl: "从右到左 (RTL)",
+  pagesPerGroupLabel: "每组页数",
+  pagesPerGroupDesc: "每组同时显示 1、2、3 或自定义页数 (1-8)。",
+  pageGapLabel: (px) => `组内页距 (${px} px)`,
+  groupGapLabel: (px) => `组间距离 (${px} px)`,
+  snapModeLabel: "吸附对齐",
+  snapNone: "自由",
+  snapPage: "按页",
+  snapGroup: "按组",
+  groupSnapLabel: "按组吸附对齐",
+  groupAlignLabel: "分组对齐方式",
+  alignCenter: "居中",
+  alignStart: "靠前/顶部",
+  centerGroupsLabel: "页面组水平居中",
+  centerGroupsDesc: "在视口中水平居中当前显示的页面组。",
+  dimUnfocusedLabel: "调暗非聚焦页面",
+  dimUnfocusedDesc: "柔和压暗当前阅读焦点之外的页面或分组。",
+  dimLevelLabel: (pct) => `调暗强度 (${pct}%)`,
+
+  proxySection: "应用内代理（突破地区限制）",
+  proxySubtitle: "仅作用于 RtMaga 内部请求，不更改系统网络或影响其他应用。",
+  proxyDirect: "直连",
+  proxyEnabled: "代理模式",
+  proxyProtocolLabel: "协议",
+  proxyHostLabel: "代理地址",
+  proxyPortLabel: "端口",
+  proxyUsernameLabel: "用户名（可选）",
+  proxyPasswordLabel: "密码（可选）",
+  proxyFailClosedLabel: "代理失败时允许回退直连",
+  proxyFailClosedDesc: "默认关闭（推荐），防止代理异常时意外暴露真实 IP。",
+  proxyTestUrlLabel: "测试网址",
+  proxyTestBtn: "测试连接",
+  proxyTesting: "测试中...",
+  proxyTestOk: (ms, status) =>
+    status ? `代理连接成功 (${ms} ms, HTTP ${status})` : `代理连接成功 (${ms} ms)`,
+  proxyTestFailed: (msg) => `代理测试失败：${msg}`,
+  proxyDomainRulesTitle: "按来源域名路由规则",
+  proxyDomainRulesDesc: "为特定漫画网站域名设置独立代理规则。",
+  proxyDomainPlaceholder: "域名（如 example.com）",
+  proxyRuleForceProxy: "强制代理",
+  proxyRuleForceDirect: "强制直连",
+  proxyRuleCustomProxy: "自定义代理",
+  proxyAddRule: "添加规则",
+  proxyRemoveRule: "移除",
+  proxyNoRules: "暂未配置独立域名规则。",
+
+  syncSection: "局域网同步（无服务器）",
+  syncSubtitle: "在同一 Wi-Fi/局域网内设备间直连同步，无需后端或账号。",
+  syncDeviceLabel: (name) => `当前设备：${name}`,
+  syncPcSendTab: "发送到手机（二维码）",
+  syncPcReceiveTab: "从手机接收（配对码）",
+  syncPhoneReceiveTab: "从电脑接收（扫码）",
+  syncPhoneSendTab: "发送到电脑（配对码）",
+  syncStartQrBtn: "生成同步二维码",
+  syncStartPinBtn: "生成 6 位配对码",
+  syncCancelBtn: "结束会话",
+  syncExpiresIn: (mmss) => `${mmss} 后过期`,
+  syncWaitingPeer: "正在等待同一局域网内的另一台设备连接...",
+  syncCopyCode: "复制备用码",
+  syncCopied: "已复制！",
+  syncFallbackAddr: (addr) => `局域网地址：${addr}`,
+  syncEnterPinLabel: "6 位配对码",
+  syncEnterPinPlaceholder: "输入 6 位配对码",
+  syncManualAddrToggle: "无法自动发现？手动输入 IP:端口",
+  syncManualAddrPlaceholder: "例：192.168.1.42:54321",
+  syncConnectBtn: "连接",
+  syncConnecting: "连接中...",
+  syncStartCamera: "使用相机扫码",
+  syncStopCamera: "关闭相机",
+  syncScanImageBtn: "从相册图片扫码",
+  syncPasteCodePlaceholder: "或粘贴来自电脑的备用同步码...",
+  syncCameraError: "无法访问相机，请使用“从相册图片扫码”或粘贴备用码。",
+  syncQrNotFound: "所选图片中未识别到有效的 RtMaga 二维码。",
+  syncConfirmTitle: "确认数据传输",
+  syncConfirmSendDesc: (peer, ip, count) =>
+    `确定将 ${count} 部漫画的阅读记录发送到 "${peer}" (${ip}) 吗？`,
+  syncConfirmReceiveDesc: (peer, ip, count) =>
+    `确定接收并合并来自 "${peer}" (${ip}) 的 ${count} 部漫画记录吗？重复漫画会自动保留进度更新的章节。`,
+  syncApproveBtn: "确认并同步",
+  syncDeclineBtn: "拒绝",
+  syncWaitingOtherConfirm: "正在等待对方设备确认...",
+  syncTransferring: "正在传输并合并阅读历史...",
+  syncCompletedTitle: "同步完成",
+  syncReportSummary: (added, updated, skipped, kept) =>
+    `新增 ${added} • 更新 ${updated} 个新章节 • 跳过 ${skipped} 个相同章节 • 保留本地较新 ${kept} 部`,
+  syncResetBtn: "完成",
+  syncSecurityNote:
+    "一次性会话 5 分钟后自动销毁 • 最多允许 5 次错误 • 仅限同局域网 • 仅同步数据，无远程控制权限。",
 };
 
 const ja: Dictionary = {
@@ -735,7 +1192,7 @@ const ja: Dictionary = {
   themeSystem: "システム",
   themeLight: "ライト",
   themeDark: "ダーク",
-  readerSection: "縦スクロールリーダー",
+  readerSection: "リーダー",
   widthModeLabel: "画像幅モード",
   widthModeDesc: "固定ピクセル、画面比率、またはウィンドウ幅に合わせます。",
   widthPixels: "ピクセル",
@@ -788,6 +1245,20 @@ const ja: Dictionary = {
   releaseUpToDate: (v) => `最新バージョン (v${v}) を使用中です。`,
   releaseCheckFailed: "現在リリース情報を確認できません。",
   releaseOpenFailed: "リリースリンクを開けませんでした。",
+  updatePromptQuestion: "RtMaga でこのアップデートを自動ダウンロードしてインストールしますか？",
+  updateDataSafeNote: "閲覧履歴・進捗・設定は自動的にバックアップされ、そのまま保持されます。",
+  updateDownloadAndInstall: "ダウンロードしてインストール",
+  updateInstallNow: "今すぐインストール",
+  updateLater: "あとで",
+  updateStageDownloading: "アップデートをダウンロード中...",
+  updateStageVerifying: "ファイルの整合性を検証中...",
+  updateStageBackingUp: "履歴と設定をバックアップ中...",
+  updateStageInstalling: "インストーラーを起動中...",
+  updateStatusRestarting: "インストーラーを起動しました。完了後に自動で再起動します。",
+  updateAndroidPermissionHint:
+    "開いた設定画面で RtMaga に「不明なアプリのインストール」を許可してから戻り、「今すぐインストール」を押してください（ダウンロード済み）。",
+  updateAndroidInstallerOpened:
+    "システムのインストーラーを開きました。そのまま更新してもデータは保持されます。",
   toastHistoryUpdateFailed: "履歴を更新できませんでした。",
 
   errInvalidUrlTitle: "無効な URL",
@@ -802,6 +1273,107 @@ const ja: Dictionary = {
   errNotFoundTitle: "データが見つかりません",
   errAppTitle: "アプリエラー",
   errGenericTitle: "エラーが発生しました",
+
+  readingModeLabel: "閲覧モード",
+  readingModeDesc: "縦スクロールと横スクロール（見開き/グループ表示）を切り替えます。",
+  modeVertical: "縦スクロール",
+  modeHorizontal: "横スクロール",
+  verticalStyleLabel: "縦レイアウト",
+  verticalStyleDesc: "連続スクロールまたは複数ページをまとめたグループ表示を選択します。",
+  verticalContinuous: "連続表示",
+  verticalGrouped: "グループ表示",
+  horizontalDirLabel: "読む方向",
+  dirLtr: "左から右 (LTR)",
+  dirRtl: "右から左 (RTL)",
+  pagesPerGroupLabel: "1グループあたりのページ数",
+  pagesPerGroupDesc: "1、2、3 ページまたはカスタム数 (1-8) をまとめて表示します。",
+  pageGapLabel: (px) => `グループ内の間隔 (${px} px)`,
+  groupGapLabel: (px) => `グループ間の間隔 (${px} px)`,
+  snapModeLabel: "スナップ動作",
+  snapNone: "自由",
+  snapPage: "ページ",
+  snapGroup: "グループ",
+  groupSnapLabel: "グループ単位でスナップ",
+  groupAlignLabel: "グループ配置",
+  alignCenter: "中央",
+  alignStart: "先頭",
+  centerGroupsLabel: "グループを中央揃え",
+  centerGroupsDesc: "現在のページグループを画面中央に配置します。",
+  dimUnfocusedLabel: "フォーカス外を暗くする",
+  dimUnfocusedDesc: "現在読んでいる領域以外のページを控えめに暗くします。",
+  dimLevelLabel: (pct) => `暗さレベル (${pct}%)`,
+
+  proxySection: "アプリ内プロキシ（地域制限回避）",
+  proxySubtitle: "RtMaga 内の通信のみ対象。OS の VPN 設定や他アプリには影響しません。",
+  proxyDirect: "直接接続",
+  proxyEnabled: "プロキシ",
+  proxyProtocolLabel: "プロトコル",
+  proxyHostLabel: "プロキシホスト",
+  proxyPortLabel: "ポート",
+  proxyUsernameLabel: "ユーザー名（任意）",
+  proxyPasswordLabel: "パスワード（任意）",
+  proxyFailClosedLabel: "プロキシ失敗時に直接接続へフォールバック",
+  proxyFailClosedDesc:
+    "既定ではオフ（推奨）。プロキシ障害時に実 IP が漏れるのを防ぎます。",
+  proxyTestUrlLabel: "テスト URL",
+  proxyTestBtn: "接続テスト",
+  proxyTesting: "テスト中...",
+  proxyTestOk: (ms, status) =>
+    status ? `プロキシ接続成功 (${ms} ms, HTTP ${status})` : `プロキシ接続成功 (${ms} ms)`,
+  proxyTestFailed: (msg) => `プロキシテスト失敗: ${msg}`,
+  proxyDomainRulesTitle: "ドメイン別ルーティング",
+  proxyDomainRulesDesc: "特定のマンガサイトのドメインごとに接続方法を指定します。",
+  proxyDomainPlaceholder: "ドメイン (例: example.com)",
+  proxyRuleForceProxy: "常にプロキシ",
+  proxyRuleForceDirect: "常に直接",
+  proxyRuleCustomProxy: "カスタムプロキシ",
+  proxyAddRule: "ルール追加",
+  proxyRemoveRule: "削除",
+  proxyNoRules: "ドメイン別の個別ルールはありません。",
+
+  syncSection: "LAN 同期（サーバーレス）",
+  syncSubtitle: "同じ Wi-Fi/LAN 内の端末同士で直接同期。外部サーバーやアカウント不要。",
+  syncDeviceLabel: (name) => `この端末: ${name}`,
+  syncPcSendTab: "スマホへ送信 (QR)",
+  syncPcReceiveTab: "スマホから受信 (コード)",
+  syncPhoneReceiveTab: "PC から受信 (QR スキャン)",
+  syncPhoneSendTab: "PC へ送信 (コード)",
+  syncStartQrBtn: "QR コードを生成",
+  syncStartPinBtn: "6 桁のペアリングコードを生成",
+  syncCancelBtn: "セッション終了",
+  syncExpiresIn: (mmss) => `残り ${mmss}`,
+  syncWaitingPeer: "同じ LAN 内の相手端末を待機中...",
+  syncCopyCode: "予備コードをコピー",
+  syncCopied: "コピーしました！",
+  syncFallbackAddr: (addr) => `LAN アドレス: ${addr}`,
+  syncEnterPinLabel: "6 桁のペアリングコード",
+  syncEnterPinPlaceholder: "6 桁のコードを入力",
+  syncManualAddrToggle: "自動検出できない場合は IP:ポートを手動入力",
+  syncManualAddrPlaceholder: "例: 192.168.1.42:54321",
+  syncConnectBtn: "接続",
+  syncConnecting: "接続中...",
+  syncStartCamera: "カメラで QR をスキャン",
+  syncStopCamera: "カメラ停止",
+  syncScanImageBtn: "画像から QR を読み取る",
+  syncPasteCodePlaceholder: "または PC の予備コードを貼り付け...",
+  syncCameraError:
+    "カメラにアクセスできません。「画像から QR を読み取る」か予備コードを使用してください。",
+  syncQrNotFound: "選択した画像から有効な RtMaga QR コードが見つかりませんでした。",
+  syncConfirmTitle: "データ転送の確認",
+  syncConfirmSendDesc: (peer, ip, count) =>
+    `${count} 作品の閲覧履歴を "${peer}" (${ip}) へ送信しますか？`,
+  syncConfirmReceiveDesc: (peer, ip, count) =>
+    `"${peer}" (${ip}) から ${count} 作品の履歴を受信して統合しますか？より進んだ話が優先されます。`,
+  syncApproveBtn: "確認して同期",
+  syncDeclineBtn: "拒否",
+  syncWaitingOtherConfirm: "相手端末の確認を待っています...",
+  syncTransferring: "履歴を転送・統合しています...",
+  syncCompletedTitle: "同期完了",
+  syncReportSummary: (added, updated, skipped, kept) =>
+    `新規 ${added} • 更新 ${updated} • 同一スキップ ${skipped} • ローカル優先 ${kept}`,
+  syncResetBtn: "完了",
+  syncSecurityNote:
+    "ワンタイムコードは 5 分で失効 • 最大 5 回まで再試行可 • 同一 LAN 限定 • 同期データ専用（遠隔操作不可）。",
 };
 
 const ru: Dictionary = {
@@ -894,7 +1466,7 @@ const ru: Dictionary = {
   themeSystem: "Системная",
   themeLight: "Светлая",
   themeDark: "Тёмная",
-  readerSection: "Вертикальная читалка",
+  readerSection: "Читалка",
   widthModeLabel: "Режим ширины страниц",
   widthModeDesc: "Фиксированная ширина в пикселях, процентах или по окну.",
   widthPixels: "Пиксели",
@@ -947,6 +1519,21 @@ const ru: Dictionary = {
   releaseUpToDate: (v) => `Установлена последняя версия (v${v}).`,
   releaseCheckFailed: "Не удалось проверить наличие новых релизов.",
   releaseOpenFailed: "Не удалось открыть ссылку на релиз.",
+  updatePromptQuestion: "Скачать и установить это обновление автоматически прямо сейчас?",
+  updateDataSafeNote:
+    "История чтения, прогресс и настройки автоматически сохраняются и останутся нетронутыми.",
+  updateDownloadAndInstall: "Скачать и установить",
+  updateInstallNow: "Установить сейчас",
+  updateLater: "Позже",
+  updateStageDownloading: "Загрузка обновления...",
+  updateStageVerifying: "Проверка целостности файла...",
+  updateStageBackingUp: "Резервное копирование истории и настроек...",
+  updateStageInstalling: "Запуск установщика...",
+  updateStatusRestarting: "Установщик запущен. RtMaga закроется и перезапустится автоматически.",
+  updateAndroidPermissionHint:
+    "Разрешите RtMaga «Установку неизвестных приложений» в открывшихся настройках, затем вернитесь и нажмите «Установить сейчас» (файл уже загружен).",
+  updateAndroidInstallerOpened:
+    "Открыт системный установщик. Подтвердите установку — ваши данные сохранятся.",
   toastHistoryUpdateFailed: "Не удалось обновить историю чтения.",
 
   errInvalidUrlTitle: "Некорректная ссылка",
@@ -961,6 +1548,106 @@ const ru: Dictionary = {
   errNotFoundTitle: "Не найдено",
   errAppTitle: "Ошибка приложения",
   errGenericTitle: "Произошла ошибка",
+
+  readingModeLabel: "Режим чтения",
+  readingModeDesc: "Переключение между вертикальной и горизонтальной прокруткой.",
+  modeVertical: "Вертикальный",
+  modeHorizontal: "Горизонтальный",
+  verticalStyleLabel: "Вертикальная раскладка",
+  verticalStyleDesc: "Бесшовная лента или группировка нескольких страниц.",
+  verticalContinuous: "Непрерывная лента",
+  verticalGrouped: "Группы страниц",
+  horizontalDirLabel: "Направление чтения",
+  dirLtr: "Слева направо (LTR)",
+  dirRtl: "Справа налево (RTL)",
+  pagesPerGroupLabel: "Страниц в группе",
+  pagesPerGroupDesc: "Отображение 1, 2, 3 или произвольного числа страниц вместе (1-8).",
+  pageGapLabel: (px) => `Отступ внутри группы (${px} px)`,
+  groupGapLabel: (px) => `Отступ между группами (${px} px)`,
+  snapModeLabel: "Привязка (Snap)",
+  snapNone: "Свободно",
+  snapPage: "Страница",
+  snapGroup: "Группа",
+  groupSnapLabel: "Привязка к группам",
+  groupAlignLabel: "Выравнивание групп",
+  alignCenter: "По центру",
+  alignStart: "По верху / началу",
+  centerGroupsLabel: "Центрировать группы",
+  centerGroupsDesc: "Центрировать активную группу страниц по горизонтали.",
+  dimUnfocusedLabel: "Затемнять неактивные страницы",
+  dimUnfocusedDesc: "Мягко затемнять страницы вне текущей области чтения.",
+  dimLevelLabel: (pct) => `Интенсивность затемнения (${pct}%)`,
+
+  proxySection: "Встроенный прокси (обход геоблокировок)",
+  proxySubtitle: "Только внутри RtMaga — не изменяет системный VPN и другие приложения.",
+  proxyDirect: "Напрямую",
+  proxyEnabled: "Прокси",
+  proxyProtocolLabel: "Протокол",
+  proxyHostLabel: "Хост прокси",
+  proxyPortLabel: "Порт",
+  proxyUsernameLabel: "Логин (необязательно)",
+  proxyPasswordLabel: "Пароль (необязательно)",
+  proxyFailClosedLabel: "Разрешить прямой переход при сбое прокси",
+  proxyFailClosedDesc: "Выключено по умолчанию (рекомендуется), чтобы не раскрыть реальный IP.",
+  proxyTestUrlLabel: "Тестовый URL",
+  proxyTestBtn: "Проверить соединение",
+  proxyTesting: "Проверка...",
+  proxyTestOk: (ms, status) =>
+    status ? `Подключено через прокси (${ms} мс, HTTP ${status})` : `Подключено (${ms} мс)`,
+  proxyTestFailed: (msg) => `Ошибка прокси: ${msg}`,
+  proxyDomainRulesTitle: "Правила по доменам",
+  proxyDomainRulesDesc: "Индивидуальные правила маршрутизации для отдельных сайтов.",
+  proxyDomainPlaceholder: "Домен (напр. example.com)",
+  proxyRuleForceProxy: "Всегда прокси",
+  proxyRuleForceDirect: "Всегда напрямую",
+  proxyRuleCustomProxy: "Свой прокси",
+  proxyAddRule: "Добавить",
+  proxyRemoveRule: "Удалить",
+  proxyNoRules: "Индивидуальных правил для доменов нет.",
+
+  syncSection: "LAN-синхронизация (без сервера)",
+  syncSubtitle: "Прямой обмен историей по локальной сети Wi-Fi/LAN. Без облака и аккаунтов.",
+  syncDeviceLabel: (name) => `Это устройство: ${name}`,
+  syncPcSendTab: "Отправить на телефон (QR)",
+  syncPcReceiveTab: "Получить с телефона (Код)",
+  syncPhoneReceiveTab: "Получить с ПК (QR)",
+  syncPhoneSendTab: "Отправить на ПК (Код)",
+  syncStartQrBtn: "Создать QR-код",
+  syncStartPinBtn: "Создать 6-значный код",
+  syncCancelBtn: "Завершить сессию",
+  syncExpiresIn: (mmss) => `Истекает через ${mmss}`,
+  syncWaitingPeer: "Ожидание другого устройства в той же сети LAN...",
+  syncCopyCode: "Скопировать резервный код",
+  syncCopied: "Скопировано!",
+  syncFallbackAddr: (addr) => `Адрес LAN: ${addr}`,
+  syncEnterPinLabel: "6-значный код сопряжения",
+  syncEnterPinPlaceholder: "Введите 6 цифр",
+  syncManualAddrToggle: "Не найдено автоматически? Ввести IP:Port вручную",
+  syncManualAddrPlaceholder: "напр. 192.168.1.42:54321",
+  syncConnectBtn: "Подключить",
+  syncConnecting: "Подключение...",
+  syncStartCamera: "Сканировать QR камерой",
+  syncStopCamera: "Остановить камеру",
+  syncScanImageBtn: "Сканировать QR с фото",
+  syncPasteCodePlaceholder: "Или вставьте резервный код с ПК...",
+  syncCameraError:
+    "Нет доступа к камере. Выберите «Сканировать QR с фото» или вставьте резервный код.",
+  syncQrNotFound: "На выбранном изображении не найден действительный QR-код RtMaga.",
+  syncConfirmTitle: "Подтвердите передачу данных",
+  syncConfirmSendDesc: (peer, ip, count) =>
+    `Отправить ${count} записей истории чтения на «${peer}» (${ip})?`,
+  syncConfirmReceiveDesc: (peer, ip, count) =>
+    `Принять и объединить ${count} записей от «${peer}» (${ip})? Сохраняются более новые главы.`,
+  syncApproveBtn: "Подтвердить и синхронизировать",
+  syncDeclineBtn: "Отклонить",
+  syncWaitingOtherConfirm: "Ожидание подтверждения на другом устройстве...",
+  syncTransferring: "Передача и объединение истории чтения...",
+  syncCompletedTitle: "Синхронизация завершена",
+  syncReportSummary: (added, updated, skipped, kept) =>
+    `Добавлено ${added} • Обновлено ${updated} • Пропущено ${skipped} • Локально новее ${kept}`,
+  syncResetBtn: "Готово",
+  syncSecurityNote:
+    "Одноразовая сессия истекает через 5 мин • Макс. 5 попыток • Только одна сеть LAN • Только данные чтения.",
 };
 
 const ko: Dictionary = {
@@ -1051,7 +1738,7 @@ const ko: Dictionary = {
   themeSystem: "시스템",
   themeLight: "라이트",
   themeDark: "다크",
-  readerSection: "세로 스크롤 리더",
+  readerSection: "리더",
   widthModeLabel: "이미지 너비 모드",
   widthModeDesc: "고정 픽셀, 화면 비율 또는 창 맞춤을 선택합니다.",
   widthPixels: "픽셀",
@@ -1104,6 +1791,20 @@ const ko: Dictionary = {
   releaseUpToDate: (v) => `최신 버전(v${v})을 사용 중입니다.`,
   releaseCheckFailed: "지금은 새 릴리스를 확인할 수 없습니다.",
   releaseOpenFailed: "릴리스 링크를 열 수 없습니다.",
+  updatePromptQuestion: "지금 RtMaga가 이 업데이트를 자동으로 다운로드하고 설치할까요?",
+  updateDataSafeNote: "읽기 기록, 진행 상황 및 설정이 자동으로 백업되어 그대로 유지됩니다.",
+  updateDownloadAndInstall: "다운로드 및 설치",
+  updateInstallNow: "지금 설치",
+  updateLater: "나중에",
+  updateStageDownloading: "업데이트 다운로드 중...",
+  updateStageVerifying: "파일 무결성 확인 중...",
+  updateStageBackingUp: "기록 및 설정 백업 중...",
+  updateStageInstalling: "설치 프로그램 실행 중...",
+  updateStatusRestarting: "설치 프로그램이 시작되었습니다. 완료 후 RtMaga가 자동으로 다시 시작됩니다.",
+  updateAndroidPermissionHint:
+    "열린 설정 화면에서 RtMaga의 '알 수 없는 앱 설치'를 허용한 뒤 돌아와 '지금 설치'를 누르세요 (파일은 이미 다운로드됨).",
+  updateAndroidInstallerOpened:
+    "시스템 설치 화면이 열렸습니다. 설치를 확인하면 데이터가 유지된 상태로 업그레이드됩니다.",
   toastHistoryUpdateFailed: "읽기 기록을 업데이트하지 못했습니다.",
 
   errInvalidUrlTitle: "잘못된 URL",
@@ -1118,6 +1819,106 @@ const ko: Dictionary = {
   errNotFoundTitle: "찾을 수 없음",
   errAppTitle: "애플리케이션 오류",
   errGenericTitle: "오류가 발생했습니다",
+
+  readingModeLabel: "읽기 모드",
+  readingModeDesc: "세로 스크롤과 가로 페이지/그룹 스크롤을 전환합니다.",
+  modeVertical: "세로 스크롤",
+  modeHorizontal: "가로 스크롤",
+  verticalStyleLabel: "세로 레이아웃",
+  verticalStyleDesc: "연속 스크롤 또는 여러 페이지를 묶어 보는 그룹 표시를 선택합니다.",
+  verticalContinuous: "연속 스크롤",
+  verticalGrouped: "페이지 그룹",
+  horizontalDirLabel: "읽기 방향",
+  dirLtr: "왼쪽에서 오른쪽 (LTR)",
+  dirRtl: "오른쪽에서 왼쪽 (RTL)",
+  pagesPerGroupLabel: "그룹당 페이지 수",
+  pagesPerGroupDesc: "1, 2, 3 또는 사용자 지정 개수(1-8)의 페이지를 함께 표시합니다.",
+  pageGapLabel: (px) => `그룹 내 간격 (${px} px)`,
+  groupGapLabel: (px) => `그룹 간 간격 (${px} px)`,
+  snapModeLabel: "스냅 동작",
+  snapNone: "자유",
+  snapPage: "페이지",
+  snapGroup: "그룹",
+  groupSnapLabel: "그룹 단위 스냅",
+  groupAlignLabel: "그룹 정렬",
+  alignCenter: "가운데",
+  alignStart: "상단 / 시작",
+  centerGroupsLabel: "뷰포트 가운데 정렬",
+  centerGroupsDesc: "현재 페이지 그룹을 화면 가로 중앙에 배치합니다.",
+  dimUnfocusedLabel: "비초점 페이지 어둡게",
+  dimUnfocusedDesc: "현재 읽고 있는 영역 바깥의 페이지를 은은하게 어둡게 합니다.",
+  dimLevelLabel: (pct) => `어두움 강도 (${pct}%)`,
+
+  proxySection: "앱 내 프록시 (지역 차단 우회)",
+  proxySubtitle: "RtMaga 내부 요청에만 적용되며 시스템 VPN이나 다른 앱에는 영향을 주지 않습니다.",
+  proxyDirect: "직접 연결",
+  proxyEnabled: "프록시",
+  proxyProtocolLabel: "프로토콜",
+  proxyHostLabel: "프록시 호스트",
+  proxyPortLabel: "포트",
+  proxyUsernameLabel: "사용자 이름 (선택)",
+  proxyPasswordLabel: "비밀번호 (선택)",
+  proxyFailClosedLabel: "프록시 오류 시 직접 연결로 폴백 허용",
+  proxyFailClosedDesc: "실제 IP 노출을 방지하기 위해 기본값은 꺼짐(권장)입니다.",
+  proxyTestUrlLabel: "테스트 URL",
+  proxyTestBtn: "연결 테스트",
+  proxyTesting: "테스트 중...",
+  proxyTestOk: (ms, status) =>
+    status ? `프록시 연결 성공 (${ms} ms, HTTP ${status})` : `프록시 연결 성공 (${ms} ms)`,
+  proxyTestFailed: (msg) => `프록시 테스트 실패: ${msg}`,
+  proxyDomainRulesTitle: "소스별 도메인 규칙",
+  proxyDomainRulesDesc: "특정 만화 사이트 도메인별로 프록시 경로를 개별 지정합니다.",
+  proxyDomainPlaceholder: "도메인 (예: example.com)",
+  proxyRuleForceProxy: "항상 프록시",
+  proxyRuleForceDirect: "항상 직접 연결",
+  proxyRuleCustomProxy: "사용자 프록시",
+  proxyAddRule: "규칙 추가",
+  proxyRemoveRule: "삭제",
+  proxyNoRules: "설정된 도메인 규칙이 없습니다.",
+
+  syncSection: "LAN 동기화 (서버 없음)",
+  syncSubtitle: "같은 Wi-Fi/LAN 내 기기끼리 직접 동기화합니다. 백엔드나 계정이 필요 없습니다.",
+  syncDeviceLabel: (name) => `이 기기: ${name}`,
+  syncPcSendTab: "휴대폰으로 보내기 (QR)",
+  syncPcReceiveTab: "휴대폰에서 받기 (코드)",
+  syncPhoneReceiveTab: "PC에서 받기 (QR 스캔)",
+  syncPhoneSendTab: "PC로 보내기 (코드)",
+  syncStartQrBtn: "QR 코드 생성",
+  syncStartPinBtn: "6자리 페어링 코드 생성",
+  syncCancelBtn: "세션 종료",
+  syncExpiresIn: (mmss) => `${mmss} 후 만료`,
+  syncWaitingPeer: "같은 LAN의 상대 기기를 기다리는 중...",
+  syncCopyCode: "대체 코드 복사",
+  syncCopied: "복사됨!",
+  syncFallbackAddr: (addr) => `LAN 주소: ${addr}`,
+  syncEnterPinLabel: "6자리 페어링 코드",
+  syncEnterPinPlaceholder: "6자리 코드 입력",
+  syncManualAddrToggle: "자동 검색이 안 되나요? IP:포트 직접 입력",
+  syncManualAddrPlaceholder: "예: 192.168.1.42:54321",
+  syncConnectBtn: "연결",
+  syncConnecting: "연결 중...",
+  syncStartCamera: "카메라로 QR 스캔",
+  syncStopCamera: "카메라 중지",
+  syncScanImageBtn: "이미지에서 QR 스캔",
+  syncPasteCodePlaceholder: "또는 PC의 대체 코드를 붙여넣기...",
+  syncCameraError:
+    "카메라에 접근할 수 없습니다. '이미지에서 QR 스캔' 또는 대체 코드를 사용하세요.",
+  syncQrNotFound: "선택한 이미지에서 유효한 RtMaga QR 코드를 찾을 수 없습니다.",
+  syncConfirmTitle: "데이터 전송 확인",
+  syncConfirmSendDesc: (peer, ip, count) =>
+    `${count}개의 만화 기록을 "${peer}" (${ip})로 보낼까요?`,
+  syncConfirmReceiveDesc: (peer, ip, count) =>
+    `"${peer}" (${ip})에서 ${count}개의 만화 기록을 받아 병합할까요? 더 최신 챕터가 자동 유지됩니다.`,
+  syncApproveBtn: "확인 및 동기화",
+  syncDeclineBtn: "거절",
+  syncWaitingOtherConfirm: "상대 기기의 확인을 기다리는 중...",
+  syncTransferring: "읽기 기록을 전송하고 병합하는 중...",
+  syncCompletedTitle: "동기화 완료",
+  syncReportSummary: (added, updated, skipped, kept) =>
+    `신규 ${added} • 최신화 ${updated} • 동일 건너뜀 ${skipped} • 로컬 유지 ${kept}`,
+  syncResetBtn: "완료",
+  syncSecurityNote:
+    "일회용 세션 5분 만료 • 최대 5회 실패 제한 • 동일 LAN 전용 • 데이터 동기화 전용(원격 제어 불가).",
 };
 
 const th: Dictionary = {
@@ -1209,7 +2010,7 @@ const th: Dictionary = {
   themeSystem: "ตามระบบ",
   themeLight: "สว่าง",
   themeDark: "มืด",
-  readerSection: "ตัวอ่านเลื่อนแนวตั้ง",
+  readerSection: "ตัวอ่านมังงะ",
   widthModeLabel: "โหมดความกว้างภาพ",
   widthModeDesc: "กำหนดความกว้างเป็นพิกเซล เปอร์เซ็นต์ หรือพอดีหน้าต่าง",
   widthPixels: "พิกเซล",
@@ -1262,6 +2063,21 @@ const th: Dictionary = {
   releaseUpToDate: (v) => `คุณใช้เวอร์ชันล่าสุดอยู่แล้ว (v${v})`,
   releaseCheckFailed: "ไม่สามารถตรวจสอบเวอร์ชันใหม่ได้ในขณะนี้",
   releaseOpenFailed: "ไม่สามารถเปิดลิงก์ดาวน์โหลดได้",
+  updatePromptQuestion: "คุณต้องการให้ RtMaga ดาวน์โหลดและติดตั้งอัปเดตนี้โดยอัตโนมัติเลยหรือไม่?",
+  updateDataSafeNote:
+    "ประวัติการอ่าน ความคืบหน้า รายการมังงะ และการตั้งค่าของคุณจะถูกสำรองและเก็บรักษาไว้ทั้งหมด",
+  updateDownloadAndInstall: "ดาวน์โหลดและติดตั้ง",
+  updateInstallNow: "ติดตั้งเลย",
+  updateLater: "ภายหลัง",
+  updateStageDownloading: "กำลังดาวน์โหลดอัปเดต...",
+  updateStageVerifying: "กำลังตรวจสอบความถูกต้องของไฟล์...",
+  updateStageBackingUp: "กำลังสำรองประวัติและการตั้งค่า...",
+  updateStageInstalling: "กำลังเปิดโปรแกรมติดตั้ง...",
+  updateStatusRestarting: "เริ่มการติดตั้งแล้ว แอปจะปิดและเปิดใหม่โดยอัตโนมัติหลังอัปเกรด",
+  updateAndroidPermissionHint:
+    "กรุณาเปิดสิทธิ์ 'ติดตั้งแอปที่ไม่รู้จัก' ให้ RtMaga ในหน้าตั้งค่าที่เปิดขึ้น จากนั้นกลับมาแตะ 'ติดตั้งเลย' (ดาวน์โหลดไฟล์ไว้แล้ว)",
+  updateAndroidInstallerOpened:
+    "เปิดหน้าติดตั้งของระบบแล้ว ยืนยันการติดตั้งเพื่ออัปเกรดโดยไม่สูญเสียข้อมูล",
   toastHistoryUpdateFailed: "ไม่สามารถอัปเดตประวัติการอ่านได้",
 
   errInvalidUrlTitle: "ลิงก์ไม่ถูกต้อง",
@@ -1276,6 +2092,105 @@ const th: Dictionary = {
   errNotFoundTitle: "ไม่พบข้อมูล",
   errAppTitle: "ข้อผิดพลาดของแอป",
   errGenericTitle: "เกิดข้อผิดพลาด",
+
+  readingModeLabel: "โหมดการอ่าน",
+  readingModeDesc: "สลับระหว่างการเลื่อนแนวตั้งและการเลื่อนแนวนอนแบบหน้าเดียวหรือกลุ่มหน้า",
+  modeVertical: "แนวตั้ง",
+  modeHorizontal: "แนวนอน",
+  verticalStyleLabel: "รูปแบบแนวตั้ง",
+  verticalStyleDesc: "เลือกเลื่อนต่อเนื่องแบบไร้รอยต่อหรือจัดกลุ่มหน้าต่อมุมมอง",
+  verticalContinuous: "เลื่อนต่อเนื่อง",
+  verticalGrouped: "จัดกลุ่มหน้า",
+  horizontalDirLabel: "ทิศทางการอ่าน",
+  dirLtr: "ซ้ายไปขวา (LTR)",
+  dirRtl: "ขวาไปซ้าย (RTL)",
+  pagesPerGroupLabel: "จำนวนหน้าต่อกลุ่ม",
+  pagesPerGroupDesc: "แสดง 1, 2, 3 หรือกำหนดจำนวนหน้าเองพร้อมกัน (1-8)",
+  pageGapLabel: (px) => `ระยะห่างภายในกลุ่ม (${px} px)`,
+  groupGapLabel: (px) => `ระยะห่างระหว่างกลุ่ม (${px} px)`,
+  snapModeLabel: "การล็อกตำแหน่ง (Snap)",
+  snapNone: "อิสระ",
+  snapPage: "ทีละหน้า",
+  snapGroup: "ทีละกลุ่ม",
+  groupSnapLabel: "ล็อกตำแหน่งตามกลุ่ม",
+  groupAlignLabel: "การจัดวางกลุ่ม",
+  alignCenter: "กึ่งกลาง",
+  alignStart: "ด้านบน / จุดเริ่มต้น",
+  centerGroupsLabel: "จัดกลุ่มให้อยู่กึ่งกลางจอ",
+  centerGroupsDesc: "จัดกลุ่มหน้าที่กำลังอ่านให้อยู่กึ่งกลางแนวนอน",
+  dimUnfocusedLabel: "ลดแสงหน้านอกโฟกัส",
+  dimUnfocusedDesc: "ทำให้หน้าหรือกลุ่มที่อยู่นอกระยะโฟกัสมืดลงเล็กน้อย",
+  dimLevelLabel: (pct) => `ระดับความมืด (${pct}%)`,
+
+  proxySection: "พร็อกซีภายในแอป (ข้ามการบล็อก IP)",
+  proxySubtitle: "ทำงานเฉพาะใน RtMaga เท่านั้น — ไม่เปลี่ยน VPN ระบบและไม่กระทบแอปอื่น",
+  proxyDirect: "เชื่อมต่อตรง",
+  proxyEnabled: "ใช้พร็อกซี",
+  proxyProtocolLabel: "โปรโตคอล",
+  proxyHostLabel: "ที่อยู่พร็อกซี",
+  proxyPortLabel: "พอร์ต",
+  proxyUsernameLabel: "ชื่อผู้ใช้ (ไม่บังคับ)",
+  proxyPasswordLabel: "รหัสผ่าน (ไม่บังคับ)",
+  proxyFailClosedLabel: "อนุญาตให้สลับไปเชื่อมต่อตรงเมื่อพร็อกซีล้มเหลว",
+  proxyFailClosedDesc: "ปิดไว้เป็นค่าเริ่มต้น (แนะนำ) เพื่อป้องกัน IP จริงรั่วไหลโดยไม่ตั้งใจ",
+  proxyTestUrlLabel: "URL ทดสอบ",
+  proxyTestBtn: "ทดสอบการเชื่อมต่อ",
+  proxyTesting: "กำลังทดสอบ...",
+  proxyTestOk: (ms, status) =>
+    status ? `เชื่อมต่อผ่านพร็อกซีสำเร็จ (${ms} ms, HTTP ${status})` : `เชื่อมต่อสำเร็จ (${ms} ms)`,
+  proxyTestFailed: (msg) => `ทดสอบพร็อกซีไม่สำเร็จ: ${msg}`,
+  proxyDomainRulesTitle: "กฎเส้นทางแยกตามโดเมน",
+  proxyDomainRulesDesc: "กำหนดการใช้พร็อกซีเฉพาะโดเมนของเว็บมังงะแต่ละแห่ง",
+  proxyDomainPlaceholder: "โดเมน (เช่น example.com)",
+  proxyRuleForceProxy: "บังคับใช้พร็อกซี",
+  proxyRuleForceDirect: "เชื่อมต่อตรงเสมอ",
+  proxyRuleCustomProxy: "พร็อกซีเฉพาะ",
+  proxyAddRule: "เพิ่มกฎ",
+  proxyRemoveRule: "ลบ",
+  proxyNoRules: "ยังไม่ได้ตั้งค่ากฎแยกตามโดเมน",
+
+  syncSection: "ซิงค์ผ่าน LAN (ไม่ใช้เซิร์ฟเวอร์)",
+  syncSubtitle: "ซิงค์ประวัติการอ่านโดยตรงระหว่างอุปกรณ์ใน Wi-Fi/LAN เดียวกัน ไม่มีแบ็กเอนด์หรือบัญชี",
+  syncDeviceLabel: (name) => `อุปกรณ์นี้: ${name}`,
+  syncPcSendTab: "ส่งไปยังมือถือ (QR)",
+  syncPcReceiveTab: "รับจากมือถือ (รหัสจับคู่)",
+  syncPhoneReceiveTab: "รับจากคอมพิวเตอร์ (สแกน QR)",
+  syncPhoneSendTab: "ส่งไปยังคอมพิวเตอร์ (รหัสจับคู่)",
+  syncStartQrBtn: "สร้างคิวอาร์โค้ด",
+  syncStartPinBtn: "สร้างรหัสจับคู่ 6 หลัก",
+  syncCancelBtn: "สิ้นสุดเซสชัน",
+  syncExpiresIn: (mmss) => `หมดอายุใน ${mmss}`,
+  syncWaitingPeer: "กำลังรออุปกรณ์อีกเครื่องในเครือข่าย LAN เดียวกัน...",
+  syncCopyCode: "คัดลอกรหัสสำรอง",
+  syncCopied: "คัดลอกแล้ว!",
+  syncFallbackAddr: (addr) => `ที่อยู่ LAN: ${addr}`,
+  syncEnterPinLabel: "รหัสจับคู่ 6 หลัก",
+  syncEnterPinPlaceholder: "กรอกรหัส 6 หลัก",
+  syncManualAddrToggle: "ค้นหาอัตโนมัติไม่พบ? กรอก IP:Port ด้วยตนเอง",
+  syncManualAddrPlaceholder: "เช่น 192.168.1.42:54321",
+  syncConnectBtn: "เชื่อมต่อ",
+  syncConnecting: "กำลังเชื่อมต่อ...",
+  syncStartCamera: "สแกน QR ด้วยกล้อง",
+  syncStopCamera: "ปิดกล้อง",
+  syncScanImageBtn: "สแกน QR จากรูปภาพ",
+  syncPasteCodePlaceholder: "หรือวางรหัสสำรองจากคอมพิวเตอร์...",
+  syncCameraError: "ไม่สามารถเข้าถึงกล้องได้ ใช้ 'สแกน QR จากรูปภาพ' หรือวางรหัสสำรองแทน",
+  syncQrNotFound: "ไม่พบคิวอาร์โค้ด RtMaga ที่ถูกต้องในรูปภาพที่เลือก",
+  syncConfirmTitle: "ยืนยันการโอนถ่ายข้อมูล",
+  syncConfirmSendDesc: (peer, ip, count) =>
+    `ส่งประวัติมังงะ ${count} เรื่องไปยัง "${peer}" (${ip}) หรือไม่?`,
+  syncConfirmReceiveDesc: (peer, ip, count) =>
+    `รับและรวมมังงะ ${count} เรื่องจาก "${peer}" (${ip}) หรือไม่? เรื่องที่ซ้ำจะเก็บตอนที่อ่านไกลกว่า`,
+  syncApproveBtn: "ยืนยันและซิงค์",
+  syncDeclineBtn: "ปฏิเสธ",
+  syncWaitingOtherConfirm: "กำลังรอให้อีกอุปกรณ์กดยืนยัน...",
+  syncTransferring: "กำลังโอนถ่ายและรวมประวัติการอ่าน...",
+  syncCompletedTitle: "ซิงค์เสร็จสมบูรณ์",
+  syncReportSummary: (added, updated, skipped, kept) =>
+    `เพิ่มใหม่ ${added} • อัปเดตตอนใหม่ ${updated} • ข้ามตอนเดิม ${skipped} • เก็บของเครื่องนี้ ${kept}`,
+  syncResetBtn: "เสร็จสิ้น",
+  syncSecurityNote:
+    "รหัสใช้ครั้งเดียวหมดอายุใน 5 นาที • ผิดได้สูงสุด 5 ครั้ง • เฉพาะ LAN เดียวกัน • ซิงค์ข้อมูลเท่านั้น ไม่ควบคุมอุปกรณ์",
 };
 
 const DICTIONARIES: Record<Language, Dictionary> = { en, vi, zh, ja, ru, ko, th };

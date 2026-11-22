@@ -33,6 +33,7 @@ pub struct HeadlessBrowser {
 
 struct BrowserSlot {
     browser: Option<Browser>,
+    active_proxy_arg: Option<String>,
     last_used: tokio::time::Instant,
 }
 
@@ -60,6 +61,7 @@ impl HeadlessBrowser {
             inner: Arc::new(HeadlessInner {
                 slot: Mutex::new(BrowserSlot {
                     browser: None,
+                    active_proxy_arg: None,
                     last_used: tokio::time::Instant::now(),
                 }),
                 tab_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_TABS)),
@@ -84,7 +86,8 @@ impl HeadlessBrowser {
             return Err(ScrapeError::Headless("tab semaphore closed".to_owned()));
         };
 
-        let page = self.open_tab(url).await?;
+        let proxy_args = http.chromium_proxy_args_for_url(url);
+        let page = self.open_tab(url, proxy_args).await?;
         let render_result = render_and_extract(&page, url, http).await;
         let _ = page.close().await;
         render_result
@@ -106,10 +109,17 @@ impl HeadlessBrowser {
             ScrapeError::Headless("no compatible local browser executable found".to_owned())
         })?;
 
-        let config = BrowserConfig::builder()
+        let mut builder = BrowserConfig::builder()
             .chrome_executable(exe)
             .with_head()
-            .arg(format!("--user-agent={DEFAULT_USER_AGENT}"))
+            .arg(format!("--user-agent={DEFAULT_USER_AGENT}"));
+        if let Some((proxy_arg, resolver_arg)) = http.chromium_proxy_args_for_url(url) {
+            builder = builder.arg(proxy_arg);
+            if let Some(res_arg) = resolver_arg {
+                builder = builder.arg(res_arg);
+            }
+        }
+        let config = builder
             .build()
             .map_err(|e| ScrapeError::Headless(format!("browser config error: {e}")))?;
 
@@ -157,9 +167,22 @@ impl HeadlessBrowser {
         }
     }
 
-    async fn open_tab(&self, url: &Url) -> Result<chromiumoxide::Page, ScrapeError> {
+    async fn open_tab(
+        &self,
+        url: &Url,
+        proxy_args: Option<(String, Option<String>)>,
+    ) -> Result<chromiumoxide::Page, ScrapeError> {
         let mut guard = self.inner.slot.lock().await;
         guard.last_used = tokio::time::Instant::now();
+        let desired_proxy = proxy_args.as_ref().map(|(p, _)| p.clone());
+
+        if guard.active_proxy_arg != desired_proxy
+            && let Some(mut stale) = guard.browser.take()
+        {
+            debug!("proxy configuration changed; relaunching headless browser");
+            let _ = stale.close().await;
+            guard.active_proxy_arg = None;
+        }
 
         if let Some(browser) = guard.browser.as_ref() {
             match browser.new_page(url.as_str()).await {
@@ -169,16 +192,18 @@ impl HeadlessBrowser {
                     if let Some(mut stale) = guard.browser.take() {
                         let _ = stale.close().await;
                     }
+                    guard.active_proxy_arg = None;
                 }
             }
         }
 
-        let browser = Self::launch_headless_browser().await?;
+        let browser = Self::launch_headless_browser(proxy_args.as_ref()).await?;
         let page = browser
             .new_page(url.as_str())
             .await
             .map_err(|e| ScrapeError::Headless(format!("failed to open tab: {e}")))?;
         guard.browser = Some(browser);
+        guard.active_proxy_arg = desired_proxy;
         guard.last_used = tokio::time::Instant::now();
         drop(guard);
 
@@ -186,17 +211,30 @@ impl HeadlessBrowser {
         Ok(page)
     }
 
-    async fn launch_headless_browser() -> Result<Browser, ScrapeError> {
+    async fn launch_headless_browser(
+        proxy_args: Option<&(String, Option<String>)>,
+    ) -> Result<Browser, ScrapeError> {
         let exe = find_browser_executable().ok_or_else(|| {
             ScrapeError::Headless("no compatible local browser executable found".to_owned())
         })?;
-        debug!(?exe, "launching headless browser");
+        debug!(
+            ?exe,
+            proxied = proxy_args.is_some(),
+            "launching headless browser"
+        );
 
-        let config = BrowserConfig::builder()
+        let mut builder = BrowserConfig::builder()
             .chrome_executable(exe)
             .arg(format!("--user-agent={DEFAULT_USER_AGENT}"))
             .arg("--disable-gpu")
-            .arg("--no-first-run")
+            .arg("--no-first-run");
+        if let Some((proxy_arg, resolver_arg)) = proxy_args {
+            builder = builder.arg(proxy_arg.as_str());
+            if let Some(res_arg) = resolver_arg {
+                builder = builder.arg(res_arg.as_str());
+            }
+        }
+        let config = builder
             .build()
             .map_err(|e| ScrapeError::Headless(format!("browser config error: {e}")))?;
 

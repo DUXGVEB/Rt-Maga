@@ -83,6 +83,10 @@
     return newestFirst ? [...list].reverse() : list;
   });
 
+  function normUrl(u: string): string {
+    return u.endsWith("/") ? u.slice(0, -1) : u;
+  }
+
   function startPrimary() {
     if (!manga || manga.chapters.length === 0) return;
     if (manga.progress) {
@@ -251,7 +255,9 @@
         style="background-color: var(--surface); border-color: var(--border);"
       >
         {#each filteredChapters() as chapter (chapter.url)}
-          {@const isCurrent = manga.progress?.chapterUrl === chapter.url}
+          {@const isCurrent =
+            manga.progress !== null &&
+            normUrl(manga.progress.chapterUrl) === normUrl(chapter.url)}
           <button
             type="button"
             onclick={() =>

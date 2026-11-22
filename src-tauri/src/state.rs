@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 use crate::cache::{ChapterCache, ImageCache};
 use crate::repo::Database;
 use crate::services::app_release::AppReleaseInfo;
+use crate::services::sync::SyncManager;
 use crate::settings::Settings;
 
 /// Central state injected into Tauri commands, background tasks, and the `img://` proxy.
@@ -32,8 +33,12 @@ pub(crate) struct AppState {
     pub update_task: Mutex<Option<JoinHandle<()>>>,
     /// Guards against overlapping manual and scheduled chapter-update runs.
     pub update_check_running: AtomicBool,
+    /// Guards against concurrent in-app update downloads/installations.
+    pub update_install_running: AtomicBool,
     /// Cached result of the latest application release check.
     pub latest_release: RwLock<Option<AppReleaseInfo>>,
+    /// Serverless peer-to-peer LAN synchronization session coordinator.
+    pub sync: SyncManager,
 }
 
 impl AppState {
@@ -56,7 +61,9 @@ impl AppState {
             proxy_key,
             update_task: Mutex::new(None),
             update_check_running: AtomicBool::new(false),
+            update_install_running: AtomicBool::new(false),
             latest_release: RwLock::new(None),
+            sync: SyncManager::new(),
         })
     }
 

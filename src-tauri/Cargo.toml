@@ -20,6 +20,7 @@ dashmap.workspace = true
 hmac.workspace = true
 http.workspace = true
 moka.workspace = true
+qrcode.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true

@@ -54,6 +54,7 @@ impl From<ScrapeError> for AppError {
             ScrapeError::Network(e) => Self::Network {
                 message: e.to_string(),
             },
+            ScrapeError::Proxy(message) => Self::Network { message },
             ScrapeError::HttpStatus { status, url } => Self::Network {
                 message: format!("HTTP {status} ({url})"),
             },

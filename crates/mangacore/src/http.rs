@@ -1,14 +1,18 @@
-//! Polite HTTP client with cookie jar, per-host concurrency limits, retries, and SSRF checks.
+//! Polite HTTP client with cookie jar, per-host concurrency limits, retries, SSRF checks,
+//! and optional application-internal HTTP/HTTPS/SOCKS5 (`socks5h://`) proxy routing.
 
-use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use dashmap::DashMap;
 use reqwest::cookie::Jar;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, HeaderMap, HeaderValue, REFERER};
 use reqwest::{Client, StatusCode};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 use url::Url;
@@ -22,6 +26,9 @@ pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) 
 /// Maximum request timeout for page and image downloads.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Timeout used for explicit proxy connectivity & latency checks.
+const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Maximum number of retry attempts on transient 5xx, 429, or transport errors.
 const MAX_RETRIES: u8 = 2;
 
@@ -34,6 +41,300 @@ const MAX_HTML_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum single image payload buffered in memory (32 MiB).
 const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 
+/// Supported application-internal proxy protocols.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ProxyProtocol {
+    /// Standard HTTP CONNECT / forward proxy.
+    #[default]
+    Http,
+    /// TLS-encrypted HTTPS proxy.
+    Https,
+    /// SOCKS5 proxy using remote DNS resolution (`socks5h://`) to prevent local DNS leaks.
+    Socks5,
+}
+
+impl ProxyProtocol {
+    /// Returns the `reqwest` proxy URL scheme (uses `socks5h` for SOCKS5 remote DNS).
+    pub fn as_reqwest_scheme(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+            Self::Socks5 => "socks5h",
+        }
+    }
+
+    /// Returns the Chromium `--proxy-server` scheme string.
+    pub fn as_chromium_scheme(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+            Self::Socks5 => "socks5",
+        }
+    }
+}
+
+/// Connection parameters for a single HTTP, HTTPS, or SOCKS5 proxy server.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProxyEndpoint {
+    /// Proxy protocol (`http`, `https`, or `socks5`).
+    pub protocol: ProxyProtocol,
+    /// Proxy hostname or IP address.
+    pub host: String,
+    /// Proxy TCP port (`1..=65535`).
+    pub port: u16,
+    /// Optional proxy authentication username.
+    pub username: Option<String>,
+    /// Optional proxy authentication password (never logged).
+    pub password: Option<String>,
+}
+
+impl fmt::Debug for ProxyEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProxyEndpoint")
+            .field("protocol", &self.protocol)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username.as_deref().map(|_| "<redacted>"))
+            .field("password", &self.password.as_deref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+impl ProxyEndpoint {
+    /// Returns `true` when both `host` and `port` are populated.
+    pub fn is_configured(&self) -> bool {
+        !self.host.trim().is_empty() && self.port > 0
+    }
+
+    /// Validates that the proxy host and port are syntactically safe and well-formed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError::Proxy`] if host or port is missing or contains disallowed characters.
+    pub fn validate(&self) -> Result<(), ScrapeError> {
+        let host = self.host.trim();
+        if host.is_empty() {
+            return Err(ScrapeError::Proxy("proxy host is empty".to_owned()));
+        }
+        if self.port == 0 {
+            return Err(ScrapeError::Proxy(
+                "proxy port must be 1..=65535".to_owned(),
+            ));
+        }
+        if host.chars().any(|c| {
+            c.is_whitespace() || c.is_control() || matches!(c, '@' | '/' | '\\' | '?' | '#')
+        }) {
+            return Err(ScrapeError::Proxy(
+                "proxy host contains invalid characters".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns a credential-free `scheme://host:port` string safe for logs and UI display.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError::Proxy`] if the endpoint is invalid.
+    pub fn sanitized_url(&self) -> Result<String, ScrapeError> {
+        self.validate()?;
+        let host = self.host.trim();
+        let host_fmt = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        Ok(format!(
+            "{}://{host_fmt}:{}",
+            self.protocol.as_reqwest_scheme(),
+            self.port
+        ))
+    }
+
+    fn to_reqwest_proxy(&self) -> Result<reqwest::Proxy, ScrapeError> {
+        let url = self.sanitized_url()?;
+        let mut proxy = reqwest::Proxy::all(&url)
+            .map_err(|e| ScrapeError::Proxy(redact_secrets(&e.to_string(), self)))?;
+        if let Some(user) = self.username.as_deref().map(str::trim)
+            && !user.is_empty()
+        {
+            let pass = self.password.as_deref().unwrap_or("");
+            proxy = proxy.basic_auth(user, pass);
+        }
+        Ok(proxy)
+    }
+
+    fn cache_key(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.protocol.as_reqwest_scheme().as_bytes());
+        hasher.update(b"|");
+        hasher.update(self.host.trim().to_ascii_lowercase().as_bytes());
+        hasher.update(b"|");
+        hasher.update(self.port.to_be_bytes());
+        hasher.update(b"|");
+        hasher.update(self.username.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"|");
+        hasher.update(self.password.as_deref().unwrap_or("").as_bytes());
+        let digest = hasher.finalize();
+        let mut out = String::with_capacity(64);
+        for b in digest {
+            use std::fmt::Write;
+            let _ = write!(&mut out, "{b:02x}");
+        }
+        out
+    }
+
+    /// Returns Chromium `--proxy-server` and optional DNS-leak prevention resolver flags.
+    pub fn chromium_args(&self) -> Option<(String, Option<String>)> {
+        self.validate().ok()?;
+        let host = self.host.trim();
+        let host_fmt = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        let proxy_arg = format!(
+            "--proxy-server={}://{host_fmt}:{}",
+            self.protocol.as_chromium_scheme(),
+            self.port
+        );
+        let resolver_arg = if self.protocol == ProxyProtocol::Socks5 {
+            Some(format!(
+                "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE {host}"
+            ))
+        } else {
+            None
+        };
+        Some((proxy_arg, resolver_arg))
+    }
+}
+
+/// Routing policy for a specific manga source domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DomainRuleAction {
+    /// Follow the global proxy enabled/disabled setting.
+    #[default]
+    UseDefault,
+    /// Always route this domain through the configured global proxy (even if global mode is Direct).
+    ForceProxy,
+    /// Always connect directly to this domain (bypass global proxy).
+    ForceDirect,
+    /// Route this domain through its own custom [`ProxyEndpoint`].
+    CustomProxy,
+}
+
+/// Per-source / per-domain proxy routing override.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DomainProxyRule {
+    /// Domain name to match (matches exact domain and subdomains, e.g. `example.org`).
+    pub domain: String,
+    /// Routing action applied to matching requests.
+    pub action: DomainRuleAction,
+    /// Dedicated proxy endpoint used when `action` is [`DomainRuleAction::CustomProxy`].
+    pub custom_proxy: Option<ProxyEndpoint>,
+}
+
+/// Application-internal proxy configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProxyConfig {
+    /// `false` (default) = Direct Mode; `true` = Global Proxy Mode.
+    pub enabled: bool,
+    /// Default proxy endpoint used when global mode or `ForceProxy` rules apply.
+    pub default_proxy: ProxyEndpoint,
+    /// Fail-closed by default (`false`) so failed proxy requests never leak the real IP.
+    pub allow_direct_fallback: bool,
+    /// Optional per-domain routing overrides.
+    pub domain_rules: Vec<DomainProxyRule>,
+}
+
+impl ProxyConfig {
+    /// Cleans whitespace and bounds rule counts for safe storage and matching.
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        self.default_proxy.host = self.default_proxy.host.trim().to_owned();
+        if let Some(u) = self.default_proxy.username.as_mut() {
+            *u = u.trim().to_owned();
+            if u.is_empty() {
+                self.default_proxy.username = None;
+            }
+        }
+        self.domain_rules.truncate(128);
+        self.domain_rules.retain_mut(|rule| {
+            rule.domain = normalize_domain_pattern(&rule.domain);
+            if let Some(custom) = rule.custom_proxy.as_mut() {
+                custom.host = custom.host.trim().to_owned();
+            }
+            !rule.domain.is_empty()
+        });
+        self
+    }
+
+    /// Resolves whether `url` should route directly or through a specific [`ProxyEndpoint`].
+    pub fn resolve_for_url(&self, url: &Url) -> Option<(ProxyEndpoint, bool)> {
+        let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+        let matched = self
+            .domain_rules
+            .iter()
+            .filter(|r| domain_matches(&host, &r.domain))
+            .max_by_key(|r| r.domain.len());
+
+        if let Some(rule) = matched {
+            return match rule.action {
+                DomainRuleAction::ForceDirect => None,
+                DomainRuleAction::ForceProxy => {
+                    Some((self.default_proxy.clone(), self.allow_direct_fallback))
+                }
+                DomainRuleAction::CustomProxy => {
+                    let ep = rule
+                        .custom_proxy
+                        .clone()
+                        .filter(ProxyEndpoint::is_configured)
+                        .unwrap_or_else(|| self.default_proxy.clone());
+                    Some((ep, self.allow_direct_fallback))
+                }
+                DomainRuleAction::UseDefault => {
+                    if self.enabled {
+                        Some((self.default_proxy.clone(), self.allow_direct_fallback))
+                    } else {
+                        None
+                    }
+                }
+            };
+        }
+
+        if self.enabled {
+            Some((self.default_proxy.clone(), self.allow_direct_fallback))
+        } else {
+            None
+        }
+    }
+}
+
+/// Result returned by [`HttpClient::test_proxy`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyTestResult {
+    /// `true` when the request reached the target through the proxy.
+    pub ok: bool,
+    /// Round-trip latency in milliseconds.
+    pub latency_ms: u64,
+    /// HTTP status code received from the target, if any.
+    pub status_code: Option<u16>,
+    /// Target URL that was probed.
+    pub target_url: String,
+    /// Credential-free proxy descriptor (`scheme://host:port`).
+    pub via_proxy: String,
+    /// Sanitized error reason when `ok` is `false`.
+    pub error: Option<String>,
+}
+
 /// Configuration for [`HttpClient`].
 #[derive(Debug, Clone)]
 pub struct HttpPolicy {
@@ -43,6 +344,8 @@ pub struct HttpPolicy {
     pub timeout: Duration,
     /// Maximum concurrent requests to any single host.
     pub max_conn_per_host: usize,
+    /// Initial application-internal proxy configuration (defaults to Direct Mode).
+    pub proxy: ProxyConfig,
 }
 
 impl Default for HttpPolicy {
@@ -51,6 +354,7 @@ impl Default for HttpPolicy {
             user_agent: DEFAULT_USER_AGENT.to_owned(),
             timeout: DEFAULT_TIMEOUT,
             max_conn_per_host: DEFAULT_MAX_CONN_PER_HOST,
+            proxy: ProxyConfig::default(),
         }
     }
 }
@@ -73,7 +377,7 @@ pub struct FetchedBytes {
     pub content_type: String,
 }
 
-/// Shared HTTP client with cookie jar and per-host concurrency limiting.
+/// Shared HTTP client with cookie jar, per-host concurrency limiting, and optional proxy routing.
 #[derive(Debug, Clone)]
 pub struct HttpClient {
     inner: Arc<HttpClientInner>,
@@ -81,10 +385,14 @@ pub struct HttpClient {
 
 #[derive(Debug)]
 struct HttpClientInner {
-    client: Client,
+    direct_client: Client,
     jar: Arc<Jar>,
+    user_agent: String,
+    timeout: Duration,
     host_semaphores: DashMap<String, Arc<Semaphore>>,
     max_conn_per_host: usize,
+    proxy_config: RwLock<ProxyConfig>,
+    proxy_clients: DashMap<String, Client>,
 }
 
 impl HttpClient {
@@ -104,36 +412,59 @@ impl HttpClient {
     /// Returns [`ScrapeError::Network`] if the underlying TLS/HTTP client cannot be initialized.
     pub fn with_policy(policy: HttpPolicy) -> Result<Self, ScrapeError> {
         let jar = Arc::new(Jar::default());
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT_LANGUAGE,
-            HeaderValue::from_static("vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"),
-        );
-
-        let client = Client::builder()
-            .user_agent(policy.user_agent)
-            .default_headers(headers)
-            .cookie_provider(Arc::clone(&jar))
-            .timeout(policy.timeout)
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() >= 10 {
-                    return attempt.error("too many redirects");
-                }
-                if let Err(err) = validate_public_http_url(attempt.url()) {
-                    return attempt.error(err);
-                }
-                attempt.follow()
-            }))
-            .build()?;
+        let direct_client = build_reqwest_client(
+            &policy.user_agent,
+            policy.timeout,
+            Some(Arc::clone(&jar)),
+            None,
+        )?;
 
         Ok(Self {
             inner: Arc::new(HttpClientInner {
-                client,
+                direct_client,
                 jar,
+                user_agent: policy.user_agent,
+                timeout: policy.timeout,
                 host_semaphores: DashMap::new(),
                 max_conn_per_host: policy.max_conn_per_host.max(1),
+                proxy_config: RwLock::new(policy.proxy.sanitized()),
+                proxy_clients: DashMap::new(),
             }),
         })
+    }
+
+    /// Updates the live [`ProxyConfig`] and clears cached proxy clients if the config changed.
+    pub fn set_proxy_config(&self, config: ProxyConfig) {
+        let clean = config.sanitized();
+        let changed = match self.inner.proxy_config.write() {
+            Ok(mut guard) => {
+                let diff = *guard != clean;
+                *guard = clean;
+                diff
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = clean;
+                true
+            }
+        };
+        if changed {
+            self.inner.proxy_clients.clear();
+            debug!("updated in-app proxy configuration and cleared cached proxy clients");
+        }
+    }
+
+    /// Returns a snapshot of the active [`ProxyConfig`].
+    pub fn proxy_config(&self) -> ProxyConfig {
+        match self.inner.proxy_config.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Returns Chromium `--proxy-server` and optional DNS-resolver flags for `url` when proxied.
+    pub fn chromium_proxy_args_for_url(&self, url: &Url) -> Option<(String, Option<String>)> {
+        let (endpoint, _fallback) = self.proxy_config().resolve_for_url(url)?;
+        endpoint.chromium_args()
     }
 
     /// Injects a `Set-Cookie` style header value for `url` into the shared cookie jar.
@@ -141,95 +472,117 @@ impl HttpClient {
         self.inner.jar.add_cookie_str(cookie_header, url);
     }
 
-    /// Fetches an HTML page while enforcing per-host concurrency limits and anti-bot detection.
+    /// Tests connectivity and round-trip latency through `endpoint` using a minimal cookie-free
+    /// `HEAD` (or fallback `GET`) request to `test_url_raw` (defaults to `https://example.com`).
     ///
     /// # Errors
     ///
-    /// Returns [`ScrapeError::DisallowedHost`] if the URL targets a local/private address,
-    /// [`ScrapeError::Blocked`] if the response appears to be a bot challenge,
-    /// [`ScrapeError::HttpStatus`] on non-2xx responses, or [`ScrapeError::Network`] on I/O errors.
+    /// Returns [`ScrapeError::InvalidUrl`] or [`ScrapeError::DisallowedHost`] if the target URL
+    /// fails SSRF validation, or [`ScrapeError::Proxy`] if the proxy endpoint itself is invalid.
+    pub async fn test_proxy(
+        &self,
+        endpoint: &ProxyEndpoint,
+        test_url_raw: Option<&str>,
+    ) -> Result<ProxyTestResult, ScrapeError> {
+        let via_proxy = endpoint.sanitized_url()?;
+        let target_url = match test_url_raw.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(raw) => normalize_url(raw)?,
+            None => normalize_url("https://example.com")?,
+        };
+        validate_public_http_url(&target_url)?;
+
+        let proxy = endpoint.to_reqwest_proxy()?;
+        let test_client = build_reqwest_client(
+            &self.inner.user_agent,
+            PROXY_TEST_TIMEOUT,
+            None,
+            Some(proxy),
+        )
+        .map_err(|e| ScrapeError::Proxy(redact_secrets(&e.to_string(), endpoint)))?;
+
+        let started = Instant::now();
+        let outcome = match test_client.head(target_url.as_str()).send().await {
+            Ok(resp) if resp.status() == StatusCode::METHOD_NOT_ALLOWED => {
+                test_client.get(target_url.as_str()).send().await
+            }
+            other => other,
+        };
+        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        match outcome {
+            Ok(resp) => {
+                let code = resp.status().as_u16();
+                if resp.status() == StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+                    Ok(ProxyTestResult {
+                        ok: false,
+                        latency_ms,
+                        status_code: Some(code),
+                        target_url: target_url.into(),
+                        via_proxy,
+                        error: Some("Proxy authentication failed (HTTP 407)".to_owned()),
+                    })
+                } else {
+                    Ok(ProxyTestResult {
+                        ok: true,
+                        latency_ms,
+                        status_code: Some(code),
+                        target_url: target_url.into(),
+                        via_proxy,
+                        error: None,
+                    })
+                }
+            }
+            Err(err) => Ok(ProxyTestResult {
+                ok: false,
+                latency_ms,
+                status_code: None,
+                target_url: target_url.into(),
+                via_proxy,
+                error: Some(redact_secrets(&err.to_string(), endpoint)),
+            }),
+        }
+    }
+
+    /// Fetches an HTML page while enforcing per-host concurrency limits, proxy routing,
+    /// SSRF checks, and anti-bot challenge detection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError::DisallowedHost`], [`ScrapeError::Blocked`], [`ScrapeError::Proxy`],
+    /// [`ScrapeError::HttpStatus`], or [`ScrapeError::Network`].
     pub async fn fetch_html(&self, url: &Url) -> Result<FetchedPage, ScrapeError> {
         validate_public_http_url(url)?;
         let _permit = self.acquire_host_permit(url).await;
 
-        let mut last_err: Option<ScrapeError> = None;
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0 {
-                let backoff = Duration::from_millis(400 * u64::from(attempt));
-                tokio::time::sleep(backoff).await;
-            }
-
-            let resp = self
-                .inner
-                .client
-                .get(url.as_str())
-                .header(
-                    ACCEPT,
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                )
-                .send()
-                .await;
-
-            match resp {
-                Ok(response) => {
-                    let status = response.status();
-                    let final_url = response.url().clone();
-                    let raw_bytes =
-                        read_bounded_bytes(response, MAX_HTML_BYTES, &final_url).await?;
-                    let body = String::from_utf8_lossy(&raw_bytes).into_owned();
-
-                    if looks_like_challenge(status, &body) {
-                        let host = final_url.host_str().unwrap_or("unknown").to_owned();
-                        return Err(ScrapeError::Blocked {
-                            host,
-                            url: final_url,
-                        });
-                    }
-
-                    if status.is_success() {
-                        debug!(%final_url, len = body.len(), "fetched html page");
-                        return Ok(FetchedPage {
-                            final_url,
-                            html: body,
-                        });
-                    }
-
-                    let err = ScrapeError::HttpStatus {
-                        status: status.as_u16(),
-                        url: final_url,
-                    };
-                    if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
-                        && attempt < MAX_RETRIES
-                    {
-                        warn!(%err, attempt, "transient http status, retrying");
-                        last_err = Some(err);
-                        continue;
-                    }
-                    return Err(err);
+        if let Some((endpoint, allow_fallback)) = self.proxy_config().resolve_for_url(url) {
+            let proxy_client = match self.client_for_proxy(&endpoint) {
+                Ok(c) => c,
+                Err(err) if allow_fallback => {
+                    warn!(%err, "proxy unavailable; falling back to direct mode (user-enabled)");
+                    return fetch_html_with_client(&self.inner.direct_client, url, None).await;
                 }
-                Err(err) => {
-                    if (err.is_timeout() || err.is_connect()) && attempt < MAX_RETRIES {
-                        warn!(%err, attempt, "transient network error, retrying");
-                        last_err = Some(ScrapeError::Network(err));
-                        continue;
-                    }
-                    return Err(ScrapeError::Network(err));
+                Err(err) => return Err(err),
+            };
+
+            match fetch_html_with_client(&proxy_client, url, Some(&endpoint)).await {
+                Ok(page) => return Ok(page),
+                Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
+                    warn!(%err, "proxy request failed; falling back to direct mode (user-enabled)");
+                    return fetch_html_with_client(&self.inner.direct_client, url, None).await;
                 }
+                Err(err) => return Err(err),
             }
         }
 
-        Err(last_err.unwrap_or_else(|| ScrapeError::HttpStatus {
-            status: 500,
-            url: url.clone(),
-        }))
+        fetch_html_with_client(&self.inner.direct_client, url, None).await
     }
 
-    /// Downloads raw image bytes with an explicit `Referer` header.
+    /// Downloads raw image bytes with an explicit `Referer` header and active proxy routing.
     ///
     /// # Errors
     ///
-    /// Returns [`ScrapeError::DisallowedHost`], [`ScrapeError::HttpStatus`], or
-    /// [`ScrapeError::Network`] if the image cannot be fetched.
+    /// Returns [`ScrapeError::DisallowedHost`], [`ScrapeError::Proxy`], [`ScrapeError::HttpStatus`],
+    /// or [`ScrapeError::Network`].
     pub async fn fetch_image(
         &self,
         url: &Url,
@@ -238,81 +591,54 @@ impl HttpClient {
         validate_public_http_url(url)?;
         let _permit = self.acquire_host_permit(url).await;
 
-        let mut last_err: Option<ScrapeError> = None;
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0 {
-                let backoff = Duration::from_millis(300 * u64::from(attempt));
-                tokio::time::sleep(backoff).await;
-            }
+        // Match per-source rule on image URL first; if none matches, also check referer domain
+        // so images served from a separate CDN inherit the manga source's per-domain proxy rule.
+        let cfg = self.proxy_config();
+        let route = cfg
+            .resolve_for_url(url)
+            .or_else(|| referer.and_then(|r| cfg.resolve_for_url(r)));
 
-            let mut req = self
-                .inner
-                .client
-                .get(url.as_str())
-                .header(ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
-
-            if let Some(ref_url) = referer
-                && let Ok(val) = HeaderValue::from_str(ref_url.as_str())
-            {
-                req = req.header(REFERER, val);
-            }
-
-            match req.send().await {
-                Ok(response) => {
-                    let status = response.status();
-                    if status.is_success() {
-                        let content_type = response
-                            .headers()
-                            .get(CONTENT_TYPE)
-                            .and_then(|v| v.to_str().ok())
-                            .map_or_else(
-                                || guess_mime_from_url(url).to_owned(),
-                                |s| {
-                                    s.split(';')
-                                        .next()
-                                        .unwrap_or("image/jpeg")
-                                        .trim()
-                                        .to_owned()
-                                },
-                            );
-                        if !is_acceptable_image_mime(&content_type) {
-                            return Err(ScrapeError::HttpStatus {
-                                status: StatusCode::UNSUPPORTED_MEDIA_TYPE.as_u16(),
-                                url: url.clone(),
-                            });
-                        }
-                        let bytes = read_bounded_bytes(response, MAX_IMAGE_BYTES, url).await?;
-                        return Ok(FetchedBytes {
-                            bytes,
-                            content_type,
-                        });
-                    }
-                    let err = ScrapeError::HttpStatus {
-                        status: status.as_u16(),
-                        url: url.clone(),
-                    };
-                    if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
-                        && attempt < MAX_RETRIES
-                    {
-                        last_err = Some(err);
-                        continue;
-                    }
-                    return Err(err);
+        if let Some((endpoint, allow_fallback)) = route {
+            let proxy_client = match self.client_for_proxy(&endpoint) {
+                Ok(c) => c,
+                Err(err) if allow_fallback => {
+                    warn!(%err, "proxy unavailable for image; falling back to direct mode");
+                    return fetch_image_with_client(&self.inner.direct_client, url, referer, None)
+                        .await;
                 }
-                Err(err) => {
-                    if (err.is_timeout() || err.is_connect()) && attempt < MAX_RETRIES {
-                        last_err = Some(ScrapeError::Network(err));
-                        continue;
-                    }
-                    return Err(ScrapeError::Network(err));
+                Err(err) => return Err(err),
+            };
+
+            match fetch_image_with_client(&proxy_client, url, referer, Some(&endpoint)).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
+                    warn!(%err, "proxied image fetch failed; falling back to direct mode");
+                    return fetch_image_with_client(&self.inner.direct_client, url, referer, None)
+                        .await;
                 }
+                Err(err) => return Err(err),
             }
         }
 
-        Err(last_err.unwrap_or_else(|| ScrapeError::HttpStatus {
-            status: 500,
-            url: url.clone(),
-        }))
+        fetch_image_with_client(&self.inner.direct_client, url, referer, None).await
+    }
+
+    fn client_for_proxy(&self, endpoint: &ProxyEndpoint) -> Result<Client, ScrapeError> {
+        endpoint.validate()?;
+        let key = endpoint.cache_key();
+        if let Some(existing) = self.inner.proxy_clients.get(&key) {
+            return Ok(existing.value().clone());
+        }
+        let proxy = endpoint.to_reqwest_proxy()?;
+        let client = build_reqwest_client(
+            &self.inner.user_agent,
+            self.inner.timeout,
+            Some(Arc::clone(&self.inner.jar)),
+            Some(proxy),
+        )
+        .map_err(|e| ScrapeError::Proxy(redact_secrets(&e.to_string(), endpoint)))?;
+        self.inner.proxy_clients.insert(key, client.clone());
+        Ok(client)
     }
 
     async fn acquire_host_permit(&self, url: &Url) -> tokio::sync::OwnedSemaphorePermit {
@@ -328,6 +654,263 @@ impl HttpClient {
             .await
             .expect("host semaphore is never closed")
     }
+}
+
+fn build_reqwest_client(
+    user_agent: &str,
+    timeout: Duration,
+    jar: Option<Arc<Jar>>,
+    proxy: Option<reqwest::Proxy>,
+) -> Result<Client, ScrapeError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        ACCEPT_LANGUAGE,
+        HeaderValue::from_static("vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"),
+    );
+
+    let mut builder = Client::builder()
+        .user_agent(user_agent)
+        .default_headers(headers)
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            if let Err(err) = validate_public_http_url(attempt.url()) {
+                return attempt.error(err);
+            }
+            attempt.follow()
+        }));
+
+    if let Some(cookie_jar) = jar {
+        builder = builder.cookie_provider(cookie_jar);
+    }
+    if let Some(p) = proxy {
+        builder = builder.proxy(p);
+    } else {
+        builder = builder.no_proxy();
+    }
+
+    Ok(builder.build()?)
+}
+
+async fn fetch_html_with_client(
+    client: &Client,
+    url: &Url,
+    proxy_ep: Option<&ProxyEndpoint>,
+) -> Result<FetchedPage, ScrapeError> {
+    let mut last_err: Option<ScrapeError> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(400 * u64::from(attempt))).await;
+        }
+
+        let resp = client
+            .get(url.as_str())
+            .header(
+                ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .send()
+            .await;
+
+        match resp {
+            Ok(response) => {
+                let status = response.status();
+                if status == StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+                    return Err(ScrapeError::Proxy(
+                        "proxy authentication failed (HTTP 407)".to_owned(),
+                    ));
+                }
+                let final_url = response.url().clone();
+                let raw_bytes = read_bounded_bytes(response, MAX_HTML_BYTES, &final_url).await?;
+                let body = String::from_utf8_lossy(&raw_bytes).into_owned();
+
+                if looks_like_challenge(status, &body) {
+                    let host = final_url.host_str().unwrap_or("unknown").to_owned();
+                    return Err(ScrapeError::Blocked {
+                        host,
+                        url: final_url,
+                    });
+                }
+
+                if status.is_success() {
+                    debug!(%final_url, len = body.len(), proxied = proxy_ep.is_some(), "fetched html page");
+                    return Ok(FetchedPage {
+                        final_url,
+                        html: body,
+                    });
+                }
+
+                let err = ScrapeError::HttpStatus {
+                    status: status.as_u16(),
+                    url: final_url,
+                };
+                if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+                    && attempt < MAX_RETRIES
+                {
+                    warn!(%err, attempt, "transient http status, retrying");
+                    last_err = Some(err);
+                    continue;
+                }
+                return Err(err);
+            }
+            Err(err) => {
+                let retryable = err.is_timeout() || err.is_connect();
+                let mapped = map_transport_err(err, proxy_ep);
+                if retryable && attempt < MAX_RETRIES {
+                    warn!(%mapped, attempt, "transient transport error, retrying");
+                    last_err = Some(mapped);
+                    continue;
+                }
+                return Err(mapped);
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| ScrapeError::HttpStatus {
+        status: 500,
+        url: url.clone(),
+    }))
+}
+
+async fn fetch_image_with_client(
+    client: &Client,
+    url: &Url,
+    referer: Option<&Url>,
+    proxy_ep: Option<&ProxyEndpoint>,
+) -> Result<FetchedBytes, ScrapeError> {
+    let mut last_err: Option<ScrapeError> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(300 * u64::from(attempt))).await;
+        }
+
+        let mut req = client
+            .get(url.as_str())
+            .header(ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+
+        if let Some(ref_url) = referer
+            && let Ok(val) = HeaderValue::from_str(ref_url.as_str())
+        {
+            req = req.header(REFERER, val);
+        }
+
+        match req.send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status == StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+                    return Err(ScrapeError::Proxy(
+                        "proxy authentication failed (HTTP 407)".to_owned(),
+                    ));
+                }
+                if status.is_success() {
+                    let content_type = response
+                        .headers()
+                        .get(CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .map_or_else(
+                            || guess_mime_from_url(url).to_owned(),
+                            |s| {
+                                s.split(';')
+                                    .next()
+                                    .unwrap_or("image/jpeg")
+                                    .trim()
+                                    .to_owned()
+                            },
+                        );
+                    if !is_acceptable_image_mime(&content_type) {
+                        return Err(ScrapeError::HttpStatus {
+                            status: StatusCode::UNSUPPORTED_MEDIA_TYPE.as_u16(),
+                            url: url.clone(),
+                        });
+                    }
+                    let bytes = read_bounded_bytes(response, MAX_IMAGE_BYTES, url).await?;
+                    return Ok(FetchedBytes {
+                        bytes,
+                        content_type,
+                    });
+                }
+                let err = ScrapeError::HttpStatus {
+                    status: status.as_u16(),
+                    url: url.clone(),
+                };
+                if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+                    && attempt < MAX_RETRIES
+                {
+                    last_err = Some(err);
+                    continue;
+                }
+                return Err(err);
+            }
+            Err(err) => {
+                let retryable = err.is_timeout() || err.is_connect();
+                let mapped = map_transport_err(err, proxy_ep);
+                if retryable && attempt < MAX_RETRIES {
+                    last_err = Some(mapped);
+                    continue;
+                }
+                return Err(mapped);
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| ScrapeError::HttpStatus {
+        status: 500,
+        url: url.clone(),
+    }))
+}
+
+fn map_transport_err(err: reqwest::Error, proxy_ep: Option<&ProxyEndpoint>) -> ScrapeError {
+    if let Some(ep) = proxy_ep {
+        ScrapeError::Proxy(redact_secrets(&err.to_string(), ep))
+    } else {
+        ScrapeError::Network(err)
+    }
+}
+
+fn is_proxy_fallback_eligible(err: &ScrapeError) -> bool {
+    matches!(err, ScrapeError::Proxy(_) | ScrapeError::Network(_))
+}
+
+fn redact_secrets(raw: &str, ep: &ProxyEndpoint) -> String {
+    let mut out = raw.to_owned();
+    if let Some(pass) = ep.password.as_deref()
+        && !pass.is_empty()
+    {
+        out = out.replace(pass, "***");
+    }
+    if let Some(user) = ep.username.as_deref()
+        && !user.is_empty()
+    {
+        out = out.replace(user, "***");
+    }
+    out
+}
+
+fn normalize_domain_pattern(raw: &str) -> String {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(&trimmed);
+    let host_only = without_scheme.split('/').next().unwrap_or("");
+    let without_port = host_only.split(':').next().unwrap_or("");
+    without_port
+        .trim_start_matches("*.")
+        .trim_start_matches('.')
+        .trim_end_matches('.')
+        .to_owned()
+}
+
+fn domain_matches(host: &str, rule_domain: &str) -> bool {
+    if rule_domain.is_empty() || host.is_empty() {
+        return false;
+    }
+    host == rule_domain
+        || (host.len() > rule_domain.len()
+            && host.ends_with(rule_domain)
+            && host.as_bytes()[host.len() - rule_domain.len() - 1] == b'.')
 }
 
 /// Normalizes a user-pasted link: trims whitespace, adds `https://` if missing, strips fragments
@@ -420,7 +1003,7 @@ pub fn validate_public_http_url(url: &Url) -> Result<(), ScrapeError> {
     Ok(())
 }
 
-fn is_disallowed_ipv4(v4: std::net::Ipv4Addr) -> bool {
+fn is_disallowed_ipv4(v4: Ipv4Addr) -> bool {
     let octets = v4.octets();
     let is_cgnat = octets[0] == 100 && (octets[1] & 0xc0) == 64;
     v4.is_loopback()
@@ -517,6 +1100,9 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
     use super::*;
 
     #[test]
@@ -552,5 +1138,291 @@ mod tests {
         assert!(!is_acceptable_image_mime("text/html"));
         assert!(!is_acceptable_image_mime("application/xhtml+xml"));
         assert!(!is_acceptable_image_mime("application/json"));
+    }
+
+    #[test]
+    fn resolves_per_domain_proxy_rules_and_socks5h_remote_dns() {
+        let default_ep = ProxyEndpoint {
+            protocol: ProxyProtocol::Socks5,
+            host: "proxy.example.net".to_owned(),
+            port: 1080,
+            username: Some("alice".to_owned()),
+            password: Some("s3cr3t!".to_owned()),
+        };
+        assert_eq!(
+            default_ep.sanitized_url().unwrap(),
+            "socks5h://proxy.example.net:1080"
+        );
+        let dbg = format!("{default_ep:?}");
+        assert!(!dbg.contains("s3cr3t!"), "Debug must never expose password");
+        assert!(!dbg.contains("alice"), "Debug must never expose username");
+
+        let custom_ep = ProxyEndpoint {
+            protocol: ProxyProtocol::Http,
+            host: "eu.proxy.example.net".to_owned(),
+            port: 8080,
+            username: None,
+            password: None,
+        };
+
+        let cfg = ProxyConfig {
+            enabled: false,
+            default_proxy: default_ep,
+            allow_direct_fallback: false,
+            domain_rules: vec![
+                DomainProxyRule {
+                    domain: "blocked.example.org".to_owned(),
+                    action: DomainRuleAction::ForceProxy,
+                    custom_proxy: None,
+                },
+                DomainProxyRule {
+                    domain: "cdn.blocked.example.org".to_owned(),
+                    action: DomainRuleAction::CustomProxy,
+                    custom_proxy: Some(custom_ep),
+                },
+                DomainProxyRule {
+                    domain: "direct.example.org".to_owned(),
+                    action: DomainRuleAction::ForceDirect,
+                    custom_proxy: None,
+                },
+            ],
+        }
+        .sanitized();
+
+        assert!(
+            cfg.resolve_for_url(&Url::parse("https://other.example.com/a").unwrap())
+                .is_none(),
+            "Direct Mode must stay direct for unlisted domains"
+        );
+        assert_eq!(
+            cfg.resolve_for_url(&Url::parse("https://sub.blocked.example.org/ch-1").unwrap())
+                .map(|(ep, fb)| (ep.port, fb)),
+            Some((1080, false))
+        );
+        assert_eq!(
+            cfg.resolve_for_url(&Url::parse("https://cdn.blocked.example.org/1.jpg").unwrap())
+                .map(|(ep, _)| ep.port),
+            Some(8080),
+            "More specific subdomain rule must win over parent domain rule"
+        );
+        assert!(
+            cfg.resolve_for_url(&Url::parse("https://direct.example.org/ch-1").unwrap())
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_mode_fails_closed_and_redacts_secrets_on_auth_failure() {
+        // Local mock HTTP proxy that always returns 407 Proxy Authentication Required.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+            }
+        });
+
+        let ep = ProxyEndpoint {
+            protocol: ProxyProtocol::Http,
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: Some("myuser".to_owned()),
+            password: Some("supersecretpass".to_owned()),
+        };
+
+        let client = HttpClient::with_policy(HttpPolicy {
+            proxy: ProxyConfig {
+                enabled: true,
+                default_proxy: ep.clone(),
+                allow_direct_fallback: false,
+                domain_rules: Vec::new(),
+            },
+            ..HttpPolicy::default()
+        })
+        .unwrap();
+
+        let test_res = client
+            .test_proxy(&ep, Some("http://example.com"))
+            .await
+            .unwrap();
+        assert!(!test_res.ok, "407 proxy auth error must report ok=false");
+        assert_eq!(test_res.status_code, Some(407));
+        let err_text = test_res.error.unwrap_or_default();
+        assert!(!err_text.contains("supersecretpass"));
+        assert!(!err_text.contains("myuser"));
+
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn unconfigured_proxy_in_proxy_mode_fails_closed_without_leaking_direct() {
+        let client = HttpClient::with_policy(HttpPolicy {
+            proxy: ProxyConfig {
+                enabled: true,
+                default_proxy: ProxyEndpoint::default(),
+                allow_direct_fallback: false,
+                domain_rules: Vec::new(),
+            },
+            ..HttpPolicy::default()
+        })
+        .unwrap();
+
+        let err = client
+            .fetch_html(&Url::parse("https://example.com/series").unwrap())
+            .await
+            .expect_err("proxy mode with empty host must fail closed");
+        assert!(matches!(err, ScrapeError::Proxy(_)));
+    }
+
+    #[tokio::test]
+    async fn valid_http_proxy_handles_html_images_and_concurrency() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            // Serve 3 requests: 1 HTML page + 2 concurrent image fetches.
+            for _ in 0..3 {
+                if let Ok((mut sock, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let mut buf = [0_u8; 2048];
+                        let n = sock.read(&mut buf).await.unwrap_or(0);
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        let resp: &[u8] = if req.contains("/img/") {
+                            b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\x89PNG"
+                        } else {
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 19\r\nConnection: close\r\n\r\n<h1>Proxied OK</h1>"
+                        };
+                        let _ = sock.write_all(resp).await;
+                    });
+                }
+            }
+        });
+
+        let ep = ProxyEndpoint {
+            protocol: ProxyProtocol::Http,
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: None,
+            password: None,
+        };
+        let client = HttpClient::with_policy(HttpPolicy {
+            proxy: ProxyConfig {
+                enabled: true,
+                default_proxy: ep,
+                allow_direct_fallback: false,
+                domain_rules: Vec::new(),
+            },
+            ..HttpPolicy::default()
+        })
+        .unwrap();
+
+        let page_url = Url::parse("http://proxy-test.example.com/chapter-1").unwrap();
+        let img1_url = Url::parse("http://proxy-test.example.com/img/1.png").unwrap();
+        let img2_url = Url::parse("http://proxy-test.example.com/img/2.png").unwrap();
+
+        let (page, img1, img2) = tokio::join!(
+            client.fetch_html(&page_url),
+            client.fetch_image(&img1_url, Some(&page_url)),
+            client.fetch_image(&img2_url, Some(&page_url)),
+        );
+
+        assert_eq!(page.unwrap().html, "<h1>Proxied OK</h1>");
+        assert_eq!(img1.unwrap().content_type, "image/png");
+        assert_eq!(img2.unwrap().bytes.len(), 4);
+
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn proxy_blocks_ssrf_redirects_to_loopback() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9999/internal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+            }
+        });
+
+        let ep = ProxyEndpoint {
+            protocol: ProxyProtocol::Http,
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: None,
+            password: None,
+        };
+        let client = HttpClient::with_policy(HttpPolicy {
+            proxy: ProxyConfig {
+                enabled: true,
+                default_proxy: ep,
+                allow_direct_fallback: false,
+                domain_rules: Vec::new(),
+            },
+            ..HttpPolicy::default()
+        })
+        .unwrap();
+
+        let err = client
+            .fetch_html(&Url::parse("http://redirect-test.example.com/start").unwrap())
+            .await
+            .expect_err("redirect to 127.0.0.1 must be blocked as SSRF");
+        assert!(matches!(
+            err,
+            ScrapeError::Proxy(_) | ScrapeError::Network(_)
+        ));
+
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn proxy_midstream_drop_recovers_and_fails_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            for _ in 0..=MAX_RETRIES {
+                if let Ok((sock, _)) = listener.accept().await {
+                    drop(sock);
+                }
+            }
+        });
+
+        let ep = ProxyEndpoint {
+            protocol: ProxyProtocol::Http,
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: None,
+            password: None,
+        };
+        let client = HttpClient::with_policy(HttpPolicy {
+            proxy: ProxyConfig {
+                enabled: true,
+                default_proxy: ep,
+                allow_direct_fallback: false,
+                domain_rules: Vec::new(),
+            },
+            ..HttpPolicy::default()
+        })
+        .unwrap();
+
+        let err = client
+            .fetch_html(&Url::parse("http://drop-test.example.com/ch").unwrap())
+            .await
+            .expect_err("proxy drop with fallback disabled must fail closed");
+        assert!(matches!(err, ScrapeError::Proxy(_)));
+
+        server.abort();
     }
 }
