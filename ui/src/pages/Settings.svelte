@@ -1,15 +1,17 @@
 <script lang="ts">
   import { RefreshCw, Trash2 } from "lucide-svelte";
   import { api } from "../lib/api";
+  import { LANGUAGE_OPTIONS } from "../lib/i18n";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
-  import type { CacheInfo, ReaderBg, Settings, Theme } from "../lib/types";
+  import type { CacheInfo, Language, ReaderBg, Settings, Theme } from "../lib/types";
 
   let cache = $state<CacheInfo | null>(null);
   let clearingCache = $state(false);
 
   const s = $derived(settingsStore.value);
+  const t = $derived(settingsStore.t);
 
   async function loadCacheInfo() {
     try {
@@ -31,9 +33,9 @@
     clearingCache = true;
     try {
       cache = await api.clearImageCache();
-      toasts.push("Image cache cleared.", "success");
+      toasts.push(t.toastCacheCleared, "success");
     } catch {
-      toasts.push("Failed to clear image cache.", "error");
+      toasts.push(t.toastCacheClearFailed, "error");
     } finally {
       clearingCache = false;
     }
@@ -48,22 +50,43 @@
 
 <div class="mx-auto flex w-full max-w-3xl flex-col gap-6 px-8 py-8">
   <div>
-    <h1 class="text-2xl font-bold tracking-tight">Settings</h1>
+    <h1 class="text-2xl font-bold tracking-tight">{t.settingsTitle}</h1>
     <p class="mt-1 text-xs" style="color: var(--text-muted);">
-      All changes are saved automatically and take effect immediately.
+      {t.settingsSubtitle}
     </p>
   </div>
 
   <!-- Appearance -->
   <section class="settings-card">
-    <h2 class="section-title">Appearance</h2>
+    <h2 class="section-title">{t.appearanceSection}</h2>
+
     <div class="row">
       <div>
-        <div class="label">Color theme</div>
-        <div class="desc">Choose light, dark, or follow your OS preference.</div>
+        <div class="label">{t.languageLabel}</div>
+        <div class="desc">{t.languageDesc}</div>
+      </div>
+      <select
+        value={s.language}
+        onchange={(e) => {
+          const lang = e.currentTarget.value as Language;
+          patch((d) => (d.language = lang));
+        }}
+        class="rounded-lg border px-3 py-1.5 text-xs font-medium"
+        style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+      >
+        {#each LANGUAGE_OPTIONS as opt (opt.code)}
+          <option value={opt.code}>{opt.label}</option>
+        {/each}
+      </select>
+    </div>
+
+    <div class="row">
+      <div>
+        <div class="label">{t.colorThemeLabel}</div>
+        <div class="desc">{t.colorThemeDesc}</div>
       </div>
       <div class="flex gap-1.5">
-        {#each [["system", "System"], ["light", "Light"], ["dark", "Dark"]] as [val, label] (val)}
+        {#each [["system", t.themeSystem], ["light", t.themeLight], ["dark", t.themeDark]] as [val, label] (val)}
           <button
             type="button"
             onclick={() => patch((d) => (d.theme = val as Theme))}
@@ -79,12 +102,12 @@
 
   <!-- Reader -->
   <section class="settings-card">
-    <h2 class="section-title">Vertical Reader</h2>
+    <h2 class="section-title">{t.readerSection}</h2>
 
     <div class="row">
       <div>
-        <div class="label">Image width mode</div>
-        <div class="desc">Set a fixed pixel width, viewport percentage, or fit to window.</div>
+        <div class="label">{t.widthModeLabel}</div>
+        <div class="desc">{t.widthModeDesc}</div>
       </div>
       <div class="flex gap-1.5">
         <button
@@ -93,7 +116,7 @@
           class="pill"
           class:pill-active={s.reader.width.mode === "px"}
         >
-          Pixels
+          {t.widthPixels}
         </button>
         <button
           type="button"
@@ -101,7 +124,7 @@
           class="pill"
           class:pill-active={s.reader.width.mode === "percent"}
         >
-          Percent
+          {t.widthPercent}
         </button>
         <button
           type="button"
@@ -109,14 +132,14 @@
           class="pill"
           class:pill-active={s.reader.width.mode === "fit_window"}
         >
-          Fit window
+          {t.fitWindow}
         </button>
       </div>
     </div>
 
     {#if s.reader.width.mode === "px"}
       <div class="row">
-        <div class="label">Width ({s.reader.width.value} px)</div>
+        <div class="label">{t.widthLabelPx(s.reader.width.value)}</div>
         <input
           type="range"
           min="480"
@@ -132,7 +155,7 @@
       </div>
     {:else if s.reader.width.mode === "percent"}
       <div class="row">
-        <div class="label">Width ({s.reader.width.value}%)</div>
+        <div class="label">{t.widthLabelPct(s.reader.width.value)}</div>
         <input
           type="range"
           min="35"
@@ -150,8 +173,8 @@
 
     <div class="row">
       <div>
-        <div class="label">Gap between pages ({s.reader.gapPx} px)</div>
-        <div class="desc">Set to 0 px for seamless Webtoon-style strips.</div>
+        <div class="label">{t.gapLabel(s.reader.gapPx)}</div>
+        <div class="desc">{t.gapDesc}</div>
       </div>
       <input
         type="range"
@@ -169,8 +192,8 @@
 
     <div class="row">
       <div>
-        <div class="label">Preload ahead ({s.reader.preloadImages} images)</div>
-        <div class="desc">Prefetch upcoming pages below the viewport for smoother scrolling.</div>
+        <div class="label">{t.preloadLabel(s.reader.preloadImages)}</div>
+        <div class="desc">{t.preloadDesc}</div>
       </div>
       <input
         type="range"
@@ -188,8 +211,8 @@
 
     <div class="row">
       <div>
-        <div class="label">Auto-append next chapter</div>
-        <div class="desc">Disable to show a Next Chapter button at the end instead.</div>
+        <div class="label">{t.autoAppendNext}</div>
+        <div class="desc">{t.autoAppendDesc}</div>
       </div>
       <input
         type="checkbox"
@@ -203,9 +226,9 @@
     </div>
 
     <div class="row">
-      <div class="label">Reader background</div>
+      <div class="label">{t.readerBg}</div>
       <div class="flex gap-1.5">
-        {#each [["dark", "Dark"], ["light", "Light"], ["follow_theme", "App theme"]] as [val, label] (val)}
+        {#each [["dark", t.bgDark], ["light", t.bgLight], ["follow_theme", t.bgAppTheme]] as [val, label] (val)}
           <button
             type="button"
             onclick={() => patch((d) => (d.reader.readerBg = val as ReaderBg))}
@@ -222,7 +245,7 @@
   <!-- Updates -->
   <section class="settings-card">
     <div class="flex items-center justify-between">
-      <h2 class="section-title">Chapter Updates</h2>
+      <h2 class="section-title">{t.updatesSection}</h2>
       <button
         type="button"
         onclick={() => updatesStore.checkNow()}
@@ -231,14 +254,14 @@
         style="border-color: var(--border); background-color: var(--surface-subtle);"
       >
         <RefreshCw size={13} class={updatesStore.checking ? "animate-spin" : ""} />
-        <span>Check now</span>
+        <span>{t.checkNow}</span>
       </button>
     </div>
 
     <div class="row">
       <div>
-        <div class="label">Auto-check manga in history</div>
-        <div class="desc">Runs in the background at your selected interval.</div>
+        <div class="label">{t.autoCheckLabel}</div>
+        <div class="desc">{t.autoCheckDesc}</div>
       </div>
       <input
         type="checkbox"
@@ -252,7 +275,7 @@
     </div>
 
     <div class="row">
-      <div class="label">Check interval</div>
+      <div class="label">{t.checkIntervalLabel}</div>
       <select
         value={s.updates.intervalHours}
         onchange={(e) => {
@@ -262,18 +285,16 @@
         class="rounded-lg border px-3 py-1.5 text-xs"
         style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
       >
-        <option value={1}>Every 1 hour</option>
-        <option value={3}>Every 3 hours</option>
-        <option value={6}>Every 6 hours</option>
-        <option value={12}>Every 12 hours</option>
-        <option value={24}>Every 24 hours</option>
+        {#each [1, 3, 6, 12, 24] as hrs (hrs)}
+          <option value={hrs}>{t.everyHours(hrs)}</option>
+        {/each}
       </select>
     </div>
 
     <div class="row">
       <div>
-        <div class="label">Desktop notifications</div>
-        <div class="desc">Show an OS notification when new chapters are found.</div>
+        <div class="label">{t.notificationsLabel}</div>
+        <div class="desc">{t.notificationsDesc}</div>
       </div>
       <input
         type="checkbox"
@@ -289,14 +310,12 @@
 
   <!-- Scraper / Sources -->
   <section class="settings-card">
-    <h2 class="section-title">Sources</h2>
+    <h2 class="section-title">{t.sourcesSection}</h2>
 
     <div class="row">
       <div>
-        <div class="label">Headless browser fallback (Edge/Chrome)</div>
-        <div class="desc">
-          Automatically used on Windows when a site renders page images via JavaScript.
-        </div>
+        <div class="label">{t.headlessLabel}</div>
+        <div class="desc">{t.headlessDesc}</div>
       </div>
       <input
         type="checkbox"
@@ -312,16 +331,16 @@
 
   <!-- Cache -->
   <section class="settings-card">
-    <h2 class="section-title">Image Cache</h2>
+    <h2 class="section-title">{t.cacheSection}</h2>
 
     <div class="row">
       <div>
-        <div class="label">Current disk usage</div>
+        <div class="label">{t.cacheUsageLabel}</div>
         <div class="desc">
           {#if cache}
-            {formatBytes(cache.bytes)} ({cache.files} cached images)
+            {t.cacheUsageDesc(formatBytes(cache.bytes), cache.files)}
           {:else}
-            Calculating...
+            {t.calculating}
           {/if}
         </div>
       </div>
@@ -333,12 +352,12 @@
         style="border-color: var(--border); color: var(--danger);"
       >
         <Trash2 size={14} />
-        <span>{clearingCache ? "Clearing..." : "Clear cache"}</span>
+        <span>{clearingCache ? t.clearing : t.clearCache}</span>
       </button>
     </div>
 
     <div class="row">
-      <div class="label">Max cache size ({s.cache.maxMb} MB)</div>
+      <div class="label">{t.maxCacheLabel(s.cache.maxMb)}</div>
       <input
         type="range"
         min="256"

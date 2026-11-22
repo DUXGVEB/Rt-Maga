@@ -10,6 +10,7 @@
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
   import { router } from "../lib/stores/router.svelte";
+  import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import type { MangaView } from "../lib/types";
 
@@ -22,13 +23,15 @@
   let query = $state("");
   let newestFirst = $state(true);
 
+  const t = $derived(settingsStore.t);
+
   async function load() {
     loading = true;
     errorText = null;
     try {
       manga = await api.getManga(id);
     } catch (err) {
-      errorText = formatAppError(err).detail;
+      errorText = formatAppError(err, settingsStore.value.language).detail;
     } finally {
       loading = false;
     }
@@ -39,9 +42,9 @@
     refreshing = true;
     try {
       manga = await api.refreshManga(id);
-      toasts.push("Chapter list updated.", "success");
+      toasts.push(t.toastChaptersUpdated, "success");
     } catch (err) {
-      toasts.push(formatAppError(err).title, "error");
+      toasts.push(formatAppError(err, settingsStore.value.language).title, "error");
     } finally {
       refreshing = false;
     }
@@ -80,7 +83,7 @@
       style="color: var(--text-muted);"
     >
       <ArrowLeft size={16} />
-      <span>Home</span>
+      <span>{t.backHome}</span>
     </button>
 
     {#if manga}
@@ -92,7 +95,7 @@
         style="background-color: var(--surface); border-color: var(--border);"
       >
         <RefreshCw size={14} class={refreshing ? "animate-spin" : ""} />
-        <span>{refreshing ? "Refreshing..." : "Refresh chapters"}</span>
+        <span>{refreshing ? t.refreshing : t.refreshChapters}</span>
       </button>
     {/if}
   </div>
@@ -148,7 +151,7 @@
               {manga.site}
             </span>
             <span class="text-xs" style="color: var(--text-muted);">
-              {manga.chapters.length} chapters
+              {t.chapterCount(manga.chapters.length)}
             </span>
           </div>
 
@@ -167,9 +170,9 @@
             <Play size={16} fill="currentColor" />
             <span>
               {#if manga.progress}
-                Continue · {manga.progress.chapterName}
+                {t.continueChapter(manga.progress.chapterName)}
               {:else}
-                Start reading
+                {t.startReading}
               {/if}
             </span>
           </button>
@@ -181,7 +184,7 @@
               class="rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors"
               style="border-color: var(--border); background-color: var(--surface-subtle);"
             >
-              Read from Chapter 1
+              {t.readFromFirst}
             </button>
           {/if}
         </div>
@@ -191,7 +194,7 @@
     <!-- Chapter list controls -->
     <section class="flex flex-col gap-3">
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <h2 class="text-base font-semibold">Chapters</h2>
+        <h2 class="text-base font-semibold">{t.chaptersHeading}</h2>
 
         <div class="flex items-center gap-2">
           <div
@@ -202,7 +205,7 @@
             <input
               type="text"
               bind:value={query}
-              placeholder="Filter chapters..."
+              placeholder={t.filterChapters}
               class="w-40 bg-transparent text-xs outline-none"
             />
           </div>
@@ -216,7 +219,7 @@
             style="background-color: var(--surface); border-color: var(--border);"
           >
             <ArrowDownUp size={14} />
-            <span>{newestFirst ? "Newest first" : "Oldest first"}</span>
+            <span>{newestFirst ? t.newestFirst : t.oldestFirst}</span>
           </button>
         </div>
       </div>

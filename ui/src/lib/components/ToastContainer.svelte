@@ -1,5 +1,6 @@
 <script lang="ts">
   import { X } from "lucide-svelte";
+  import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
 </script>
 
@@ -19,7 +20,7 @@
           type="button"
           onclick={() => toasts.dismiss(toast.id)}
           class="opacity-60 transition-opacity hover:opacity-100"
-          aria-label="Dismiss notification"
+          aria-label={settingsStore.t.dismissNotification}
         >
           <X size={14} />
         </button>

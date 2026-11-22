@@ -1,8 +1,10 @@
 import { api } from "../api";
-import type { Settings, Theme } from "../types";
+import { getDict, getLocale } from "../i18n";
+import type { Language, Settings, Theme } from "../types";
 import { toasts } from "./toast.svelte";
 
 export const DEFAULT_SETTINGS: Settings = {
+  language: "en",
   theme: "system",
   reader: {
     width: { mode: "px", value: 800 },
@@ -36,32 +38,36 @@ class SettingsStore {
   resolvedTheme = $state<"light" | "dark">("light");
   loaded = $state(false);
 
+  t = $derived(getDict(this.value.language));
+  locale = $derived(getLocale(this.value.language));
+
   private initialized = false;
   private saveTimer: number | null = null;
   private saveVersion = 0;
 
-  private applyTheme(theme: Theme) {
+  private applyAppearance(theme: Theme, language: Language) {
     const resolved = resolveTheme(theme);
     this.resolvedTheme = resolved;
     document.documentElement.setAttribute("data-theme", resolved);
+    document.documentElement.setAttribute("lang", language);
   }
 
   async init() {
     if (this.initialized) return;
     this.initialized = true;
 
-    this.applyTheme(this.value.theme);
+    this.applyAppearance(this.value.theme, this.value.language);
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     mq.addEventListener("change", () => {
       if (this.value.theme === "system") {
-        this.applyTheme("system");
+        this.applyAppearance("system", this.value.language);
       }
     });
 
     try {
       const s = await api.getSettings();
-      this.value = s;
-      this.applyTheme(s.theme);
+      this.value = { ...DEFAULT_SETTINGS, ...s };
+      this.applyAppearance(this.value.theme, this.value.language);
     } catch {
       // Fallback to defaults when running UI standalone in browser preview.
     } finally {
@@ -71,8 +77,8 @@ class SettingsStore {
     try {
       await api.onSettingsChanged((s) => {
         if (this.saveTimer !== null) return;
-        this.value = s;
-        this.applyTheme(s.theme);
+        this.value = { ...DEFAULT_SETTINGS, ...s };
+        this.applyAppearance(this.value.theme, this.value.language);
       });
     } catch {
       // Outside Tauri runtime.
@@ -87,7 +93,7 @@ class SettingsStore {
     const draft = $state.snapshot(this.value) as Settings;
     mutator(draft);
     this.value = draft;
-    this.applyTheme(draft.theme);
+    this.applyAppearance(draft.theme, draft.language);
     this.schedulePersist(draft, debounceMs);
   }
 
@@ -103,13 +109,13 @@ class SettingsStore {
       try {
         const saved = await api.setSettings(payload);
         if (version === this.saveVersion) {
-          this.value = saved;
-          this.applyTheme(saved.theme);
+          this.value = { ...DEFAULT_SETTINGS, ...saved };
+          this.applyAppearance(this.value.theme, this.value.language);
         }
       } catch (err) {
         if ("__TAURI_INTERNALS__" in window) {
           console.error("Failed to save settings:", err);
-          toasts.push("Failed to save settings.", "error");
+          toasts.push(this.t.toastSettingsSaveFailed, "error");
         }
       }
     };

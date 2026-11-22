@@ -2,9 +2,11 @@
   import { BookOpen, Sparkles } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
   import { router } from "../stores/router.svelte";
+  import { settingsStore } from "../stores/settings.svelte";
   import type { HistoryItemView } from "../types";
 
   let { item }: { item: HistoryItemView } = $props();
+  const t = $derived(settingsStore.t);
 
   const progressPct = $derived(() => {
     if (item.totalChapters <= 0 || item.currentChapterIdx === null) {
@@ -56,7 +58,7 @@
         style="background-color: var(--accent);"
       >
         <Sparkles size={11} />
-        New
+        {t.badgeNew}
       </span>
     {/if}
 
@@ -66,7 +68,7 @@
       class="absolute right-2 bottom-2 rounded-lg px-2 py-1 text-[11px] font-medium text-white opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100"
       style="background-color: rgba(15, 15, 18, 0.72);"
     >
-      Chapters
+      {t.chaptersBtn}
     </button>
   </div>
 

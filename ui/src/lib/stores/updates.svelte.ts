@@ -1,5 +1,6 @@
 import { api } from "../api";
 import type { FoundUpdate, UpdateProgress } from "../types";
+import { settingsStore } from "./settings.svelte";
 import { toasts } from "./toast.svelte";
 
 class UpdatesStore {
@@ -20,10 +21,11 @@ class UpdatesStore {
       await api.onUpdatesFound((found) => {
         this.lastFound = found;
         this.newCount += found.length;
+        const t = settingsStore.t;
         if (found.length === 1) {
-          toasts.push(`New chapter: ${found[0].title} (${found[0].latest})`, "success", 5000);
+          toasts.push(t.toastFoundOne(found[0].title, found[0].latest), "success", 5000);
         } else if (found.length > 1) {
-          toasts.push(`${found.length} manga have new chapters`, "success", 5000);
+          toasts.push(t.toastFoundMany(found.length), "success", 5000);
         }
       });
     } catch {
@@ -38,18 +40,19 @@ class UpdatesStore {
   async checkNow() {
     if (this.checking) return;
     this.checking = true;
+    const t = settingsStore.t;
     try {
       const summary = await api.checkUpdatesNow();
       if (summary.found.length === 0) {
         toasts.push(
           summary.checked === 0
-            ? "No manga in history to check yet."
-            : `Checked ${summary.checked} manga - no new chapters yet.`,
+            ? t.toastNoHistoryToCheck
+            : t.toastNoNewChapters(summary.checked),
           "info"
         );
       }
     } catch {
-      toasts.push("Failed to check for updates right now.", "error");
+      toasts.push(t.toastCheckFailed, "error");
     } finally {
       this.checking = false;
       this.progress = null;

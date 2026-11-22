@@ -1,3 +1,5 @@
+export type Language = "en" | "vi" | "zh" | "ja" | "ru" | "ko" | "th";
+
 export type Theme = "system" | "light" | "dark";
 
 export type ImageWidth =
@@ -31,6 +33,7 @@ export interface CacheSettings {
 }
 
 export interface Settings {
+  language: Language;
   theme: Theme;
   reader: ReaderSettings;
   updates: UpdateSettings;

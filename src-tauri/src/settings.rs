@@ -3,6 +3,28 @@
 use mangacore::HeadlessPolicy;
 use serde::{Deserialize, Serialize};
 
+/// Supported UI display languages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum Language {
+    /// English (default).
+    #[default]
+    En,
+    /// Vietnamese.
+    Vi,
+    /// Chinese (Simplified).
+    Zh,
+    /// Japanese.
+    Ja,
+    /// Russian.
+    Ru,
+    /// Korean.
+    Ko,
+    /// Thai.
+    Th,
+}
+
 /// Application UI color theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -137,6 +159,9 @@ impl Default for CacheSettings {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Settings {
+    /// UI display language.
+    #[serde(default)]
+    pub language: Language,
     /// UI color theme.
     pub theme: Theme,
     /// Vertical reader settings.
@@ -195,12 +220,20 @@ mod tests {
             "cache": { "maxMb": 512 }
         }"#;
         let parsed: Settings = serde_json::from_str(px_json).unwrap();
+        assert_eq!(parsed.language, Language::En);
         assert_eq!(parsed.theme, Theme::Dark);
         assert_eq!(parsed.reader.width, ImageWidth::Px(920));
         assert!(!parsed.reader.auto_next_chapter);
         assert_eq!(parsed.reader.reader_bg, ReaderBg::FollowTheme);
         assert_eq!(parsed.updates.interval_hours, 3);
         assert!(!parsed.sources.headless_enabled);
+
+        let lang_json = px_json.replace(
+            r#""theme": "dark","#,
+            r#""language": "ja", "theme": "dark","#,
+        );
+        let parsed_ja: Settings = serde_json::from_str(&lang_json).unwrap();
+        assert_eq!(parsed_ja.language, Language::Ja);
 
         let fit_json = px_json.replace(
             r#"{ "mode": "px", "value": 920 }"#,

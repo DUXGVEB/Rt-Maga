@@ -44,6 +44,7 @@
   let restoredInitialScroll = false;
 
   const readerSettings = $derived(settingsStore.value.reader);
+  const t = $derived(settingsStore.t);
 
   const activeChapter = $derived(
     strip.find((c) => c.url === activeUrl) ?? strip[strip.length - 1] ?? null
@@ -101,7 +102,7 @@
         restoredInitialScroll = true;
       }
     } catch (err) {
-      errorState = formatAppError(err);
+      errorState = formatAppError(err, settingsStore.value.language);
     } finally {
       loadingInitial = false;
     }
@@ -149,7 +150,7 @@
         }
       }
     } catch (err) {
-      toasts.push(formatAppError(err).title, "error");
+      toasts.push(formatAppError(err, settingsStore.value.language).title, "error");
     } finally {
       appendingNext = false;
     }
@@ -321,14 +322,14 @@
         type="button"
         onclick={exitReader}
         class="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm hover:opacity-80"
-        title="Back (Esc)"
+        title={t.backTooltip}
       >
         <ArrowLeft size={17} />
-        <span class="hidden sm:inline">Back</span>
+        <span class="hidden sm:inline">{t.back}</span>
       </button>
 
       <div class="min-w-0 border-l pl-3" style="border-color: var(--border);">
-        <div class="truncate text-sm font-semibold">{manga?.title ?? "Reading"}</div>
+        <div class="truncate text-sm font-semibold">{manga?.title ?? t.readingFallback}</div>
         <div class="truncate text-xs" style="color: var(--text-muted);">
           {activeChapter?.name ?? ""}
         </div>
@@ -343,7 +344,7 @@
         onclick={() => activeChapter?.prev && jumpToChapter(activeChapter.prev)}
         class="rounded-lg border p-1.5 disabled:opacity-35"
         style="border-color: var(--border); background-color: var(--surface);"
-        title="Previous chapter (Left Arrow)"
+        title={t.prevChapterTooltip}
       >
         <ChevronLeft size={17} />
       </button>
@@ -367,7 +368,7 @@
         onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
         class="rounded-lg border p-1.5 disabled:opacity-35"
         style="border-color: var(--border); background-color: var(--surface);"
-        title="Next chapter (Right Arrow)"
+        title={t.nextChapterTooltip}
       >
         <ChevronRight size={17} />
       </button>
@@ -381,7 +382,7 @@
         style="border-color: var(--border); background-color: {quickSettingsOpen
           ? 'var(--accent-soft)'
           : 'var(--surface)'}; color: {quickSettingsOpen ? 'var(--accent)' : 'var(--text)'};"
-        title="Quick reader settings"
+        title={t.quickSettingsTooltip}
       >
         <SlidersHorizontal size={16} />
       </button>
@@ -391,7 +392,7 @@
         onclick={toggleFullscreen}
         class="rounded-lg border p-1.5"
         style="border-color: var(--border); background-color: var(--surface);"
-        title="Toggle fullscreen (F)"
+        title={t.fullscreenTooltip}
       >
         {#if isFullscreen}
           <Minimize size={16} />
@@ -410,13 +411,13 @@
     >
       <div class="flex flex-col gap-2">
         <div class="flex items-center justify-between font-medium">
-          <span>Image width</span>
+          <span>{t.imageWidth}</span>
           <span style="color: var(--text-muted);">
             {readerSettings.width.mode === "px"
               ? `${readerSettings.width.value}px`
               : readerSettings.width.mode === "percent"
                 ? `${readerSettings.width.value}%`
-                : "Fit window"}
+                : t.fitWindow}
           </span>
         </div>
         <input
@@ -431,7 +432,7 @@
       </div>
 
       <div class="flex items-center justify-between">
-        <span class="font-medium">Auto-append next chapter</span>
+        <span class="font-medium">{t.autoAppendNext}</span>
         <input
           type="checkbox"
           checked={readerSettings.autoNextChapter}
@@ -441,9 +442,9 @@
       </div>
 
       <div class="flex flex-col gap-1.5">
-        <span class="font-medium">Reader background</span>
+        <span class="font-medium">{t.readerBg}</span>
         <div class="grid grid-cols-3 gap-1.5">
-          {#each [["dark", "Dark"], ["light", "Light"], ["follow_theme", "App theme"]] as [val, label] (val)}
+          {#each [["dark", t.bgDark], ["light", t.bgLight], ["follow_theme", t.bgAppTheme]] as [val, label] (val)}
             <button
               type="button"
               onclick={() => setReaderBg(val as ReaderBg)}
@@ -473,7 +474,7 @@
     {#if loadingInitial}
       <div class="flex h-full flex-col items-center justify-center gap-3 text-sm" style="color: var(--text-muted);">
         <Loader2 size={28} class="animate-spin" style="color: var(--accent);" />
-        <span>Loading chapter pages...</span>
+        <span>{t.loadingPages}</span>
       </div>
     {:else if errorState}
       <div class="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
@@ -486,7 +487,7 @@
             class="rounded-xl px-4 py-2 text-xs font-medium text-white"
             style="background-color: var(--accent);"
           >
-            Retry
+            {t.retry}
           </button>
           <button
             type="button"
@@ -494,7 +495,7 @@
             class="rounded-xl border px-4 py-2 text-xs font-medium"
             style="border-color: var(--border); background-color: var(--surface);"
           >
-            Back
+            {t.back}
           </button>
         </div>
       </div>
@@ -531,7 +532,7 @@
           {#if appendingNext}
             <div class="flex items-center gap-2 text-xs" style="color: var(--text-muted);">
               <Loader2 size={16} class="animate-spin" style="color: var(--accent);" />
-              <span>Loading next chapter...</span>
+              <span>{t.loadingNextChapter}</span>
             </div>
           {:else if lastChapter?.next}
             <button
@@ -546,7 +547,7 @@
               class="inline-flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
               style="background-color: var(--accent);"
             >
-              <span>Next Chapter</span>
+              <span>{t.nextChapter}</span>
               <ChevronRight size={17} />
             </button>
           {:else}
@@ -554,7 +555,7 @@
               class="rounded-xl border px-5 py-3 text-xs font-medium"
               style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
             >
-              You have reached the latest chapter
+              {t.reachedLatest}
             </div>
           {/if}
         </div>

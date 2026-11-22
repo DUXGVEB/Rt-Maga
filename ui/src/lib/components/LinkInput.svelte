@@ -2,12 +2,15 @@
   import { AlertCircle, ArrowRight, ExternalLink, Link2, Loader2 } from "lucide-svelte";
   import { api, formatAppError } from "../api";
   import { router } from "../stores/router.svelte";
+  import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
 
   let urlInput = $state("");
   let loading = $state(false);
   let verifying = $state(false);
   let errorState = $state<{ title: string; detail: string; blockedUrl?: string } | null>(null);
+
+  const t = $derived(settingsStore.t);
 
   async function submit(raw?: string) {
     const target = (raw ?? urlInput).trim();
@@ -25,7 +28,7 @@
         router.goManga(res.manga.id);
       }
     } catch (err) {
-      errorState = formatAppError(err);
+      errorState = formatAppError(err, settingsStore.value.language);
     } finally {
       loading = false;
     }
@@ -43,12 +46,12 @@
     if (!errorState?.blockedUrl || verifying) return;
     verifying = true;
     try {
-      toasts.push("Opening browser window for manual verification...", "info", 4500);
+      toasts.push(t.toastOpeningVerify, "info", 4500);
       await api.openManualVerification(errorState.blockedUrl);
-      toasts.push("Verification complete. Retrying manga fetch...", "success");
+      toasts.push(t.toastVerifyDone, "success");
       await submit(errorState.blockedUrl);
     } catch (err) {
-      errorState = formatAppError(err);
+      errorState = formatAppError(err, settingsStore.value.language);
     } finally {
       verifying = false;
     }
@@ -73,7 +76,7 @@
       bind:value={urlInput}
       onpaste={handlePaste}
       disabled={loading}
-      placeholder="Paste any manga or chapter URL (e.g. https://truyenqqko.com/truyen-tranh/...)"
+      placeholder={t.linkPlaceholder}
       class="w-full bg-transparent py-2 text-sm outline-none placeholder:opacity-65"
       style="color: var(--text);"
     />
@@ -86,9 +89,9 @@
     >
       {#if loading}
         <Loader2 size={16} class="animate-spin" />
-        <span>Fetching</span>
+        <span>{t.fetching}</span>
       {:else}
-        <span>Open</span>
+        <span>{t.open}</span>
         <ArrowRight size={15} />
       {/if}
     </button>
@@ -115,10 +118,10 @@
           >
             {#if verifying}
               <Loader2 size={14} class="animate-spin" />
-              <span>Waiting for verification...</span>
+              <span>{t.waitingVerification}</span>
             {:else}
               <ExternalLink size={14} />
-              <span>Open verification window</span>
+              <span>{t.openVerification}</span>
             {/if}
           </button>
         {/if}

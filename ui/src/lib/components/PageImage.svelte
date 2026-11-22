@@ -1,6 +1,7 @@
 <script lang="ts">
   import { RotateCcw } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
+  import { settingsStore } from "../stores/settings.svelte";
 
   let {
     token,
@@ -59,7 +60,7 @@
       style="background-color: var(--surface); border-color: var(--border);"
     >
       <span class="text-xs" style="color: var(--text-muted);">
-        Failed to load page {index + 1}
+        {settingsStore.t.failedPage(index + 1)}
       </span>
       <button
         type="button"
@@ -68,7 +69,7 @@
         style="background-color: var(--accent);"
       >
         <RotateCcw size={13} />
-        Retry
+        {settingsStore.t.retry}
       </button>
     </div>
   {:else if shouldLoad}
@@ -80,7 +81,7 @@
     {/if}
     <img
       {src}
-      alt={`Page ${index + 1}`}
+      alt={settingsStore.t.pageAlt(index + 1)}
       decoding="async"
       onload={() => {
         loaded = true;

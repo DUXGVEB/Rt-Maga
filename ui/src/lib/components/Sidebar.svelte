@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { BookOpen, Clock, Home, Moon, RefreshCw, Settings, Sun } from "lucide-svelte";
+  import { Clock, Home, Moon, RefreshCw, Settings, Sun } from "lucide-svelte";
+  import logoUrl from "../../assets/logo.png";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { updatesStore } from "../stores/updates.svelte";
 
   const isDark = $derived(settingsStore.resolvedTheme === "dark");
+  const t = $derived(settingsStore.t);
 
   function toggleTheme() {
     settingsStore.update((d) => {
@@ -24,15 +26,10 @@
       onclick={() => router.goHome()}
       class="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-opacity hover:opacity-85"
     >
-      <div
-        class="flex h-8 w-8 items-center justify-center rounded-lg text-white shadow-sm"
-        style="background-color: var(--accent);"
-      >
-        <BookOpen size={17} strokeWidth={2.2} />
-      </div>
+      <img src={logoUrl} alt="RtMaga" class="h-8 w-8 shrink-0 rounded-lg shadow-sm" />
       <div class="leading-tight">
         <div class="text-base font-semibold tracking-tight">RtMaga</div>
-        <div class="text-[11px]" style="color: var(--text-muted);">Clean Manga Reader</div>
+        <div class="text-[11px]" style="color: var(--text-muted);">{t.brandSubtitle}</div>
       </div>
     </button>
 
@@ -45,7 +42,7 @@
         class:active={router.current.name === "home" || router.current.name === "manga"}
       >
         <Home size={18} />
-        <span>Home</span>
+        <span>{t.navHome}</span>
         {#if updatesStore.newCount > 0}
           <span
             class="ml-auto rounded-full px-2 py-0.5 text-[11px] font-semibold text-white"
@@ -63,7 +60,7 @@
         class:active={router.current.name === "history"}
       >
         <Clock size={18} />
-        <span>History</span>
+        <span>{t.navHistory}</span>
       </button>
 
       <button
@@ -73,7 +70,7 @@
         class:active={router.current.name === "settings"}
       >
         <Settings size={18} />
-        <span>Settings</span>
+        <span>{t.navSettings}</span>
       </button>
     </nav>
   </div>
@@ -85,16 +82,16 @@
       onclick={() => updatesStore.checkNow()}
       disabled={updatesStore.checking}
       class="nav-item text-xs"
-      title="Check for new chapters across manga in history"
+      title={t.checkUpdatesTooltip}
     >
       <RefreshCw size={15} class={updatesStore.checking ? "animate-spin" : ""} />
       <span>
         {#if updatesStore.checking && updatesStore.progress}
-          Checking ({updatesStore.progress.done}/{updatesStore.progress.total})
+          {t.checkingProgress(updatesStore.progress.done, updatesStore.progress.total)}
         {:else if updatesStore.checking}
-          Checking...
+          {t.checking}
         {:else}
-          Check for updates
+          {t.checkUpdates}
         {/if}
       </span>
     </button>
@@ -102,10 +99,10 @@
     <button type="button" onclick={toggleTheme} class="nav-item text-xs">
       {#if isDark}
         <Sun size={15} />
-        <span>Light mode</span>
+        <span>{t.lightMode}</span>
       {:else}
         <Moon size={15} />
-        <span>Dark mode</span>
+        <span>{t.darkMode}</span>
       {/if}
     </button>
   </div>

@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 
 use crate::error::AppError;
 use crate::repo::now_unix_secs;
+use crate::settings::Language;
 use crate::state::AppState;
 
 /// Minimum interval (seconds) between automatic re-checks of the same manga.
@@ -143,7 +144,7 @@ pub(crate) async fn run_update_check(
         let _ = app.emit("updates://found", &found);
 
         if settings.updates.notify_windows {
-            send_windows_notification(app, &found);
+            send_windows_notification(app, &found, settings.language);
         }
     }
 
@@ -153,20 +154,33 @@ pub(crate) async fn run_update_check(
     })
 }
 
-fn send_windows_notification(app: &AppHandle, found: &[FoundUpdate]) {
-    let body = if found.len() == 1 {
-        format!("{} - {}", found[0].title, found[0].latest)
-    } else {
-        format!("{} manga have new chapters available", found.len())
+fn send_windows_notification(app: &AppHandle, found: &[FoundUpdate], language: Language) {
+    let title = match language {
+        Language::En => "RtMaga - New Chapters",
+        Language::Vi => "RtMaga - Chương mới",
+        Language::Zh => "RtMaga - 新章节",
+        Language::Ja => "RtMaga - 新着チャプター",
+        Language::Ru => "RtMaga - Новые главы",
+        Language::Ko => "RtMaga - 새 챕터",
+        Language::Th => "RtMaga - ตอนใหม่",
     };
 
-    if let Err(err) = app
-        .notification()
-        .builder()
-        .title("RtMaga - New Chapters")
-        .body(body)
-        .show()
-    {
+    let count = found.len();
+    let body = if count == 1 {
+        format!("{} - {}", found[0].title, found[0].latest)
+    } else {
+        match language {
+            Language::En => format!("{count} manga have new chapters available"),
+            Language::Vi => format!("Có {count} truyện vừa ra chương mới"),
+            Language::Zh => format!("有 {count} 部漫画更新了新章节"),
+            Language::Ja => format!("{count}作品に新しいチャプターがあります"),
+            Language::Ru => format!("Новые главы вышли у {count} манг"),
+            Language::Ko => format!("{count}개의 만화에 새 챕터가 있습니다"),
+            Language::Th => format!("มีตอนใหม่สำหรับมังงะ {count} เรื่อง"),
+        }
+    };
+
+    if let Err(err) = app.notification().builder().title(title).body(body).show() {
         warn!(%err, "failed to display desktop notification");
     }
 }

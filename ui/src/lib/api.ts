@@ -1,11 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getDict } from "./i18n";
 import type {
   AppError,
   CacheInfo,
   ChapterView,
   FoundUpdate,
   HistoryItemView,
+  Language,
   MangaView,
   ResolveResponse,
   Settings,
@@ -23,52 +25,54 @@ export function imgProxyUrl(token: string, retry = false): string {
   return retry ? `${base}?retry=1` : base;
 }
 
-export function formatAppError(err: unknown): {
+export function formatAppError(
+  err: unknown,
+  lang: Language = "en"
+): {
   title: string;
   detail: string;
   blockedUrl?: string;
 } {
+  const t = getDict(lang);
   if (typeof err === "object" && err !== null && "kind" in err) {
     const e = err as AppError;
     switch (e.kind) {
       case "invalid_url":
         return {
-          title: "Invalid URL",
-          detail: "Please paste a valid manga or chapter link (starting with https://...).",
+          title: t.errInvalidUrlTitle,
+          detail: t.errInvalidUrlDetail,
         };
       case "blocked":
         return {
-          title: `${e.host} requires verification`,
-          detail:
-            "This site enabled anti-bot protection (Cloudflare). Open a browser window to complete verification, then try again.",
+          title: t.errBlockedTitle(e.host),
+          detail: t.errBlockedDetail,
           blockedUrl: e.url,
         };
       case "not_recognized":
         return {
-          title: "Could not recognize manga content",
-          detail:
-            "Try pasting a direct manga overview or chapter link, or enable Headless Browser fallback in Settings.",
+          title: t.errNotRecognizedTitle,
+          detail: t.errNotRecognizedDetail,
         };
       case "network":
         return {
-          title: "Could not connect to the website",
+          title: t.errNetworkTitle,
           detail: e.message,
         };
       case "not_found":
         return {
-          title: "Not found",
+          title: t.errNotFoundTitle,
           detail: e.message,
         };
       case "db":
       case "internal":
         return {
-          title: "Application error",
+          title: t.errAppTitle,
           detail: e.message,
         };
     }
   }
   return {
-    title: "Something went wrong",
+    title: t.errGenericTitle,
     detail: String(err),
   };
 }

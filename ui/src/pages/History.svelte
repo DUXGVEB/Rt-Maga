@@ -2,6 +2,7 @@
   import { BookOpen, Clock, Sparkles, Trash2 } from "lucide-svelte";
   import { api, imgProxyUrl } from "../lib/api";
   import { router } from "../lib/stores/router.svelte";
+  import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
   import type { HistoryItemView } from "../lib/types";
@@ -9,6 +10,8 @@
   let items = $state<HistoryItemView[]>([]);
   let loading = $state(true);
   let confirmingClear = $state(false);
+
+  const t = $derived(settingsStore.t);
 
   async function load() {
     loading = true;
@@ -31,7 +34,7 @@
     await api.removeHistory(mangaId);
     items = items.filter((i) => i.mangaId !== mangaId);
     updatesStore.setNewCountFromHistory(items.filter((i) => i.hasNew).length);
-    toasts.push("Removed from history and stopped checking for updates.", "info");
+    toasts.push(t.toastRemovedHistory, "info");
   }
 
   async function clearAll() {
@@ -39,12 +42,12 @@
     items = [];
     confirmingClear = false;
     updatesStore.setNewCountFromHistory(0);
-    toasts.push("Reading history cleared.", "info");
+    toasts.push(t.toastClearedHistory, "info");
   }
 
   function formatTime(unixSecs: number): string {
     const date = new Date(unixSecs * 1000);
-    return date.toLocaleString("en-US", {
+    return date.toLocaleString(settingsStore.locale, {
       hour: "2-digit",
       minute: "2-digit",
       month: "short",
@@ -52,27 +55,33 @@
     });
   }
 
-  function groupLabel(unixSecs: number): string {
+  type GroupKey = "today" | "yesterday" | "earlier";
+
+  function groupKey(unixSecs: number): GroupKey {
     const now = new Date();
     const d = new Date(unixSecs * 1000);
     const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const startYesterday = startToday - 86_400_000;
-    const t = d.getTime();
-    if (t >= startToday) return "Today";
-    if (t >= startYesterday) return "Yesterday";
-    return "Earlier";
+    const ts = d.getTime();
+    if (ts >= startToday) return "today";
+    if (ts >= startYesterday) return "yesterday";
+    return "earlier";
   }
 
   const grouped = $derived(() => {
-    const order = ["Today", "Yesterday", "Earlier"];
-    const map = new Map<string, HistoryItemView[]>();
-    for (const label of order) map.set(label, []);
+    const order: GroupKey[] = ["today", "yesterday", "earlier"];
+    const labels: Record<GroupKey, string> = {
+      today: t.today,
+      yesterday: t.yesterday,
+      earlier: t.earlier,
+    };
+    const map = new Map<GroupKey, HistoryItemView[]>();
+    for (const k of order) map.set(k, []);
     for (const item of items) {
-      const label = groupLabel(item.readAt);
-      map.get(label)?.push(item);
+      map.get(groupKey(item.readAt))?.push(item);
     }
     return order
-      .map((label) => ({ label, list: map.get(label) ?? [] }))
+      .map((key) => ({ key, label: labels[key], list: map.get(key) ?? [] }))
       .filter((g) => g.list.length > 0);
   });
 </script>
@@ -80,9 +89,9 @@
 <div class="mx-auto flex w-full max-w-4xl flex-col gap-6 px-8 py-8">
   <div class="flex items-center justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-bold tracking-tight">Reading History</h1>
+      <h1 class="text-2xl font-bold tracking-tight">{t.historyTitle}</h1>
       <p class="mt-1 text-xs" style="color: var(--text-muted);">
-        New chapters are checked automatically for manga listed here. Removing an entry stops update checks.
+        {t.historySubtitle}
       </p>
     </div>
 
@@ -95,7 +104,7 @@
             class="rounded-lg px-3 py-1.5 text-xs font-semibold text-white"
             style="background-color: var(--danger);"
           >
-            Confirm clear
+            {t.confirmClear}
           </button>
           <button
             type="button"
@@ -105,7 +114,7 @@
             class="rounded-lg border px-3 py-1.5 text-xs"
             style="border-color: var(--border);"
           >
-            Cancel
+            {t.cancel}
           </button>
         </div>
       {:else}
@@ -118,7 +127,7 @@
           style="background-color: var(--surface); border-color: var(--border); color: var(--danger);"
         >
           <Trash2 size={14} />
-          <span>Clear all</span>
+          <span>{t.clearAll}</span>
         </button>
       {/if}
     {/if}
@@ -139,11 +148,11 @@
       style="border-color: var(--border); color: var(--text-muted);"
     >
       <Clock size={30} strokeWidth={1.5} />
-      <div class="text-sm font-medium" style="color: var(--text);">History is empty</div>
-      <p class="text-xs">Manga will appear here as soon as you open your first chapter.</p>
+      <div class="text-sm font-medium" style="color: var(--text);">{t.historyEmptyTitle}</div>
+      <p class="text-xs">{t.historyEmptyDesc}</p>
     </div>
   {:else}
-    {#each grouped() as group (group.label)}
+    {#each grouped() as group (group.key)}
       <section class="flex flex-col gap-2.5">
         <h2 class="text-xs font-semibold tracking-wider uppercase" style="color: var(--text-muted);">
           {group.label}
@@ -189,7 +198,7 @@
                       style="background-color: var(--accent);"
                     >
                       <Sparkles size={10} />
-                      {item.latestChapterName ?? "New"}
+                      {item.latestChapterName ?? t.badgeNew}
                     </span>
                   {/if}
                 </div>
@@ -210,14 +219,14 @@
                   class="rounded-lg border px-2.5 py-1.5 text-xs font-medium"
                   style="border-color: var(--border); background-color: var(--surface-subtle);"
                 >
-                  Chapters
+                  {t.chaptersBtn}
                 </button>
                 <button
                   type="button"
                   onclick={(e) => removeOne(item.mangaId, e)}
                   class="rounded-lg p-1.5 opacity-60 transition-opacity hover:opacity-100"
                   style="color: var(--danger);"
-                  title="Remove from history"
+                  title={t.removeHistoryTooltip}
                 >
                   <Trash2 size={15} />
                 </button>

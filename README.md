@@ -10,7 +10,7 @@ A lightweight, minimalist cross-platform manga reader built with **Rust** (**Tau
   3. Headless Microsoft Edge / Chrome fallback on Windows for JS-rendered pages, plus a visible verification window when a site requires manual bot verification.
 - **Hotlink-Safe Image Proxy & Disk Cache:** Backend-signed (HMAC-SHA256) `img://` protocol attaches the proper `Referer` header automatically, retries fallback image mirrors, deduplicates concurrent requests, and caches images locally on disk with SQLite LRU eviction.
 - **Continuous Vertical Reader:** Webtoon-style scrolling with automatic next-chapter prefetch and seamless chapter appending (toggleable), lazy-loaded pages with per-image retry, auto-hiding toolbar, scroll-position persistence & restore, and keyboard shortcuts (`←/→`, `Space`, `F`, `Esc`).
-- **Home, History & Settings:** Clean Light / Dark / System theme, chronological reading history grouped by day, automatic background new-chapter checks for manga in history with badges & desktop notifications, and instant auto-saving preferences.
+- **Home, History & Settings:** Clean Light / Dark / System theme, 7 built-in UI languages (English, Vietnamese, Chinese, Japanese, Russian, Korean, Thai), chronological reading history grouped by day, automatic background new-chapter checks for manga in history with badges & desktop notifications, and instant auto-saving preferences.
 - **Desktop & Mobile Ready:** Left sidebar on Windows desktop and bottom navigation bar on Android phones.
 
 ## Downloads

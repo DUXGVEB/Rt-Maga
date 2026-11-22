@@ -57,7 +57,7 @@
           : 'var(--text-muted)'};"
       >
         <HomeIcon size={19} />
-        <span>Home</span>
+        <span>{settingsStore.t.navHome}</span>
       </button>
       <button
         type="button"
@@ -66,7 +66,7 @@
         style="color: {router.current.name === 'history' ? 'var(--accent)' : 'var(--text-muted)'};"
       >
         <Clock size={19} />
-        <span>History</span>
+        <span>{settingsStore.t.navHistory}</span>
       </button>
       <button
         type="button"
@@ -75,7 +75,7 @@
         style="color: {router.current.name === 'settings' ? 'var(--accent)' : 'var(--text-muted)'};"
       >
         <SettingsIcon size={19} />
-        <span>Settings</span>
+        <span>{settingsStore.t.navSettings}</span>
       </button>
     </nav>
   {/if}
