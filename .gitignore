@@ -1,3 +1,9 @@
+# Local AI tooling & skills (kept locally, excluded from GitHub)
+/.agents/
+/.claude/
+/.gemini/
+/.specify/
+
 # Rust & Cargo
 /target
 
