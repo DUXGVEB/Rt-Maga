@@ -1,0 +1,270 @@
+//! Headless browser fallback powered by Microsoft Edge or Chrome via Chrome `DevTools` Protocol.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use chromiumoxide::browser::{Browser, BrowserConfig};
+use futures::StreamExt;
+use tokio::sync::{Mutex, Semaphore};
+use tracing::{debug, info, warn};
+use url::Url;
+
+use crate::error::ScrapeError;
+use crate::http::{DEFAULT_USER_AGENT, FetchedPage, HttpClient, validate_public_http_url};
+
+/// Maximum number of concurrent headless tabs rendered at once.
+const MAX_CONCURRENT_TABS: usize = 2;
+
+/// Wait time after page load and scrolling for lazy-loaded DOM nodes to settle.
+const RENDER_SETTLE_DELAY: Duration = Duration::from_millis(900);
+
+/// Maximum wait time for a user to finish manual site verification in a visible window.
+const MANUAL_VERIFY_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Shared lazy-initialized headless browser controller.
+#[derive(Debug, Clone)]
+pub struct HeadlessBrowser {
+    inner: Arc<HeadlessInner>,
+}
+
+struct HeadlessInner {
+    browser: Mutex<Option<Browser>>,
+    tab_permits: Arc<Semaphore>,
+}
+
+impl std::fmt::Debug for HeadlessInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeadlessInner").finish_non_exhaustive()
+    }
+}
+
+impl Default for HeadlessBrowser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HeadlessBrowser {
+    /// Creates a new lazily-started [`HeadlessBrowser`] controller.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(HeadlessInner {
+                browser: Mutex::new(None),
+                tab_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_TABS)),
+            }),
+        }
+    }
+
+    /// Renders `url` in a headless browser tab, scrolls down to trigger lazy-loaded images,
+    /// copies cookies into `http`, and returns the rendered HTML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError::DisallowedHost`] for non-public URLs, [`ScrapeError::Blocked`]
+    /// if a bot challenge is detected, or [`ScrapeError::Headless`] if launching/rendering fails.
+    pub async fn fetch_rendered(
+        &self,
+        url: &Url,
+        http: &HttpClient,
+    ) -> Result<FetchedPage, ScrapeError> {
+        validate_public_http_url(url)?;
+        let Ok(_permit) = self.inner.tab_permits.acquire().await else {
+            return Err(ScrapeError::Headless("tab semaphore closed".to_owned()));
+        };
+
+        let page = self.open_tab(url).await?;
+        let render_result = render_and_extract(&page, url, http).await;
+        let _ = page.close().await;
+        render_result
+    }
+
+    /// Opens a visible browser window so the user can manually pass a site verification challenge,
+    /// then copies resulting cookies into `http` once the challenge clears.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError::Headless`] if no browser can be launched or the user closes/times out.
+    pub async fn open_manual_verification(
+        &self,
+        url: &Url,
+        http: &HttpClient,
+    ) -> Result<(), ScrapeError> {
+        validate_public_http_url(url)?;
+        let exe = find_browser_executable().ok_or_else(|| {
+            ScrapeError::Headless("Microsoft Edge or Chrome not found".to_owned())
+        })?;
+
+        let config = BrowserConfig::builder()
+            .chrome_executable(exe)
+            .with_head()
+            .arg(format!("--user-agent={DEFAULT_USER_AGENT}"))
+            .build()
+            .map_err(|e| ScrapeError::Headless(format!("browser config error: {e}")))?;
+
+        let (mut browser, mut handler) = Browser::launch(config)
+            .await
+            .map_err(|e| ScrapeError::Headless(format!("failed to launch visible browser: {e}")))?;
+
+        let handler_task = tokio::spawn(async move {
+            while let Some(event) = handler.next().await {
+                if event.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let page = browser
+            .new_page(url.as_str())
+            .await
+            .map_err(|e| ScrapeError::Headless(format!("failed to open verification tab: {e}")))?;
+
+        let deadline = tokio::time::Instant::now() + MANUAL_VERIFY_TIMEOUT;
+        let mut verified = false;
+
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if let Ok(html) = page.content().await
+                && !looks_like_rendered_challenge(&html)
+            {
+                copy_page_cookies(&page, url, http).await;
+                verified = true;
+                break;
+            }
+        }
+
+        let _ = browser.close().await;
+        handler_task.abort();
+
+        if verified {
+            info!(%url, "manual verification completed and cookies synced");
+            Ok(())
+        } else {
+            Err(ScrapeError::Headless(
+                "manual verification timed out before challenge cleared".to_owned(),
+            ))
+        }
+    }
+
+    async fn open_tab(&self, url: &Url) -> Result<chromiumoxide::Page, ScrapeError> {
+        let mut guard = self.inner.browser.lock().await;
+        if guard.is_none() {
+            let exe = find_browser_executable().ok_or_else(|| {
+                ScrapeError::Headless("Microsoft Edge or Chrome not found".to_owned())
+            })?;
+            debug!(?exe, "launching headless browser");
+
+            let config = BrowserConfig::builder()
+                .chrome_executable(exe)
+                .arg(format!("--user-agent={DEFAULT_USER_AGENT}"))
+                .arg("--disable-gpu")
+                .arg("--no-first-run")
+                .build()
+                .map_err(|e| ScrapeError::Headless(format!("browser config error: {e}")))?;
+
+            let (browser, mut handler) = Browser::launch(config)
+                .await
+                .map_err(|e| ScrapeError::Headless(format!("failed to launch browser: {e}")))?;
+
+            tokio::spawn(async move {
+                while let Some(event) = handler.next().await {
+                    if let Err(err) = event {
+                        warn!(%err, "headless browser event loop ended");
+                        break;
+                    }
+                }
+            });
+
+            *guard = Some(browser);
+        }
+
+        let browser = guard
+            .as_ref()
+            .expect("browser initialized immediately above");
+
+        browser
+            .new_page(url.as_str())
+            .await
+            .map_err(|e| ScrapeError::Headless(format!("failed to open tab: {e}")))
+    }
+}
+
+async fn render_and_extract(
+    page: &chromiumoxide::Page,
+    requested_url: &Url,
+    http: &HttpClient,
+) -> Result<FetchedPage, ScrapeError> {
+    let _ = page.wait_for_navigation().await;
+    tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+
+    // Incrementally scroll down to trigger IntersectionObserver / lazy-loaded images.
+    let scroll_script = r"
+        (async () => {
+            const step = Math.max(window.innerHeight || 800, 600);
+            const limit = Math.min(document.body ? document.body.scrollHeight : 0, 40000);
+            for (let y = 0; y <= limit; y += step) {
+                window.scrollTo(0, y);
+                await new Promise(r => setTimeout(r, 80));
+            }
+            window.scrollTo(0, 0);
+        })()
+    ";
+    let _ = page.evaluate(scroll_script).await;
+    tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+
+    let final_url = page
+        .url()
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| Url::parse(&s).ok())
+        .unwrap_or_else(|| requested_url.clone());
+
+    let html = page
+        .content()
+        .await
+        .map_err(|e| ScrapeError::Headless(format!("failed to read rendered HTML: {e}")))?;
+
+    copy_page_cookies(page, &final_url, http).await;
+
+    if looks_like_rendered_challenge(&html) {
+        let host = final_url.host_str().unwrap_or("unknown").to_owned();
+        return Err(ScrapeError::Blocked {
+            host,
+            url: final_url,
+        });
+    }
+
+    Ok(FetchedPage { final_url, html })
+}
+
+async fn copy_page_cookies(page: &chromiumoxide::Page, url: &Url, http: &HttpClient) {
+    if let Ok(cookies) = page.get_cookies().await {
+        for cookie in cookies {
+            let header = format!("{}={}; Path={}", cookie.name, cookie.value, cookie.path);
+            http.add_cookie(&header, url);
+        }
+    }
+}
+
+fn looks_like_rendered_challenge(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    lower.contains("cf-browser-verification")
+        || lower.contains("challenges.cloudflare.com")
+        || lower.contains("just a moment...")
+        || lower.contains("cf_chl_opt")
+}
+
+/// Locates an installed Microsoft Edge or Google Chrome executable on the host system.
+pub fn find_browser_executable() -> Option<PathBuf> {
+    let candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/microsoft-edge",
+    ];
+    candidates.iter().map(PathBuf::from).find(|p| p.is_file())
+}

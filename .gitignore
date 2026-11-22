@@ -1,0 +1,29 @@
+# Rust & Cargo
+/target
+
+# Packaged releases & signing keys
+/dist
+*.jks
+*.keystore
+
+# Frontend
+/ui/node_modules
+/ui/dist
+/ui/.svelte-kit
+/node_modules
+
+# Android Gradle & generated native binaries
+/src-tauri/gen/android/.gradle
+/src-tauri/gen/android/build
+/src-tauri/gen/android/app/build
+/src-tauri/gen/android/app/src/main/jniLibs
+/src-tauri/gen/android/local.properties
+/src-tauri/gen/android/.idea
+/src-tauri/gen/schemas
+
+# Local DB & OS files
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+Thumbs.db
