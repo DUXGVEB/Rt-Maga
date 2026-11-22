@@ -85,7 +85,7 @@ impl Database {
                 m.latest_chapter_name,
                 m.has_new,
                 (SELECT COUNT(*) FROM chapter c WHERE c.manga_id = m.id) AS total_chapters,
-                (SELECT c.idx FROM chapter c WHERE c.manga_id = m.id AND c.url = h.chapter_url LIMIT 1) AS current_chapter_idx
+                (SELECT c.idx FROM chapter c WHERE c.manga_id = m.id AND RTRIM(c.url, '/') = RTRIM(h.chapter_url, '/') LIMIT 1) AS current_chapter_idx
              FROM history h
              INNER JOIN manga m ON m.id = h.manga_id
              ORDER BY h.read_at DESC",

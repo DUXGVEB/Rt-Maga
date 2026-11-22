@@ -32,6 +32,22 @@
   let retryCount = $state(0);
   let autoRetried = false;
   let retryTimer: number | null = null;
+  let lastToken = "";
+
+  $effect(() => {
+    const currentToken = token;
+    if (lastToken && lastToken !== currentToken) {
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      loaded = false;
+      failed = false;
+      retryCount = 0;
+      autoRetried = false;
+    }
+    lastToken = currentToken;
+  });
 
   $effect(() => {
     if (shouldLoad) return;

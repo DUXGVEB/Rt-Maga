@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chromiumoxide::browser::{Browser, BrowserConfig};
@@ -40,6 +41,7 @@ struct BrowserSlot {
 struct HeadlessInner {
     slot: Mutex<BrowserSlot>,
     tab_permits: Arc<Semaphore>,
+    reaper_running: AtomicBool,
 }
 
 impl std::fmt::Debug for HeadlessInner {
@@ -65,6 +67,7 @@ impl HeadlessBrowser {
                     last_used: tokio::time::Instant::now(),
                 }),
                 tab_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_TABS)),
+                reaper_running: AtomicBool::new(false),
             }),
         }
     }
@@ -75,18 +78,19 @@ impl HeadlessBrowser {
     /// # Errors
     ///
     /// Returns [`ScrapeError::DisallowedHost`] for non-public URLs, [`ScrapeError::Blocked`]
-    /// if a bot challenge is detected, or [`ScrapeError::Headless`] if launching/rendering fails.
+    /// if a bot challenge is detected, [`ScrapeError::Proxy`] if fail-closed proxy validation fails,
+    /// or [`ScrapeError::Headless`] if launching/rendering fails.
     pub async fn fetch_rendered(
         &self,
         url: &Url,
         http: &HttpClient,
     ) -> Result<FetchedPage, ScrapeError> {
         validate_public_http_url(url)?;
+        let proxy_args = http.chromium_proxy_args_for_url(url)?;
         let Ok(_permit) = self.inner.tab_permits.acquire().await else {
             return Err(ScrapeError::Headless("tab semaphore closed".to_owned()));
         };
 
-        let proxy_args = http.chromium_proxy_args_for_url(url);
         let page = self.open_tab(url, proxy_args).await?;
         let render_result = render_and_extract(&page, url, http).await;
         let _ = page.close().await;
@@ -98,13 +102,15 @@ impl HeadlessBrowser {
     ///
     /// # Errors
     ///
-    /// Returns [`ScrapeError::Headless`] if no browser can be launched or the user closes/times out.
+    /// Returns [`ScrapeError::Proxy`] if fail-closed proxy validation fails, or
+    /// [`ScrapeError::Headless`] if no browser can be launched or the user closes/times out.
     pub async fn open_manual_verification(
         &self,
         url: &Url,
         http: &HttpClient,
     ) -> Result<(), ScrapeError> {
         validate_public_http_url(url)?;
+        let proxy_args = http.chromium_proxy_args_for_url(url)?;
         let exe = find_browser_executable().ok_or_else(|| {
             ScrapeError::Headless("no compatible local browser executable found".to_owned())
         })?;
@@ -113,7 +119,7 @@ impl HeadlessBrowser {
             .chrome_executable(exe)
             .with_head()
             .arg(format!("--user-agent={DEFAULT_USER_AGENT}"));
-        if let Some((proxy_arg, resolver_arg)) = http.chromium_proxy_args_for_url(url) {
+        if let Some((proxy_arg, resolver_arg)) = proxy_args {
             builder = builder.arg(proxy_arg);
             if let Some(res_arg) = resolver_arg {
                 builder = builder.arg(res_arg);
@@ -255,6 +261,14 @@ impl HeadlessBrowser {
     }
 
     fn spawn_idle_reaper(&self) {
+        if self
+            .inner
+            .reaper_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
             loop {
@@ -270,9 +284,11 @@ impl HeadlessBrowser {
                         debug!("shutting down idle headless browser");
                         let _ = browser.close().await;
                     }
+                    guard.active_proxy_arg = None;
                     break;
                 }
             }
+            inner.reaper_running.store(false, Ordering::Release);
         });
     }
 }
@@ -307,6 +323,9 @@ async fn render_and_extract(
         .flatten()
         .and_then(|s| Url::parse(&s).ok())
         .unwrap_or_else(|| requested_url.clone());
+
+    // Prevent JS-driven navigation SSRF to loopback, private LAN, or non-HTTP(S) schemes.
+    validate_public_http_url(&final_url)?;
 
     let html = page
         .content()

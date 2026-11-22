@@ -18,6 +18,7 @@
   import { api, formatAppError } from "../api";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
+  import { updatesStore } from "../stores/updates.svelte";
   import type { SyncDecision, SyncStatusView } from "../types";
 
   const s = $derived(settingsStore.value);
@@ -108,6 +109,14 @@
         if (st.phase === "completed") {
           stopCamera();
           toasts.push(t.syncCompletedTitle, "success");
+          if (st.report) {
+            void api
+              .listHistory()
+              .then((items) =>
+                updatesStore.setNewCountFromHistory(items.filter((i) => i.hasNew).length)
+              )
+              .catch(() => {});
+          }
         } else if (st.phase === "expired" || st.phase === "locked_out") {
           stopCamera();
         }
@@ -120,6 +129,14 @@
 
     const tick = window.setInterval(() => {
       nowSec = Math.floor(Date.now() / 1000);
+      if (status?.expiresAtUnix && nowSec >= status.expiresAtUnix && isActiveFlow) {
+        void api
+          .syncGetStatus()
+          .then((st) => {
+            if (alive) status = st;
+          })
+          .catch(() => {});
+      }
     }, 1000);
 
     return () => {

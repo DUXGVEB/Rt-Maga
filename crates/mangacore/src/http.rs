@@ -3,6 +3,7 @@
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -270,45 +271,80 @@ impl ProxyConfig {
             rule.domain = normalize_domain_pattern(&rule.domain);
             if let Some(custom) = rule.custom_proxy.as_mut() {
                 custom.host = custom.host.trim().to_owned();
+                if let Some(u) = custom.username.as_mut() {
+                    *u = u.trim().to_owned();
+                    if u.is_empty() {
+                        custom.username = None;
+                    }
+                }
             }
             !rule.domain.is_empty()
         });
         self
     }
 
+    fn match_explicit_rule(&self, url: &Url) -> Option<&DomainProxyRule> {
+        let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+        self.domain_rules
+            .iter()
+            .filter(|r| {
+                r.action != DomainRuleAction::UseDefault && domain_matches(&host, &r.domain)
+            })
+            .max_by_key(|r| r.domain.len())
+    }
+
+    fn apply_rule(&self, rule: &DomainProxyRule) -> Option<(ProxyEndpoint, bool)> {
+        match rule.action {
+            DomainRuleAction::ForceDirect => None,
+            DomainRuleAction::ForceProxy => {
+                Some((self.default_proxy.clone(), self.allow_direct_fallback))
+            }
+            DomainRuleAction::CustomProxy => {
+                let ep = rule
+                    .custom_proxy
+                    .clone()
+                    .filter(ProxyEndpoint::is_configured)
+                    .unwrap_or_else(|| self.default_proxy.clone());
+                Some((ep, self.allow_direct_fallback))
+            }
+            DomainRuleAction::UseDefault => {
+                if self.enabled {
+                    Some((self.default_proxy.clone(), self.allow_direct_fallback))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     /// Resolves whether `url` should route directly or through a specific [`ProxyEndpoint`].
     pub fn resolve_for_url(&self, url: &Url) -> Option<(ProxyEndpoint, bool)> {
-        let host = url.host_str().unwrap_or("").to_ascii_lowercase();
-        let matched = self
-            .domain_rules
-            .iter()
-            .filter(|r| domain_matches(&host, &r.domain))
-            .max_by_key(|r| r.domain.len());
-
-        if let Some(rule) = matched {
-            return match rule.action {
-                DomainRuleAction::ForceDirect => None,
-                DomainRuleAction::ForceProxy => {
-                    Some((self.default_proxy.clone(), self.allow_direct_fallback))
-                }
-                DomainRuleAction::CustomProxy => {
-                    let ep = rule
-                        .custom_proxy
-                        .clone()
-                        .filter(ProxyEndpoint::is_configured)
-                        .unwrap_or_else(|| self.default_proxy.clone());
-                    Some((ep, self.allow_direct_fallback))
-                }
-                DomainRuleAction::UseDefault => {
-                    if self.enabled {
-                        Some((self.default_proxy.clone(), self.allow_direct_fallback))
-                    } else {
-                        None
-                    }
-                }
-            };
+        if let Some(rule) = self.match_explicit_rule(url) {
+            return self.apply_rule(rule);
         }
+        if self.enabled {
+            Some((self.default_proxy.clone(), self.allow_direct_fallback))
+        } else {
+            None
+        }
+    }
 
+    /// Resolves proxy routing for an image request: checks explicit domain rules on `image_url`
+    /// first, then explicit domain rules on `referer` (so CDN images inherit their manga site's
+    /// `ForceProxy`, `CustomProxy`, or `ForceDirect` rule), before falling back to global mode.
+    pub fn resolve_for_image(
+        &self,
+        image_url: &Url,
+        referer: Option<&Url>,
+    ) -> Option<(ProxyEndpoint, bool)> {
+        if let Some(rule) = self.match_explicit_rule(image_url) {
+            return self.apply_rule(rule);
+        }
+        if let Some(ref_url) = referer
+            && let Some(rule) = self.match_explicit_rule(ref_url)
+        {
+            return self.apply_rule(rule);
+        }
         if self.enabled {
             Some((self.default_proxy.clone(), self.allow_direct_fallback))
         } else {
@@ -390,7 +426,7 @@ struct HttpClientInner {
     user_agent: String,
     timeout: Duration,
     host_semaphores: DashMap<String, Arc<Semaphore>>,
-    max_conn_per_host: usize,
+    max_conn_per_host: AtomicUsize,
     proxy_config: RwLock<ProxyConfig>,
     proxy_clients: DashMap<String, Client>,
 }
@@ -426,11 +462,20 @@ impl HttpClient {
                 user_agent: policy.user_agent,
                 timeout: policy.timeout,
                 host_semaphores: DashMap::new(),
-                max_conn_per_host: policy.max_conn_per_host.max(1),
+                max_conn_per_host: AtomicUsize::new(policy.max_conn_per_host.max(1)),
                 proxy_config: RwLock::new(policy.proxy.sanitized()),
                 proxy_clients: DashMap::new(),
             }),
         })
+    }
+
+    /// Updates the live per-host concurrency limit and resets cached host semaphores if changed.
+    pub fn set_max_conn_per_host(&self, max_conn: usize) {
+        let clamped = max_conn.clamp(1, 16);
+        let prev = self.inner.max_conn_per_host.swap(clamped, Ordering::AcqRel);
+        if prev != clamped {
+            self.inner.host_semaphores.clear();
+        }
     }
 
     /// Updates the live [`ProxyConfig`] and clears cached proxy clients if the config changed.
@@ -462,9 +507,29 @@ impl HttpClient {
     }
 
     /// Returns Chromium `--proxy-server` and optional DNS-resolver flags for `url` when proxied.
-    pub fn chromium_proxy_args_for_url(&self, url: &Url) -> Option<(String, Option<String>)> {
-        let (endpoint, _fallback) = self.proxy_config().resolve_for_url(url)?;
-        endpoint.chromium_args()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError::Proxy`] if `url` requires a proxy under active settings, the proxy
+    /// endpoint is unconfigured/invalid, and direct fallback is disabled (fail-closed).
+    pub fn chromium_proxy_args_for_url(
+        &self,
+        url: &Url,
+    ) -> Result<Option<(String, Option<String>)>, ScrapeError> {
+        let Some((endpoint, allow_fallback)) = self.proxy_config().resolve_for_url(url) else {
+            return Ok(None);
+        };
+        if let Some(args) = endpoint.chromium_args() {
+            return Ok(Some(args));
+        }
+        if allow_fallback {
+            warn!("proxy invalid for headless browser; falling back to direct mode (user-enabled)");
+            return Ok(None);
+        }
+        endpoint.validate()?;
+        Err(ScrapeError::Proxy(
+            "proxy mode is active but proxy endpoint is not configured".to_owned(),
+        ))
     }
 
     /// Injects a `Set-Cookie` style header value for `url` into the shared cookie jar.
@@ -591,12 +656,10 @@ impl HttpClient {
         validate_public_http_url(url)?;
         let _permit = self.acquire_host_permit(url).await;
 
-        // Match per-source rule on image URL first; if none matches, also check referer domain
-        // so images served from a separate CDN inherit the manga source's per-domain proxy rule.
-        let cfg = self.proxy_config();
-        let route = cfg
-            .resolve_for_url(url)
-            .or_else(|| referer.and_then(|r| cfg.resolve_for_url(r)));
+        // Match explicit per-source rule on image URL first, then explicit rule on referer domain
+        // (so CDN images inherit their manga source's ForceProxy / CustomProxy / ForceDirect rule),
+        // before falling back to global mode.
+        let route = self.proxy_config().resolve_for_image(url, referer);
 
         if let Some((endpoint, allow_fallback)) = route {
             let proxy_client = match self.client_for_proxy(&endpoint) {
@@ -643,11 +706,12 @@ impl HttpClient {
 
     async fn acquire_host_permit(&self, url: &Url) -> tokio::sync::OwnedSemaphorePermit {
         let host = url.host_str().unwrap_or("default").to_ascii_lowercase();
+        let limit = self.inner.max_conn_per_host.load(Ordering::Acquire).max(1);
         let sem = Arc::clone(
             self.inner
                 .host_semaphores
                 .entry(host)
-                .or_insert_with(|| Arc::new(Semaphore::new(self.inner.max_conn_per_host)))
+                .or_insert_with(|| Arc::new(Semaphore::new(limit)))
                 .value(),
         );
         sem.acquire_owned()
@@ -1278,6 +1342,65 @@ mod tests {
             .await
             .expect_err("proxy mode with empty host must fail closed");
         assert!(matches!(err, ScrapeError::Proxy(_)));
+
+        let headless_err = client
+            .chromium_proxy_args_for_url(&Url::parse("https://example.com/series").unwrap())
+            .expect_err("headless proxy args must also fail closed when proxy is unconfigured");
+        assert!(matches!(headless_err, ScrapeError::Proxy(_)));
+    }
+
+    #[test]
+    fn resolve_for_image_inherits_referer_rules_without_overriding_explicit_cdn_rules() {
+        let default_ep = ProxyEndpoint {
+            protocol: ProxyProtocol::Socks5,
+            host: "global.proxy.net".to_owned(),
+            port: 1080,
+            username: None,
+            password: None,
+        };
+        let cfg = ProxyConfig {
+            enabled: true,
+            default_proxy: default_ep,
+            allow_direct_fallback: false,
+            domain_rules: vec![
+                DomainProxyRule {
+                    domain: "fast-manga.org".to_owned(),
+                    action: DomainRuleAction::ForceDirect,
+                    custom_proxy: None,
+                },
+                DomainProxyRule {
+                    domain: "proxied-cdn.net".to_owned(),
+                    action: DomainRuleAction::ForceProxy,
+                    custom_proxy: None,
+                },
+            ],
+        }
+        .sanitized();
+
+        // CDN image with no explicit rule inherits `ForceDirect` from its referer `fast-manga.org` even when global proxy is ON!
+        let cdn_img = Url::parse("https://img.unlisted-cdn.net/1.jpg").unwrap();
+        let fast_ref = Url::parse("https://fast-manga.org/ch-1").unwrap();
+        assert!(
+            cfg.resolve_for_image(&cdn_img, Some(&fast_ref)).is_none(),
+            "unlisted CDN image must inherit ForceDirect from referer"
+        );
+
+        // Image on `fast-manga.org` (which has ForceDirect) must NOT be overridden by a proxied referer!
+        let direct_img = Url::parse("https://cdn.fast-manga.org/1.jpg").unwrap();
+        let proxied_ref = Url::parse("https://other-site.org/ch-1").unwrap();
+        assert!(
+            cfg.resolve_for_image(&direct_img, Some(&proxied_ref))
+                .is_none(),
+            "explicit ForceDirect on image domain must not be overridden by referer"
+        );
+
+        // Explicit ForceProxy on image domain wins even when referer is ForceDirect.
+        let forced_img = Url::parse("https://proxied-cdn.net/1.jpg").unwrap();
+        assert!(
+            cfg.resolve_for_image(&forced_img, Some(&fast_ref))
+                .is_some(),
+            "explicit ForceProxy on image domain must win over referer"
+        );
     }
 
     #[tokio::test]
@@ -1336,7 +1459,7 @@ mod tests {
         assert_eq!(img1.unwrap().content_type, "image/png");
         assert_eq!(img2.unwrap().bytes.len(), 4);
 
-        let _ = server.await;
+        server.abort();
     }
 
     #[tokio::test]
@@ -1383,7 +1506,7 @@ mod tests {
             ScrapeError::Proxy(_) | ScrapeError::Network(_)
         ));
 
-        let _ = server.await;
+        server.abort();
     }
 
     #[tokio::test]

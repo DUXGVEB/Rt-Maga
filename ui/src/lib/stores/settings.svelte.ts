@@ -64,16 +64,24 @@ export const DEFAULT_SETTINGS: Settings = {
 function mergeSettings(raw: Partial<Settings>): Settings {
   const rawReader = raw.reader ?? ({} as Partial<Settings["reader"]>);
   const rawProxy = raw.proxy ?? ({} as Partial<Settings["proxy"]>);
+  const mergedVertical = {
+    ...DEFAULT_SETTINGS.reader.vertical,
+    ...(rawReader.vertical ?? {}),
+  };
+  if (
+    rawReader.vertical?.pageGapPx === undefined &&
+    typeof rawReader.gapPx === "number" &&
+    rawReader.gapPx > 0
+  ) {
+    mergedVertical.pageGapPx = rawReader.gapPx;
+  }
   return {
     language: raw.language ?? DEFAULT_SETTINGS.language,
     theme: raw.theme ?? DEFAULT_SETTINGS.theme,
     reader: {
       ...DEFAULT_SETTINGS.reader,
       ...rawReader,
-      vertical: {
-        ...DEFAULT_SETTINGS.reader.vertical,
-        ...(rawReader.vertical ?? {}),
-      },
+      vertical: mergedVertical,
       horizontal: {
         ...DEFAULT_SETTINGS.reader.horizontal,
         ...(rawReader.horizontal ?? {}),
@@ -111,6 +119,7 @@ class SettingsStore {
   private initialized = false;
   private saveTimer: number | null = null;
   private saveVersion = 0;
+  private inFlightSaves = 0;
 
   private applyAppearance(theme: Theme, language: Language) {
     const resolved = resolveTheme(theme);
@@ -143,7 +152,7 @@ class SettingsStore {
 
     try {
       await api.onSettingsChanged((s) => {
-        if (this.saveTimer !== null) return;
+        if (this.saveTimer !== null || this.inFlightSaves > 0) return;
         this.value = mergeSettings(s);
         this.applyAppearance(this.value.theme, this.value.language);
       });
@@ -173,9 +182,10 @@ class SettingsStore {
     const version = ++this.saveVersion;
     const run = async () => {
       this.saveTimer = null;
+      this.inFlightSaves += 1;
       try {
         const saved = await api.setSettings(payload);
-        if (version === this.saveVersion) {
+        if (version === this.saveVersion && this.saveTimer === null) {
           this.value = mergeSettings(saved);
           this.applyAppearance(this.value.theme, this.value.language);
         }
@@ -184,6 +194,8 @@ class SettingsStore {
           console.error("Failed to save settings:", err);
           toasts.push(this.t.toastSettingsSaveFailed, "error");
         }
+      } finally {
+        this.inFlightSaves = Math.max(0, this.inFlightSaves - 1);
       }
     };
 

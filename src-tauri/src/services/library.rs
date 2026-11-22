@@ -148,7 +148,10 @@ pub(crate) async fn get_manga(
     if mode == FetchMode::RefreshFromWeb {
         let policy = state.current_settings().await.headless_policy();
         let resolved = state.registry.resolve(&row.url, policy).await?;
-        let _ = state.db.upsert_manga(resolved.manga()).await?;
+        let _ = state
+            .db
+            .upsert_manga_with_id(Some(manga_id), resolved.manga())
+            .await?;
         state.db.clear_has_new(manga_id).await?;
     }
 

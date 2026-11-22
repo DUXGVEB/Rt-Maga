@@ -38,6 +38,20 @@ impl Database {
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
     pub(crate) async fn upsert_manga(&self, manga: &Manga) -> Result<i64, AppError> {
+        self.upsert_manga_with_id(None, manga).await
+    }
+
+    /// Inserts or updates a manga (targeting `known_id` directly when refreshing an existing entry)
+    /// and synchronizes its chapter list while preserving read flags.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn upsert_manga_with_id(
+        &self,
+        known_id: Option<i64>,
+        manga: &Manga,
+    ) -> Result<i64, AppError> {
         let now = now_unix_secs();
         let latest = manga.chapters.last();
         let latest_url = latest.map(|c| c.url.as_str());
@@ -47,13 +61,23 @@ impl Database {
 
         let mut tx = self.pool().begin().await?;
 
-        let existing: Option<(i64, Option<String>)> =
-            sqlx::query_as("SELECT id, latest_chapter_url FROM manga WHERE url = ?")
-                .bind(manga.url.as_str())
+        let existing_id: Option<i64> = if let Some(id) = known_id {
+            sqlx::query_as::<_, (i64,)>("SELECT id FROM manga WHERE id = ?")
+                .bind(id)
                 .fetch_optional(&mut *tx)
-                .await?;
+                .await?
+                .map(|(found,)| found)
+        } else {
+            sqlx::query_as::<_, (i64,)>(
+                "SELECT id FROM manga WHERE RTRIM(url, '/') = RTRIM(?, '/') LIMIT 1",
+            )
+            .bind(manga.url.as_str())
+            .fetch_optional(&mut *tx)
+            .await?
+            .map(|(found,)| found)
+        };
 
-        let manga_id = if let Some((id, _prev_latest)) = existing {
+        let manga_id = if let Some(id) = existing_id {
             sqlx::query(
                 "UPDATE manga
                  SET site = ?, title = ?, cover_url = COALESCE(?, cover_url),
@@ -155,11 +179,12 @@ impl Database {
         &self,
         chapter_url: &str,
     ) -> Result<Option<i64>, AppError> {
-        let row: Option<(i64,)> =
-            sqlx::query_as("SELECT manga_id FROM chapter WHERE url = ? LIMIT 1")
-                .bind(chapter_url)
-                .fetch_optional(self.pool())
-                .await?;
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT manga_id FROM chapter WHERE RTRIM(url, '/') = RTRIM(?, '/') LIMIT 1",
+        )
+        .bind(chapter_url)
+        .fetch_optional(self.pool())
+        .await?;
         Ok(row.map(|(id,)| id))
     }
 
@@ -188,17 +213,21 @@ impl Database {
         manga_id: i64,
         chapter_url: &str,
     ) -> Result<(), AppError> {
-        sqlx::query("UPDATE chapter SET read = 1 WHERE manga_id = ? AND url = ?")
-            .bind(manga_id)
-            .bind(chapter_url)
-            .execute(self.pool())
-            .await?;
+        sqlx::query(
+            "UPDATE chapter SET read = 1 WHERE manga_id = ? AND RTRIM(url, '/') = RTRIM(?, '/')",
+        )
+        .bind(manga_id)
+        .bind(chapter_url)
+        .execute(self.pool())
+        .await?;
 
-        sqlx::query("UPDATE manga SET has_new = 0 WHERE id = ? AND latest_chapter_url = ?")
-            .bind(manga_id)
-            .bind(chapter_url)
-            .execute(self.pool())
-            .await?;
+        sqlx::query(
+            "UPDATE manga SET has_new = 0 WHERE id = ? AND RTRIM(latest_chapter_url, '/') = RTRIM(?, '/')",
+        )
+        .bind(manga_id)
+        .bind(chapter_url)
+        .execute(self.pool())
+        .await?;
         Ok(())
     }
 
@@ -253,7 +282,7 @@ impl Database {
                 .collect();
 
         let new_latest = fresh.chapters.last();
-        let _ = self.upsert_manga(fresh).await?;
+        let _ = self.upsert_manga_with_id(Some(manga_id), fresh).await?;
 
         let discovered_name = match new_latest {
             Some(latest)

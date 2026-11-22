@@ -4,6 +4,8 @@
     ArrowLeft,
     BookOpen,
     Check,
+    ExternalLink,
+    Loader2,
     Play,
     RefreshCw,
     Search,
@@ -19,7 +21,9 @@
   let manga = $state<MangaView | null>(null);
   let loading = $state(true);
   let refreshing = $state(false);
-  let errorText = $state<string | null>(null);
+  let verifying = $state(false);
+  let errorState = $state<{ title: string; detail: string; blockedUrl?: string } | null>(null);
+  let blockedRefreshUrl = $state<string | null>(null);
   let coverError = $state(false);
   let query = $state("");
   let newestFirst = $state(true);
@@ -30,7 +34,8 @@
   async function load(targetId: number) {
     const seq = ++loadSeq;
     loading = true;
-    errorText = null;
+    errorState = null;
+    blockedRefreshUrl = null;
     coverError = false;
     try {
       const loaded = await api.getManga(targetId);
@@ -38,7 +43,7 @@
       manga = loaded;
     } catch (err) {
       if (seq !== loadSeq) return;
-      errorText = formatAppError(err, settingsStore.value.language).detail;
+      errorState = formatAppError(err, settingsStore.value.language);
     } finally {
       if (seq === loadSeq) {
         loading = false;
@@ -51,6 +56,7 @@
     const targetId = id;
     const seq = ++loadSeq;
     refreshing = true;
+    blockedRefreshUrl = null;
     try {
       const updated = await api.refreshManga(targetId);
       if (seq !== loadSeq) return;
@@ -59,10 +65,29 @@
       toasts.push(t.toastChaptersUpdated, "success");
     } catch (err) {
       if (seq === loadSeq) {
-        toasts.push(formatAppError(err, settingsStore.value.language).title, "error");
+        const f = formatAppError(err, settingsStore.value.language);
+        blockedRefreshUrl = f.blockedUrl ?? null;
+        toasts.push(f.detail || f.title, "error");
       }
     } finally {
       refreshing = false;
+    }
+  }
+
+  async function handleManualVerify(targetUrl: string) {
+    if (!targetUrl || verifying) return;
+    verifying = true;
+    try {
+      toasts.push(t.toastOpeningVerify, "info", 4500);
+      await api.openManualVerification(targetUrl);
+      toasts.push(t.toastVerifyDone, "success");
+      blockedRefreshUrl = null;
+      await refresh();
+    } catch (err) {
+      const f = formatAppError(err, settingsStore.value.language);
+      toasts.push(f.detail || f.title, "error");
+    } finally {
+      verifying = false;
     }
   }
 
@@ -110,16 +135,35 @@
     </button>
 
     {#if manga}
-      <button
-        type="button"
-        onclick={refresh}
-        disabled={refreshing}
-        class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
-        style="background-color: var(--surface); border-color: var(--border);"
-      >
-        <RefreshCw size={14} class={refreshing ? "animate-spin" : ""} />
-        <span>{refreshing ? t.refreshing : t.refreshChapters}</span>
-      </button>
+      <div class="flex items-center gap-2">
+        {#if blockedRefreshUrl}
+          <button
+            type="button"
+            disabled={verifying}
+            onclick={() => blockedRefreshUrl && handleManualVerify(blockedRefreshUrl)}
+            class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+            style="background-color: var(--accent);"
+          >
+            {#if verifying}
+              <Loader2 size={14} class="animate-spin" />
+              <span>{t.waitingVerification}</span>
+            {:else}
+              <ExternalLink size={14} />
+              <span>{t.openVerification}</span>
+            {/if}
+          </button>
+        {/if}
+        <button
+          type="button"
+          onclick={refresh}
+          disabled={refreshing}
+          class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+          style="background-color: var(--surface); border-color: var(--border);"
+        >
+          <RefreshCw size={14} class={refreshing ? "animate-spin" : ""} />
+          <span>{refreshing ? t.refreshing : t.refreshChapters}</span>
+        </button>
+      </div>
     {/if}
   </div>
 
@@ -134,12 +178,30 @@
         <div class="h-4 w-1/3 animate-pulse rounded" style="background-color: var(--surface-hover);"></div>
       </div>
     </div>
-  {:else if errorText}
+  {:else if errorState}
     <div
-      class="rounded-xl border p-6 text-center text-sm"
+      class="flex flex-col items-center gap-3 rounded-xl border p-6 text-center text-sm"
       style="background-color: var(--surface); border-color: var(--danger);"
     >
-      {errorText}
+      <div class="font-semibold">{errorState.title}</div>
+      <div class="text-xs" style="color: var(--text-muted);">{errorState.detail}</div>
+      {#if errorState.blockedUrl}
+        <button
+          type="button"
+          disabled={verifying}
+          onclick={() => errorState?.blockedUrl && handleManualVerify(errorState.blockedUrl)}
+          class="mt-1 inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+          style="background-color: var(--accent);"
+        >
+          {#if verifying}
+            <Loader2 size={14} class="animate-spin" />
+            <span>{t.waitingVerification}</span>
+          {:else}
+            <ExternalLink size={14} />
+            <span>{t.openVerification}</span>
+          {/if}
+        </button>
+      {/if}
     </div>
   {:else if manga}
     <!-- Manga Header -->

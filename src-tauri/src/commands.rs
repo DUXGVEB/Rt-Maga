@@ -132,16 +132,23 @@ pub(crate) async fn set_settings(
     settings: Settings,
 ) -> Result<Settings, AppError> {
     let saved = state.db.save_settings(&settings).await?;
-    let (schedule_changed, proxy_changed) = {
+    let (schedule_changed, proxy_changed, conn_changed) = {
         let mut guard = state.settings.write().await;
         let sched = guard.updates.enabled != saved.updates.enabled
             || guard.updates.interval_hours != saved.updates.interval_hours;
         let prox = guard.proxy != saved.proxy;
+        let conn = guard.sources.max_conn_per_host != saved.sources.max_conn_per_host;
         *guard = saved.clone();
-        (sched, prox)
+        (sched, prox, conn)
     };
     if proxy_changed {
         state.registry.http().set_proxy_config(saved.proxy.clone());
+    }
+    if conn_changed {
+        state
+            .registry
+            .http()
+            .set_max_conn_per_host(usize::from(saved.sources.max_conn_per_host));
     }
     let _ = app.emit("settings://changed", &saved);
     state.images.evict_if_needed(saved.cache.max_mb).await;

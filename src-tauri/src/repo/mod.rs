@@ -466,4 +466,88 @@ mod tests {
         let exported = db.export_sync_bundle("TestPC").await.unwrap();
         assert_eq!(exported.manga.len(), 4);
     }
+
+    #[tokio::test]
+    async fn sync_merge_preserves_newer_latest_chapter_and_rejects_ssrf_urls() {
+        use crate::repo::sync::{SyncBundle, SyncHistoryPayload, SyncMangaPayload};
+
+        let db = Database::open_in_memory().await.unwrap();
+        let manga = Manga {
+            url: Url::parse("https://example.com/series/protect").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Protected Series".to_owned(),
+            cover: None,
+            chapters: (1..=5)
+                .map(|n| ChapterRef {
+                    url: Url::parse(&format!("https://example.com/series/protect-chap-{n}"))
+                        .unwrap(),
+                    name: format!("Chapter {n}"),
+                    number: Some(f32::from(u8::try_from(n).unwrap())),
+                })
+                .collect(),
+        };
+        let id = db.upsert_manga(&manga).await.unwrap();
+        db.save_history(
+            id,
+            "https://example.com/series/protect-chap-5",
+            "Chapter 5",
+            0.3,
+        )
+        .await
+        .unwrap();
+
+        let incoming = SyncBundle {
+            version: 1,
+            device_name: "OldPhone".to_owned(),
+            exported_at: 1000,
+            manga: vec![
+                // Older snapshot claiming latest_chapter_url is chap 2, but on same chap 5 with higher ratio 0.85
+                SyncMangaPayload {
+                    url: "https://example.com/series/protect/".to_owned(),
+                    site: "example.com".to_owned(),
+                    title: "Protected Series".to_owned(),
+                    cover_url: None,
+                    latest_chapter_url: Some(
+                        "https://example.com/series/protect-chap-2".to_owned(),
+                    ),
+                    latest_chapter_name: Some("Chapter 2".to_owned()),
+                    chapters: Vec::new(),
+                    history: Some(SyncHistoryPayload {
+                        chapter_url: "https://example.com/series/protect-chap-5/".to_owned(),
+                        chapter_name: "Chapter 5".to_owned(),
+                        scroll_ratio: 0.85,
+                        read_at: 2000,
+                    }),
+                },
+                // Disallowed SSRF loopback URL must be rejected
+                SyncMangaPayload {
+                    url: "http://127.0.0.1:8080/internal".to_owned(),
+                    site: "127.0.0.1".to_owned(),
+                    title: "SSRF Attempt".to_owned(),
+                    cover_url: None,
+                    latest_chapter_url: None,
+                    latest_chapter_name: None,
+                    chapters: Vec::new(),
+                    history: None,
+                },
+            ],
+        };
+
+        let report = db.merge_sync_bundle(&incoming).await.unwrap();
+        assert_eq!(report.added_manga, 0, "SSRF URL must be rejected");
+        assert_eq!(
+            report.skipped_same_chapter, 1,
+            "same chapter with higher ratio must still count as skipped_same_chapter"
+        );
+        assert_eq!(report.updated_newer_chapter, 0);
+
+        let row = db.get_manga_by_id(id).await.unwrap().unwrap();
+        assert_eq!(
+            row.latest_chapter_name.as_deref(),
+            Some("Chapter 5"),
+            "older incoming latest_chapter_name must not overwrite newer local Chapter 5"
+        );
+        let hist = db.get_history_for_manga(id).await.unwrap().unwrap();
+        assert!((hist.2 - 0.85).abs() < 1e-6);
+    }
 }

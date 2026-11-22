@@ -224,6 +224,7 @@ pub(crate) async fn check_latest_release(state: &AppState) -> Result<AppReleaseI
     );
 
     let client = reqwest::Client::builder()
+        .no_proxy()
         .user_agent(format!("RtMaga/{CURRENT_APP_VERSION}"))
         .default_headers(headers)
         .timeout(RELEASE_CHECK_TIMEOUT)
@@ -320,10 +321,13 @@ pub(crate) async fn download_and_install_update(
     let dest_path = updates_dir.join(filename);
 
     // Reuse an already-downloaded file if it exists and matches the expected SHA-256 digest
-    // (for example, right after granting Android's "Install unknown apps" permission).
-    let already_verified = match release.download_sha256.as_deref() {
-        Some(expected) => file_sha256_matches(&dest_path, expected).await,
-        None => false,
+    // (or expected byte size when no SHA-256 digest was published by the release API).
+    let already_verified = match (release.download_sha256.as_deref(), release.download_size) {
+        (Some(expected), _) => file_sha256_matches(&dest_path, expected).await,
+        (None, Some(sz)) if sz > 0 => tokio::fs::metadata(&dest_path)
+            .await
+            .is_ok_and(|m| m.is_file() && m.len() == sz),
+        _ => false,
     };
 
     if !already_verified {
@@ -361,6 +365,7 @@ pub(crate) async fn download_and_install_update(
 
 fn build_download_client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
+        .no_proxy()
         .user_agent(format!("RtMaga/{CURRENT_APP_VERSION}"))
         .connect_timeout(Duration::from_secs(15))
         .timeout(INSTALLER_DOWNLOAD_TIMEOUT)

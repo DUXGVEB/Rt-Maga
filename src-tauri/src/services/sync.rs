@@ -15,6 +15,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -27,7 +28,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -192,11 +193,10 @@ struct ActiveHostSession {
     peer_ip: Option<String>,
     transfer_ticket: Option<String>,
     decision: HostDecision,
-    decision_notify: Arc<Notify>,
     tasks: Vec<JoinHandle<()>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ActiveReceiverSession {
     base_url: String,
     peer_name: String,
@@ -205,6 +205,7 @@ struct ActiveReceiverSession {
     transfer_ticket: String,
     expires_at: Instant,
     expires_at_unix: i64,
+    cancelled: Arc<AtomicBool>,
 }
 
 /// Thread-safe manager held inside [`AppState`] coordinating at most one active sync session.
@@ -228,14 +229,38 @@ impl SyncManager {
 
     /// Returns the current UI snapshot of the sync session.
     pub(crate) async fn status(&self) -> SyncStatusView {
-        let guard = self.inner.lock().await;
+        let mut guard = self.inner.lock().await;
+        if guard
+            .host
+            .as_ref()
+            .is_some_and(|h| Instant::now() >= h.expires_at)
+            || guard
+                .receiver
+                .as_ref()
+                .is_some_and(|r| Instant::now() >= r.expires_at)
+        {
+            wipe_sessions(&mut guard);
+            let expired = SyncStatusView {
+                phase: SyncPhase::Expired,
+                local_device_name: local_device_name(),
+                max_attempts: MAX_FAILED_ATTEMPTS,
+                message: Some("Sync session expired after 5 minutes.".to_owned()),
+                ..SyncStatusView::default()
+            };
+            guard.last_terminal = Some(expired.clone());
+            return expired;
+        }
         snapshot_from_inner(&guard)
     }
 
     /// Aborts any active host/receiver session and scrubs tokens & payloads from RAM.
     pub(crate) async fn cancel(&self, app: &AppHandle) -> SyncStatusView {
-        let view = {
+        let (view, pending_reject) = {
             let mut guard = self.inner.lock().await;
+            let reject_target = guard
+                .receiver
+                .as_ref()
+                .map(|r| (r.base_url.clone(), r.transfer_ticket.clone()));
             wipe_sessions(&mut guard);
             let idle = SyncStatusView {
                 phase: SyncPhase::Idle,
@@ -244,8 +269,20 @@ impl SyncManager {
                 ..SyncStatusView::default()
             };
             guard.last_terminal = None;
-            idle
+            (idle, reject_target)
         };
+        if let Some((base_url, ticket)) = pending_reject
+            && !ticket.is_empty()
+            && let Ok(client) = build_lan_http_client(Duration::from_secs(3))
+        {
+            tokio::spawn(async move {
+                let _ = client
+                    .post(format!("{base_url}/sync/reject"))
+                    .json(&serde_json::json!({ "ticket": ticket }))
+                    .send()
+                    .await;
+            });
+        }
         let _ = app.emit("sync://state-changed", &view);
         view
     }
@@ -303,7 +340,6 @@ pub(crate) async fn start_sender(
         (None, None)
     };
 
-    let decision_notify = Arc::new(Notify::new());
     let mut tasks = Vec::new();
 
     // Spawn HTTP accept loop.
@@ -359,7 +395,6 @@ pub(crate) async fn start_sender(
             peer_ip: None,
             transfer_ticket: None,
             decision: HostDecision::Pending,
-            decision_notify,
             tasks,
         });
         snapshot_from_inner(&guard)
@@ -390,11 +425,9 @@ pub(crate) async fn host_respond(
 
         if decision == SyncDecision::Approve {
             host.decision = HostDecision::Approved;
-            host.decision_notify.notify_waiters();
             snapshot_from_inner(&guard)
         } else {
             host.decision = HostDecision::Rejected;
-            host.decision_notify.notify_waiters();
             let cancelled = SyncStatusView {
                 phase: SyncPhase::Cancelled,
                 local_device_name: host.local_name.clone(),
@@ -498,13 +531,26 @@ pub(crate) async fn receiver_confirm(
 ) -> Result<SyncStatusView, AppError> {
     let session = {
         let mut guard = state.sync.inner.lock().await;
-        let Some(rec) = guard.receiver.take() else {
+        let Some(rec) = guard.receiver.clone() else {
             return Err(AppError::NotFound {
                 message: "no pending sync transfer to confirm".to_owned(),
             });
         };
+        if decision == SyncDecision::Reject {
+            wipe_sessions(&mut guard);
+        }
         rec
     };
+
+    if Instant::now() >= session.expires_at {
+        return Ok(record_terminal(
+            app,
+            state,
+            SyncPhase::Expired,
+            "Sync session expired after 5 minutes.",
+        )
+        .await);
+    }
 
     let client = build_lan_http_client(Duration::from_secs(15))?;
 
@@ -531,17 +577,39 @@ pub(crate) async fn receiver_confirm(
     };
     let _ = app.emit("sync://state-changed", &waiting_view);
 
-    if !poll_host_approval(&client, &session).await? {
-        return Ok(record_terminal(
-            app,
-            state,
-            SyncPhase::Cancelled,
-            "Sender declined the transfer.",
-        )
-        .await);
+    match poll_host_approval(&client, &session).await {
+        Ok(true) => {}
+        Ok(false) => {
+            if session.cancelled.load(Ordering::Acquire) {
+                return Ok(state.sync.status().await);
+            }
+            return Ok(record_terminal(
+                app,
+                state,
+                SyncPhase::Cancelled,
+                "Sender declined or ended the transfer.",
+            )
+            .await);
+        }
+        Err(err) => {
+            if session.cancelled.load(Ordering::Acquire) {
+                return Ok(state.sync.status().await);
+            }
+            let _ = record_terminal(app, state, SyncPhase::Error, &err.to_string()).await;
+            return Err(err);
+        }
     }
 
-    pull_and_merge_bundle(app, state, &client, session).await
+    match pull_and_merge_bundle(app, state, &client, session.clone()).await {
+        Ok(done) => Ok(done),
+        Err(err) => {
+            if session.cancelled.load(Ordering::Acquire) {
+                return Ok(state.sync.status().await);
+            }
+            let _ = record_terminal(app, state, SyncPhase::Error, &err.to_string()).await;
+            Err(err)
+        }
+    }
 }
 
 async fn record_terminal(
@@ -559,6 +627,7 @@ async fn record_terminal(
     };
     {
         let mut guard = state.sync.inner.lock().await;
+        wipe_sessions(&mut guard);
         guard.last_terminal = Some(view.clone());
     }
     let _ = app.emit("sync://state-changed", &view);
@@ -571,6 +640,9 @@ async fn poll_host_approval(
     session: &ActiveReceiverSession,
 ) -> Result<bool, AppError> {
     loop {
+        if session.cancelled.load(Ordering::Acquire) {
+            return Ok(false);
+        }
         if Instant::now() >= session.expires_at {
             return Err(AppError::Network {
                 message: "sync session expired while waiting for sender confirmation".to_owned(),
@@ -588,6 +660,11 @@ async fn poll_host_approval(
                 message: format!("lost connection to sender device: {e}"),
             })?;
 
+        if resp.status() == reqwest::StatusCode::GONE
+            || resp.status() == reqwest::StatusCode::FORBIDDEN
+        {
+            return Ok(false);
+        }
         if !resp.status().is_success() {
             return Err(AppError::Network {
                 message: "sender ended or rejected the sync session".to_owned(),
@@ -612,6 +689,11 @@ async fn pull_and_merge_bundle(
     client: &reqwest::Client,
     session: ActiveReceiverSession,
 ) -> Result<SyncStatusView, AppError> {
+    if session.cancelled.load(Ordering::Acquire) {
+        return Err(AppError::NotFound {
+            message: "sync session was cancelled".to_owned(),
+        });
+    }
     let transferring = SyncStatusView {
         phase: SyncPhase::Transferring,
         local_device_name: local_device_name(),
@@ -651,6 +733,12 @@ async fn pull_and_merge_bundle(
         message: format!("invalid sync bundle format: {e}"),
     })?;
 
+    if session.cancelled.load(Ordering::Acquire) {
+        return Err(AppError::NotFound {
+            message: "sync session was cancelled".to_owned(),
+        });
+    }
+
     let report = state.db.merge_sync_bundle(&bundle).await?;
     let done = SyncStatusView {
         phase: SyncPhase::Completed,
@@ -665,6 +753,7 @@ async fn pull_and_merge_bundle(
 
     {
         let mut guard = state.sync.inner.lock().await;
+        wipe_sessions(&mut guard);
         guard.last_terminal = Some(done.clone());
     }
     let _ = app.emit("sync://state-changed", &done);
@@ -733,6 +822,7 @@ async fn pair_as_receiver(
             transfer_ticket: body.transfer_ticket,
             expires_at,
             expires_at_unix,
+            cancelled: Arc::new(AtomicBool::new(false)),
         });
         snapshot_from_inner(&guard)
     };
@@ -899,10 +989,14 @@ async fn handle_status_route(
     let Some(t) = ticket else {
         return (400, "text/plain", b"missing ticket".to_vec());
     };
-    let guard = state.sync.inner.lock().await;
+    let mut guard = state.sync.inner.lock().await;
     let Some(host) = guard.host.as_ref() else {
         return (410, "text/plain", b"session closed".to_vec());
     };
+    if Instant::now() >= host.expires_at {
+        wipe_sessions(&mut guard);
+        return (410, "text/plain", b"sync session expired".to_vec());
+    }
     let Some(expected) = host.transfer_ticket.as_deref() else {
         return (403, "text/plain", b"not paired".to_vec());
     };
@@ -934,6 +1028,10 @@ async fn handle_pull_route(
     let Some(host) = guard.host.as_mut() else {
         return (410, "text/plain", b"session closed".to_vec());
     };
+    if Instant::now() >= host.expires_at {
+        wipe_sessions(&mut guard);
+        return (410, "text/plain", b"sync session expired".to_vec());
+    }
     let Some(expected) = host.transfer_ticket.as_deref() else {
         return (403, "text/plain", b"not paired".to_vec());
     };
@@ -1097,6 +1195,7 @@ fn wipe_sessions(inner: &mut SyncManagerInner) {
         host.transfer_ticket = None;
     }
     if let Some(mut rec) = inner.receiver.take() {
+        rec.cancelled.store(true, Ordering::Release);
         rec.transfer_ticket.clear();
     }
 }

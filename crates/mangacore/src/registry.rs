@@ -87,7 +87,7 @@ impl Registry {
             debug!(adapter = adapter.id(), %url, "trying registered adapter");
             match adapter.resolve(&self.http, &url).await {
                 Ok(resolved) => return Ok(resolved),
-                Err(err @ ScrapeError::Blocked { .. }) => return Err(err),
+                Err(err) if is_terminal_scrape_error(&err) => return Err(err),
                 Err(err) => {
                     warn!(adapter = adapter.id(), %err, "adapter failed, falling back to generic");
                 }
@@ -97,7 +97,7 @@ impl Registry {
         // Tier 2: generic heuristic on static HTML.
         match self.generic.resolve(&self.http, &url).await {
             Ok(resolved) => return Ok(resolved),
-            Err(err @ ScrapeError::Blocked { .. }) => return Err(err),
+            Err(err) if is_terminal_scrape_error(&err) => return Err(err),
             Err(err) => {
                 if headless_policy == HeadlessPolicy::Disabled {
                     return Err(err);
@@ -124,7 +124,7 @@ impl Registry {
             debug!(adapter = adapter.id(), %url, "fetching chapter via registered adapter");
             match adapter.chapter(&self.http, url).await {
                 Ok(chapter) => return Ok(chapter),
-                Err(err @ ScrapeError::Blocked { .. }) => return Err(err),
+                Err(err) if is_terminal_scrape_error(&err) => return Err(err),
                 Err(err) => {
                     warn!(adapter = adapter.id(), %err, "adapter chapter failed, trying generic");
                 }
@@ -133,7 +133,7 @@ impl Registry {
 
         match self.generic.chapter(&self.http, url).await {
             Ok(chapter) => return Ok(chapter),
-            Err(err @ ScrapeError::Blocked { .. }) => return Err(err),
+            Err(err) if is_terminal_scrape_error(&err) => return Err(err),
             Err(err) => {
                 if headless_policy == HeadlessPolicy::Disabled {
                     return Err(err);
@@ -203,6 +203,17 @@ impl Registry {
             })
         }
     }
+}
+
+/// Errors that represent policy/security/proxy enforcement and must never fall through to headless.
+const fn is_terminal_scrape_error(err: &ScrapeError) -> bool {
+    matches!(
+        err,
+        ScrapeError::Blocked { .. }
+            | ScrapeError::Proxy(_)
+            | ScrapeError::DisallowedHost(_)
+            | ScrapeError::InvalidUrl(_)
+    )
 }
 
 const _: () = {

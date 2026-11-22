@@ -42,14 +42,15 @@
   let activeUrl = $state("");
   let loadingInitial = $state(true);
   let appendingNext = $state(false);
-  let errorState = $state<{ title: string; detail: string } | null>(null);
+  let verifyingBlocked = $state(false);
+  let errorState = $state<{ title: string; detail: string; blockedUrl?: string } | null>(null);
   let toolbarVisible = $state(true);
   let quickSettingsOpen = $state(false);
   let isFullscreen = $state(false);
 
   // Viewport focus tracking (key of focused group or page, plus focused page index for live setting changes).
   let focusedKeys = $state<Set<string>>(new Set());
-  let focusedPageIdx = 0;
+  let focusedPageIdx = $state(0);
 
   let scrollEl = $state<HTMLDivElement | null>(null);
   let lastScrollOffset = 0;
@@ -134,18 +135,26 @@
     const nextFocused = new Set<string>();
 
     if (isHorizontal) {
-      const centerX = scrollRect.left + scrollRect.width / 2;
       const groups = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-group-key]"));
+      const absLeft = Math.abs(scrollEl.scrollLeft);
+      const maxScroll = Math.max(0, scrollEl.scrollWidth - scrollEl.clientWidth);
       let best: HTMLElement | null = null;
-      let bestDist = Number.POSITIVE_INFINITY;
 
-      for (const el of groups) {
-        const r = el.getBoundingClientRect();
-        const elCenter = r.left + r.width / 2;
-        const dist = Math.abs(elCenter - centerX);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = el;
+      if (groups.length > 0 && absLeft <= 16) {
+        best = groups[0];
+      } else if (groups.length > 0 && maxScroll > 16 && absLeft >= maxScroll - 16) {
+        best = groups[groups.length - 1];
+      } else {
+        const centerX = scrollRect.left + scrollRect.width / 2;
+        let bestDist = Number.POSITIVE_INFINITY;
+        for (const el of groups) {
+          const r = el.getBoundingClientRect();
+          const elCenter = r.left + r.width / 2;
+          const dist = Math.abs(elCenter - centerX);
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = el;
+          }
         }
       }
       if (best?.dataset.groupKey) {
@@ -392,7 +401,7 @@
     prevLayoutSig = sig;
 
     const anchorChap = untrack(() => activeUrl);
-    const anchorPage = focusedPageIdx;
+    const anchorPage = untrack(() => focusedPageIdx);
     if (!anchorChap || untrack(() => loadingInitial || strip.length === 0)) return;
 
     void (async () => {
@@ -527,12 +536,22 @@
     const groups = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-group-key]"));
     if (groups.length === 0) return;
 
-    const currentIdx = groups.findIndex((g) => g.dataset.groupKey && focusedKeys.has(g.dataset.groupKey));
+    const currentIdx = groups.findIndex(
+      (g) => g.dataset.groupKey && focusedKeys.has(g.dataset.groupKey)
+    );
     const baseIdx = currentIdx >= 0 ? currentIdx : 0;
     const nextIdx = baseIdx + deltaStep;
 
     if (nextIdx >= 0 && nextIdx < groups.length) {
-      groups[nextIdx].scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+      const targetGroup = groups[nextIdx];
+      if (targetGroup.dataset.groupKey) {
+        focusedKeys = new Set([targetGroup.dataset.groupKey]);
+        const firstPage = targetGroup.querySelector<HTMLElement>("[data-page-idx]");
+        if (firstPage?.dataset.pageIdx) {
+          focusedPageIdx = Number(firstPage.dataset.pageIdx) || 0;
+        }
+      }
+      targetGroup.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
       return;
     }
     // Past ends of chapter -> transition chapters cleanly.
@@ -540,6 +559,21 @@
       jumpToChapter(activeChapter.next);
     } else if (deltaStep < 0 && activeChapter?.prev) {
       jumpToChapter(activeChapter.prev);
+    }
+  }
+
+  async function handleManualVerify() {
+    if (!errorState?.blockedUrl || verifyingBlocked) return;
+    verifyingBlocked = true;
+    try {
+      toasts.push(t.toastOpeningVerify, "info", 4500);
+      await api.openManualVerification(errorState.blockedUrl);
+      toasts.push(t.toastVerifyDone, "success");
+      await loadInitial(chapterUrl, initialScrollRatio);
+    } catch (err) {
+      errorState = formatAppError(err, settingsStore.value.language);
+    } finally {
+      verifyingBlocked = false;
     }
   }
 
@@ -1195,7 +1229,23 @@
       <div class="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
         <div class="text-base font-semibold">{errorState.title}</div>
         <p class="max-w-md text-xs" style="color: var(--text-muted);">{errorState.detail}</p>
-        <div class="mt-2 flex gap-2">
+        <div class="mt-2 flex flex-wrap justify-center gap-2">
+          {#if errorState.blockedUrl}
+            <button
+              type="button"
+              disabled={verifyingBlocked}
+              onclick={handleManualVerify}
+              class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+              style="background-color: var(--accent);"
+            >
+              {#if verifyingBlocked}
+                <Loader2 size={14} class="animate-spin" />
+                <span>{t.waitingVerification}</span>
+              {:else}
+                <span>{t.openVerification}</span>
+              {/if}
+            </button>
+          {/if}
           <button
             type="button"
             onclick={() => loadInitial(chapterUrl, initialScrollRatio)}
@@ -1239,7 +1289,8 @@
                 index={entry.pageIdx}
                 pageKey={`${activeChapter.url}:${entry.pageIdx}`}
                 {preloadMarginPx}
-                eager={entry.pageIdx < readerSettings.preloadImages}
+                eager={entry.pageIdx < readerSettings.preloadImages ||
+                  Math.abs(entry.pageIdx - focusedPageIdx) <= readerSettings.preloadImages}
                 horizontal={true}
                 snapPage={hCfg.snapMode === "page"}
                 groupPageCount={group.items.length}
@@ -1316,7 +1367,10 @@
                         index={entry.pageIdx}
                         pageKey={`${chap.url}:${entry.pageIdx}`}
                         {preloadMarginPx}
-                        eager={chapIdx === 0 && entry.pageIdx < readerSettings.preloadImages}
+                        eager={(chapIdx === 0 && entry.pageIdx < readerSettings.preloadImages) ||
+                          (normUrl(chap.url) === normUrl(activeUrl) &&
+                            Math.abs(entry.pageIdx - focusedPageIdx) <=
+                              readerSettings.preloadImages)}
                       />
                     {/each}
                   </div>
@@ -1332,7 +1386,9 @@
                     index={imgIdx}
                     pageKey={pKey}
                     {preloadMarginPx}
-                    eager={chapIdx === 0 && imgIdx < readerSettings.preloadImages}
+                    eager={(chapIdx === 0 && imgIdx < readerSettings.preloadImages) ||
+                      (normUrl(chap.url) === normUrl(activeUrl) &&
+                        Math.abs(imgIdx - focusedPageIdx) <= readerSettings.preloadImages)}
                     dimBrightness={pageDimBrightness(pKey)}
                   />
                 {/each}

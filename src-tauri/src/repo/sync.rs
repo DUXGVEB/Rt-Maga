@@ -86,6 +86,7 @@ struct ExportChapterRow {
 #[derive(Debug, sqlx::FromRow)]
 struct LocalHistoryRow {
     chapter_url: String,
+    chapter_name: String,
     scroll_ratio: f64,
     read_at: i64,
 }
@@ -189,7 +190,7 @@ impl Database {
 
         for item in &bundle.manga {
             let trimmed_url = item.url.trim();
-            if trimmed_url.is_empty() || item.title.trim().is_empty() {
+            if !is_valid_sync_http_url(trimmed_url) || item.title.trim().is_empty() {
                 continue;
             }
             let key = norm_url(trimmed_url).to_owned();
@@ -213,6 +214,22 @@ async fn insert_new_sync_manga(
     item: &SyncMangaPayload,
     now: i64,
 ) -> Result<i64, AppError> {
+    let clean_cover = item
+        .cover_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| is_valid_sync_http_url(u));
+    let clean_latest_url = item
+        .latest_chapter_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| is_valid_sync_http_url(u));
+    let clean_latest_name = item
+        .latest_chapter_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
     let res = sqlx::query(
         "INSERT INTO manga
             (url, site, title, cover_url, latest_chapter_url, latest_chapter_name, has_new, updated_at)
@@ -221,9 +238,9 @@ async fn insert_new_sync_manga(
     .bind(item.url.trim())
     .bind(item.site.trim())
     .bind(item.title.trim())
-    .bind(item.cover_url.as_deref())
-    .bind(item.latest_chapter_url.as_deref())
-    .bind(item.latest_chapter_name.as_deref())
+    .bind(clean_cover)
+    .bind(clean_latest_url)
+    .bind(clean_latest_name)
     .bind(now)
     .execute(&mut **tx)
     .await?;
@@ -231,27 +248,86 @@ async fn insert_new_sync_manga(
     let manga_id = res.last_insert_rowid();
     upsert_sync_chapters(tx, manga_id, &item.chapters).await?;
 
-    if let Some(hist) = item.history.as_ref() {
-        let ratio = sanitize_ratio(hist.scroll_ratio);
-        sqlx::query(
-            "INSERT INTO history (manga_id, chapter_url, chapter_name, scroll_ratio, read_at)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(manga_id) DO UPDATE SET
-                chapter_url = excluded.chapter_url,
-                chapter_name = excluded.chapter_name,
-                scroll_ratio = excluded.scroll_ratio,
-                read_at = excluded.read_at",
-        )
-        .bind(manga_id)
-        .bind(hist.chapter_url.trim())
-        .bind(hist.chapter_name.trim())
-        .bind(ratio)
-        .bind(hist.read_at)
-        .execute(&mut **tx)
-        .await?;
+    if let Some(hist) = item
+        .history
+        .as_ref()
+        .filter(|h| is_valid_sync_http_url(h.chapter_url.trim()))
+    {
+        write_history_row(tx, manga_id, hist).await?;
     }
 
     Ok(manga_id)
+}
+
+async fn update_merged_manga_metadata(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    manga_id: i64,
+    item: &SyncMangaPayload,
+    now: i64,
+) -> Result<(), AppError> {
+    let clean_cover = item
+        .cover_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| is_valid_sync_http_url(u));
+
+    // Derive the furthest known latest chapter from the unioned `chapter` table so an older
+    // device's snapshot never overwrites a newer local `latest_chapter_url` backwards.
+    let highest_chap: Option<(String, String)> = sqlx::query_as(
+        "SELECT url, name FROM chapter WHERE manga_id = ?
+         ORDER BY COALESCE(number, CAST(idx AS REAL)) DESC, idx DESC LIMIT 1",
+    )
+    .bind(manga_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let (derived_latest_url, derived_latest_name) = match highest_chap {
+        Some((u, n)) => (Some(u), Some(n)),
+        None => (
+            item.latest_chapter_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|u| is_valid_sync_http_url(u))
+                .map(str::to_owned),
+            item.latest_chapter_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+        ),
+    };
+
+    sqlx::query(
+        "UPDATE manga
+         SET cover_url = COALESCE(cover_url, ?),
+             latest_chapter_url = COALESCE(?, latest_chapter_url),
+             latest_chapter_name = COALESCE(?, latest_chapter_name),
+             updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(clean_cover)
+    .bind(derived_latest_url.as_deref())
+    .bind(derived_latest_name.as_deref())
+    .bind(now)
+    .bind(manga_id)
+    .execute(&mut **tx)
+    .await?;
+
+    // Clear `has_new` if the latest chapter is now marked read after unioning chapter read flags.
+    sqlx::query(
+        "UPDATE manga SET has_new = 0
+         WHERE id = ? AND EXISTS (
+             SELECT 1 FROM chapter c
+             WHERE c.manga_id = manga.id
+               AND RTRIM(c.url, '/') = RTRIM(manga.latest_chapter_url, '/')
+               AND c.read = 1
+         )",
+    )
+    .bind(manga_id)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
 }
 
 async fn merge_existing_manga(
@@ -262,33 +338,23 @@ async fn merge_existing_manga(
     report: &mut SyncMergeReport,
 ) -> Result<(), AppError> {
     upsert_sync_chapters(tx, manga_id, &item.chapters).await?;
+    update_merged_manga_metadata(tx, manga_id, item, now).await?;
 
-    sqlx::query(
-        "UPDATE manga
-         SET cover_url = COALESCE(cover_url, ?),
-             latest_chapter_url = COALESCE(?, latest_chapter_url),
-             latest_chapter_name = COALESCE(?, latest_chapter_name),
-             updated_at = ?
-         WHERE id = ?",
-    )
-    .bind(item.cover_url.as_deref())
-    .bind(item.latest_chapter_url.as_deref())
-    .bind(item.latest_chapter_name.as_deref())
-    .bind(now)
-    .bind(manga_id)
-    .execute(&mut **tx)
-    .await?;
-
-    let Some(incoming) = item.history.as_ref() else {
+    let Some(incoming) = item
+        .history
+        .as_ref()
+        .filter(|h| is_valid_sync_http_url(h.chapter_url.trim()))
+    else {
         report.skipped_same_chapter += 1;
         return Ok(());
     };
 
-    let local_hist: Option<LocalHistoryRow> =
-        sqlx::query_as("SELECT chapter_url, scroll_ratio, read_at FROM history WHERE manga_id = ?")
-            .bind(manga_id)
-            .fetch_optional(&mut **tx)
-            .await?;
+    let local_hist: Option<LocalHistoryRow> = sqlx::query_as(
+        "SELECT chapter_url, chapter_name, scroll_ratio, read_at FROM history WHERE manga_id = ?",
+    )
+    .bind(manga_id)
+    .fetch_optional(&mut **tx)
+    .await?;
 
     let Some(local) = local_hist else {
         write_history_row(tx, manga_id, incoming).await?;
@@ -299,11 +365,16 @@ async fn merge_existing_manga(
     if norm_url(&local.chapter_url) == norm_url(&incoming.chapter_url) {
         let inc_ratio = sanitize_ratio(incoming.scroll_ratio);
         if inc_ratio > local.scroll_ratio + 0.01 {
-            write_history_row(tx, manga_id, incoming).await?;
-            report.updated_newer_chapter += 1;
-        } else {
-            report.skipped_same_chapter += 1;
+            sqlx::query(
+                "UPDATE history SET scroll_ratio = ?, read_at = MAX(read_at, ?) WHERE manga_id = ?",
+            )
+            .bind(inc_ratio)
+            .bind(incoming.read_at)
+            .bind(manga_id)
+            .execute(&mut **tx)
+            .await?;
         }
+        report.skipped_same_chapter += 1;
         return Ok(());
     }
 
@@ -314,7 +385,11 @@ async fn merge_existing_manga(
             .fetch_all(&mut **tx)
             .await?;
 
-    let local_rank = chapter_progress_rank(&chap_rows, &local.chapter_url, None);
+    let local_rank = chapter_progress_rank(
+        &chap_rows,
+        &local.chapter_url,
+        Some(local.chapter_name.as_str()),
+    );
     let incoming_rank = chapter_progress_rank(
         &chap_rows,
         &incoming.chapter_url,
@@ -352,6 +427,11 @@ async fn upsert_sync_chapters(
     chapters: &[SyncChapterPayload],
 ) -> Result<(), AppError> {
     for ch in chapters {
+        let trimmed_url = ch.url.trim();
+        if !is_valid_sync_http_url(trimmed_url) {
+            continue;
+        }
+        let clean_num = ch.number.filter(|n| n.is_finite());
         let read_int: i64 = i64::from(ch.read);
         sqlx::query(
             "INSERT INTO chapter (manga_id, url, name, number, idx, read)
@@ -363,9 +443,9 @@ async fn upsert_sync_chapters(
                 read = MAX(chapter.read, excluded.read)",
         )
         .bind(manga_id)
-        .bind(ch.url.trim())
+        .bind(trimmed_url)
         .bind(ch.name.trim())
-        .bind(ch.number)
+        .bind(clean_num)
         .bind(ch.idx)
         .bind(read_int)
         .execute(&mut **tx)
@@ -429,4 +509,8 @@ fn sanitize_ratio(raw: f64) -> f64 {
 
 fn norm_url(raw: &str) -> &str {
     raw.trim().trim_end_matches('/')
+}
+
+fn is_valid_sync_http_url(raw: &str) -> bool {
+    url::Url::parse(raw).is_ok_and(|u| mangacore::http::validate_public_http_url(&u).is_ok())
 }

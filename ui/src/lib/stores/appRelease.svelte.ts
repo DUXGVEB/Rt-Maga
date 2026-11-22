@@ -26,7 +26,7 @@ function saveDismissedTag(tag: string | null) {
 }
 
 class AppReleaseStore {
-  currentVersion = $state("1.1.0");
+  currentVersion = $state("2.0.1");
   release = $state<AppReleaseInfo | null>(null);
   checking = $state(false);
   dismissedTag = $state<string | null>(loadDismissedTag());
