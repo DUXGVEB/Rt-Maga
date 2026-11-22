@@ -10,25 +10,31 @@
 
   let history = $state<HistoryItemView[]>([]);
   let loading = $state(true);
+  let loadSeq = 0;
 
   const t = $derived(settingsStore.t);
 
-  async function loadHistory() {
-    loading = true;
+  async function loadHistory(showSkeleton: boolean) {
+    const seq = ++loadSeq;
+    if (showSkeleton) loading = true;
     try {
       const items = await api.listHistory();
+      if (seq !== loadSeq) return;
       history = items;
       updatesStore.setNewCountFromHistory(items.filter((i) => i.hasNew).length);
     } catch {
+      if (seq !== loadSeq) return;
       history = [];
     } finally {
-      loading = false;
+      if (seq === loadSeq) {
+        loading = false;
+      }
     }
   }
 
   $effect(() => {
     void updatesStore.lastFound;
-    loadHistory();
+    loadHistory(history.length === 0);
   });
 
   const updatedItems = $derived(history.filter((h) => h.hasNew));

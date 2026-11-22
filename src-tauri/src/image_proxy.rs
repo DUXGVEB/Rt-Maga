@@ -146,9 +146,11 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
 }
 
 fn image_ok_response(body: Vec<u8>, content_type: &str) -> Response<Vec<u8>> {
+    let safe_ct = http::HeaderValue::from_str(content_type)
+        .unwrap_or_else(|_| http::HeaderValue::from_static("application/octet-stream"));
     Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", content_type)
+        .header("Content-Type", safe_ct)
         .header("Cache-Control", "public, max-age=86400")
         .header("Access-Control-Allow-Origin", "*")
         .body(body)
@@ -159,6 +161,7 @@ fn error_response(status: StatusCode, msg: &str) -> Response<Vec<u8>> {
     Response::builder()
         .status(status)
         .header("Content-Type", "text/plain; charset=utf-8")
+        .header("Cache-Control", "no-store")
         .body(msg.as_bytes().to_vec())
         .expect("valid static error response")
 }

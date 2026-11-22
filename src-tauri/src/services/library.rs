@@ -94,9 +94,9 @@ pub(crate) async fn resolve_url(
     let policy = state.current_settings().await.headless_policy();
     let resolved = state.registry.resolve(raw_url, policy).await?;
 
-    let (manga, start_chapter_url): (_, Option<String>) = match resolved {
+    let (manga, start_chapter) = match resolved {
         Resolved::Manga(m) => (m, None),
-        Resolved::Chapter { manga, at } => (manga, Some(at.url.into())),
+        Resolved::Chapter { manga, at } => (manga, Some(at)),
         _ => {
             return Err(AppError::Internal {
                 message: "unexpected resolve variant".to_owned(),
@@ -106,8 +106,20 @@ pub(crate) async fn resolve_url(
 
     let manga_id = state.db.upsert_manga(&manga).await?;
     let view = build_manga_view(state, manga_id).await?;
-    let start_at = start_chapter_url
-        .and_then(|target_url| view.chapters.iter().find(|c| c.url == target_url).cloned());
+    let start_at = start_chapter.map(|target| {
+        let target_norm = target.url.as_str().trim_end_matches('/');
+        view.chapters
+            .iter()
+            .find(|c| c.url.trim_end_matches('/') == target_norm)
+            .cloned()
+            .unwrap_or_else(|| ChapterRefView {
+                url: target.url.into(),
+                name: target.name,
+                number: target.number.map(f64::from),
+                idx: 0,
+                read: false,
+            })
+    });
 
     Ok(ResolveResponse {
         manga: view,

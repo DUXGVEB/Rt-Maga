@@ -21,6 +21,7 @@ export interface UpdateSettings {
   enabled: boolean;
   intervalHours: number;
   notifyWindows: boolean;
+  checkAppUpdates: boolean;
 }
 
 export interface SourceSettings {
@@ -118,6 +119,16 @@ export interface UpdateProgress {
 export interface UpdateSummary {
   checked: number;
   found: FoundUpdate[];
+}
+
+export interface AppReleaseInfo {
+  currentVersion: string;
+  latestVersion: string;
+  tagName: string;
+  releaseUrl: string;
+  downloadUrl: string | null;
+  publishedAt: string | null;
+  updateAvailable: boolean;
 }
 
 export type AppError =

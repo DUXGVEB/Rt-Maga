@@ -63,7 +63,11 @@ pub(crate) async fn get_chapter(
     // Fill missing prev/next and canonical chapter name from SQLite chapter list.
     if let Some(id) = manga_id {
         let chapters = state.db.list_chapters(id).await?;
-        if let Some(pos) = chapters.iter().position(|c| c.url == chapter.url.as_str()) {
+        let target_norm = chapter.url.as_str().trim_end_matches('/');
+        if let Some(pos) = chapters
+            .iter()
+            .position(|c| c.url.trim_end_matches('/') == target_norm)
+        {
             display_name.clone_from(&chapters[pos].name);
             if prev.is_none() && pos > 0 {
                 prev = Some(chapters[pos - 1].url.clone());

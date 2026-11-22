@@ -208,3 +208,28 @@ fn generic_parses_common_cms_layout_with_fallback_mirrors() {
         Some("https://example.org/series/dawn-horizon-100")
     );
 }
+
+#[test]
+fn generic_deduplicates_fragment_chapter_links() {
+    let html = r#"
+    <!DOCTYPE html><html><head><title>火影 - Reader</title></head><body>
+      <main>
+        <a href="/series/demo/chapter-1">Chapter 1</a>
+        <a href="/series/demo/chapter-1#comments">Chapter 1</a>
+        <a href="/series/demo/chapter-2">Chapter 2</a>
+        <a href="/series/demo/chapter-2#top">Chapter 2</a>
+      </main>
+    </body></html>"#;
+    let url = Url::parse("https://example.com/series/demo").unwrap();
+    let manga = GenericSource::parse_manga_html(html, &url).unwrap();
+    assert_eq!(manga.title, "火影");
+    assert_eq!(manga.chapters.len(), 2, "fragment duplicates must collapse");
+    assert_eq!(
+        manga.chapters[0].url.as_str(),
+        "https://example.com/series/demo/chapter-1"
+    );
+    assert_eq!(
+        manga.chapters[1].url.as_str(),
+        "https://example.com/series/demo/chapter-2"
+    );
+}

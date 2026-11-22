@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getDict } from "./i18n";
 import type {
   AppError,
+  AppReleaseInfo,
   CacheInfo,
   ChapterView,
   FoundUpdate,
@@ -105,6 +106,10 @@ export const api = {
   checkUpdatesNow: () => invoke<UpdateSummary>("check_updates_now"),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
+  getAppVersion: () => invoke<string>("get_app_version"),
+  getCachedAppRelease: () => invoke<AppReleaseInfo | null>("get_cached_app_release"),
+  checkAppRelease: () => invoke<AppReleaseInfo>("check_app_release"),
+  openReleaseUrl: (url: string) => invoke<void>("open_release_url", { url }),
   cacheInfo: () => invoke<CacheInfo>("cache_info"),
   clearImageCache: () => invoke<CacheInfo>("clear_image_cache"),
 
@@ -114,4 +119,6 @@ export const api = {
     listen<UpdateProgress>("updates://progress", (e) => cb(e.payload)),
   onSettingsChanged: (cb: (s: Settings) => void): Promise<UnlistenFn> =>
     listen<Settings>("settings://changed", (e) => cb(e.payload)),
+  onAppReleaseAvailable: (cb: (info: AppReleaseInfo) => void): Promise<UnlistenFn> =>
+    listen<AppReleaseInfo>("app://release-available", (e) => cb(e.payload)),
 };

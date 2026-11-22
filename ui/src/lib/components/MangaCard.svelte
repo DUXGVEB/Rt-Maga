@@ -6,7 +6,13 @@
   import type { HistoryItemView } from "../types";
 
   let { item }: { item: HistoryItemView } = $props();
+  let coverError = $state(false);
   const t = $derived(settingsStore.t);
+
+  $effect(() => {
+    void item.coverToken;
+    coverError = false;
+  });
 
   const progressPct = $derived(() => {
     if (item.totalChapters <= 0 || item.currentChapterIdx === null) {
@@ -39,11 +45,14 @@
   style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-sm);"
 >
   <div class="relative aspect-[3/4] w-full overflow-hidden" style="background-color: var(--surface-subtle);">
-    {#if item.coverToken}
+    {#if item.coverToken && !coverError}
       <img
         src={imgProxyUrl(item.coverToken)}
         alt={item.title}
         loading="lazy"
+        onerror={() => {
+          coverError = true;
+        }}
         class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
       />
     {:else}

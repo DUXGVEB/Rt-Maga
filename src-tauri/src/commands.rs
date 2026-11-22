@@ -3,13 +3,15 @@
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::cache::CacheInfo;
 use crate::error::AppError;
+use crate::services::app_release::{AppReleaseInfo, CURRENT_APP_VERSION};
 use crate::services::library::{FetchMode, HistoryItemView, MangaView, ResolveResponse};
 use crate::services::reader::ChapterView;
 use crate::services::updater::{CheckScope, UpdateSummary};
-use crate::services::{library, reader, updater};
+use crate::services::{app_release, library, reader, updater};
 use crate::settings::Settings;
 use crate::state::AppState;
 
@@ -119,7 +121,8 @@ pub(crate) async fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Sett
     Ok(state.current_settings().await)
 }
 
-/// Persists updated settings, restarts the background updater if needed, and broadcasts the change.
+/// Persists updated settings, restarts the background updater only when schedule changes,
+/// and broadcasts the change.
 #[tauri::command]
 pub(crate) async fn set_settings(
     app: AppHandle,
@@ -127,14 +130,61 @@ pub(crate) async fn set_settings(
     settings: Settings,
 ) -> Result<Settings, AppError> {
     let saved = state.db.save_settings(&settings).await?;
-    {
+    let schedule_changed = {
         let mut guard = state.settings.write().await;
+        let changed = guard.updates.enabled != saved.updates.enabled
+            || guard.updates.interval_hours != saved.updates.interval_hours;
         *guard = saved.clone();
-    }
+        changed
+    };
     let _ = app.emit("settings://changed", &saved);
     state.images.evict_if_needed(saved.cache.max_mb).await;
-    updater::restart_background_loop(app, Arc::clone(&state)).await;
+    if schedule_changed {
+        updater::restart_background_loop(app, Arc::clone(&state)).await;
+    }
     Ok(saved)
+}
+
+/// Returns the compiled `RtMaga` application version string.
+#[tauri::command]
+pub(crate) fn get_app_version() -> &'static str {
+    CURRENT_APP_VERSION
+}
+
+/// Returns the most recently cached application release check result, if any.
+#[tauri::command]
+pub(crate) async fn get_cached_app_release(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<AppReleaseInfo>, AppError> {
+    Ok(state.latest_release.read().await.clone())
+}
+
+/// Queries the official release endpoint now to detect whether a newer `RtMaga` version exists.
+#[tauri::command]
+pub(crate) async fn check_app_release(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<AppReleaseInfo, AppError> {
+    let info = app_release::check_latest_release(&state).await?;
+    if info.update_available {
+        let _ = app.emit("app://release-available", &info);
+    }
+    Ok(info)
+}
+
+/// Opens a verified official release or installer URL in the user's system browser.
+#[tauri::command]
+pub(crate) async fn open_release_url(app: AppHandle, url: String) -> Result<(), AppError> {
+    if !app_release::is_allowed_release_url(&url) {
+        return Err(AppError::InvalidUrl {
+            message: "only official release links may be opened".to_owned(),
+        });
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| AppError::Internal {
+            message: format!("failed to open release link: {e}"),
+        })
 }
 
 /// Returns current disk image cache usage statistics.

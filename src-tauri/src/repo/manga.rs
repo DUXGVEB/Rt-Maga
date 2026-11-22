@@ -243,19 +243,23 @@ impl Database {
         fresh: &Manga,
     ) -> Result<Option<String>, AppError> {
         let now = now_unix_secs();
-        let prev: Option<(Option<String>,)> =
-            sqlx::query_as("SELECT latest_chapter_url FROM manga WHERE id = ?")
+        let existing_urls: HashSet<String> =
+            sqlx::query_as::<_, (String,)>("SELECT url FROM chapter WHERE manga_id = ?")
                 .bind(manga_id)
-                .fetch_optional(self.pool())
-                .await?;
+                .fetch_all(self.pool())
+                .await?
+                .into_iter()
+                .map(|(u,)| u.trim_end_matches('/').to_owned())
+                .collect();
 
-        let prev_latest = prev.and_then(|(u,)| u);
         let new_latest = fresh.chapters.last();
-
         let _ = self.upsert_manga(fresh).await?;
 
-        let discovered_name = match (prev_latest.as_deref(), new_latest) {
-            (Some(old_url), Some(latest)) if old_url != latest.url.as_str() => {
+        let discovered_name = match new_latest {
+            Some(latest)
+                if !existing_urls.is_empty()
+                    && !existing_urls.contains(latest.url.as_str().trim_end_matches('/')) =>
+            {
                 sqlx::query("UPDATE manga SET has_new = 1, checked_at = ? WHERE id = ?")
                     .bind(now)
                     .bind(manga_id)

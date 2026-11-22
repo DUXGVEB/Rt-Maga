@@ -74,7 +74,7 @@ pub(crate) enum ReaderBg {
 
 /// Reader display and continuous-scroll preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub(crate) struct ReaderSettings {
     /// Image horizontal sizing mode.
     pub width: ImageWidth,
@@ -100,16 +100,18 @@ impl Default for ReaderSettings {
     }
 }
 
-/// Background new-chapter checker settings.
+/// Background new-chapter and app-release checker settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub(crate) struct UpdateSettings {
     /// Enable automatic background checking for manga in reading history.
     pub enabled: bool,
     /// Interval between background checks in hours (`1..=48`).
     pub interval_hours: u8,
-    /// Emit a native Windows desktop notification when new chapters are discovered.
+    /// Emit a native desktop notification when new chapters are discovered.
     pub notify_windows: bool,
+    /// Automatically check for newer `RtMaga` application releases when the app opens.
+    pub check_app_updates: bool,
 }
 
 impl Default for UpdateSettings {
@@ -118,15 +120,16 @@ impl Default for UpdateSettings {
             enabled: true,
             interval_hours: 6,
             notify_windows: true,
+            check_app_updates: true,
         }
     }
 }
 
 /// Scraper and headless browser preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub(crate) struct SourceSettings {
-    /// Allow falling back to headless Microsoft Edge / Chrome on JS-rendered websites.
+    /// Allow falling back to a headless browser on JS-rendered websites.
     pub headless_enabled: bool,
     /// Maximum simultaneous requests per remote host (`1..=8`).
     pub max_conn_per_host: u8,
@@ -143,7 +146,7 @@ impl Default for SourceSettings {
 
 /// Local image disk cache limits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub(crate) struct CacheSettings {
     /// Maximum disk cache size in megabytes (`64..=10240`).
     pub max_mb: u32,
@@ -157,16 +160,15 @@ impl Default for CacheSettings {
 
 /// Root settings object persisted as JSON in SQLite.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub(crate) struct Settings {
     /// UI display language.
-    #[serde(default)]
     pub language: Language,
     /// UI color theme.
     pub theme: Theme,
     /// Vertical reader settings.
     pub reader: ReaderSettings,
-    /// Background chapter update check settings.
+    /// Background chapter and app update check settings.
     pub updates: UpdateSettings,
     /// Scraper source settings.
     pub sources: SourceSettings,
@@ -226,6 +228,7 @@ mod tests {
         assert!(!parsed.reader.auto_next_chapter);
         assert_eq!(parsed.reader.reader_bg, ReaderBg::FollowTheme);
         assert_eq!(parsed.updates.interval_hours, 3);
+        assert!(parsed.updates.check_app_updates);
         assert!(!parsed.sources.headless_enabled);
 
         let lang_json = px_json.replace(

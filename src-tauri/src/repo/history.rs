@@ -38,7 +38,11 @@ impl Database {
         scroll_ratio: f64,
     ) -> Result<(), AppError> {
         let now = now_unix_secs();
-        let clamped = scroll_ratio.clamp(0.0, 1.0);
+        let clamped = if scroll_ratio.is_finite() {
+            scroll_ratio.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
 
         sqlx::query(
             "INSERT INTO history (manga_id, chapter_url, chapter_name, scroll_ratio, read_at)

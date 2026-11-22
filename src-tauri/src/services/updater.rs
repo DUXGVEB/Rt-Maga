@@ -1,6 +1,7 @@
 //! Background periodic checker for new chapters on manga in reading history.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rand::Rng;
@@ -82,6 +83,14 @@ pub(crate) async fn restart_background_loop(app: AppHandle, state: Arc<AppState>
     *handle_guard = Some(task);
 }
 
+struct RunGuard<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for RunGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 /// Checks every manga in reading history sequentially with polite jitter between requests.
 ///
 /// # Errors
@@ -92,6 +101,19 @@ pub(crate) async fn run_update_check(
     state: &AppState,
     scope: CheckScope,
 ) -> Result<UpdateSummary, AppError> {
+    if state
+        .update_check_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        debug!("chapter update check already in progress, skipping overlapping run");
+        return Ok(UpdateSummary {
+            checked: 0,
+            found: Vec::new(),
+        });
+    }
+    let _guard = RunGuard(&state.update_check_running);
+
     let settings = state.current_settings().await;
     let policy = settings.headless_policy();
     let now = now_unix_secs();

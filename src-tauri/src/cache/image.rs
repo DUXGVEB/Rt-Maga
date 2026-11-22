@@ -118,6 +118,7 @@ impl ImageCache {
         let nonce: u64 = rand::random();
         let tmp_path = path.with_extension(format!("tmp.{nonce:016x}"));
         if let Err(err) = tokio::fs::write(&tmp_path, bytes).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             warn!(%err, "failed to write temp cache file");
             return;
         }
@@ -232,27 +233,36 @@ impl ImageCache {
         }
 
         let target = (limit_bytes * 9) / 10;
-        let Ok(candidates) = sqlx::query_as::<_, (String, i64)>(
-            "SELECT key, size FROM image_cache ORDER BY last_access ASC LIMIT 200",
-        )
-        .fetch_all(self.db.pool())
-        .await
-        else {
-            return;
-        };
-
-        for (key, size) in candidates {
+        for _ in 0..50 {
             if total <= target {
                 break;
             }
-            let path = self.file_path(&key);
-            let _ = tokio::fs::remove_file(&path).await;
-            let _ = sqlx::query("DELETE FROM image_cache WHERE key = ?")
-                .bind(&key)
-                .execute(self.db.pool())
-                .await;
-            total = total.saturating_sub(size);
-            debug!(%key, "evicted lru cached image");
+            let Ok(candidates) = sqlx::query_as::<_, (String, i64)>(
+                "SELECT key, size FROM image_cache ORDER BY last_access ASC LIMIT 200",
+            )
+            .fetch_all(self.db.pool())
+            .await
+            else {
+                return;
+            };
+
+            if candidates.is_empty() {
+                break;
+            }
+
+            for (key, size) in candidates {
+                if total <= target {
+                    break;
+                }
+                let path = self.file_path(&key);
+                let _ = tokio::fs::remove_file(&path).await;
+                let _ = sqlx::query("DELETE FROM image_cache WHERE key = ?")
+                    .bind(&key)
+                    .execute(self.db.pool())
+                    .await;
+                total = total.saturating_sub(size);
+                debug!(%key, "evicted lru cached image");
+            }
         }
     }
 }

@@ -20,8 +20,11 @@
   let loaded = $state(false);
   let failed = $state(false);
   let retryCount = $state(0);
+  let autoRetried = false;
+  let retryTimer: number | null = null;
 
   $effect(() => {
+    if (shouldLoad) return;
     if (eager) {
       shouldLoad = true;
       return;
@@ -42,11 +45,47 @@
     return () => observer.disconnect();
   });
 
+  $effect(() => {
+    return () => {
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    };
+  });
+
   const src = $derived(
     retryCount > 0 ? `${imgProxyUrl(token, true)}&t=${retryCount}` : imgProxyUrl(token, false)
   );
 
+  function handleLoad(e: Event) {
+    const img = e.currentTarget as HTMLImageElement | null;
+    if (img && img.naturalWidth === 0) {
+      handleError();
+      return;
+    }
+    loaded = true;
+    failed = false;
+  }
+
+  function handleError() {
+    if (!autoRetried) {
+      autoRetried = true;
+      loaded = false;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        retryCount += 1;
+      }, 600);
+      return;
+    }
+    failed = true;
+  }
+
   function retry() {
+    if (retryTimer !== null) {
+      window.clearTimeout(retryTimer);
+      retryTimer = null;
+    }
     failed = false;
     loaded = false;
     retryCount += 1;
@@ -83,12 +122,8 @@
       {src}
       alt={settingsStore.t.pageAlt(index + 1)}
       decoding="async"
-      onload={() => {
-        loaded = true;
-      }}
-      onerror={() => {
-        failed = true;
-      }}
+      onload={handleLoad}
+      onerror={handleError}
       class="block h-auto w-full select-none"
       class:hidden={!loaded}
     />

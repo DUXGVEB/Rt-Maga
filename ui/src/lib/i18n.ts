@@ -146,6 +146,21 @@ export interface Dictionary {
   toastNoNewChapters: (checked: number) => string;
   toastCheckFailed: string;
 
+  // App release updates
+  appUpdatesSection: string;
+  appVersionLabel: (v: string) => string;
+  checkAppUpdatesLabel: string;
+  checkAppUpdatesDesc: string;
+  checkReleaseNow: string;
+  releaseAvailableBanner: (version: string) => string;
+  downloadUpdate: string;
+  viewRelease: string;
+  dismissUpdate: string;
+  releaseUpToDate: (version: string) => string;
+  releaseCheckFailed: string;
+  releaseOpenFailed: string;
+  toastHistoryUpdateFailed: string;
+
   // Errors
   errInvalidUrlTitle: string;
   errInvalidUrlDetail: string;
@@ -289,6 +304,20 @@ const en: Dictionary = {
   toastNoHistoryToCheck: "No manga in history to check yet.",
   toastNoNewChapters: (c) => `Checked ${c} manga - no new chapters yet.`,
   toastCheckFailed: "Failed to check for updates right now.",
+
+  appUpdatesSection: "Application Updates",
+  appVersionLabel: (v) => `Current version: v${v}`,
+  checkAppUpdatesLabel: "Check for new releases on startup",
+  checkAppUpdatesDesc: "Automatically detect when a newer version of RtMaga is available.",
+  checkReleaseNow: "Check for release",
+  releaseAvailableBanner: (v) => `RtMaga v${v} is available`,
+  downloadUpdate: "Download",
+  viewRelease: "View release",
+  dismissUpdate: "Dismiss",
+  releaseUpToDate: (v) => `You are on the latest version (v${v}).`,
+  releaseCheckFailed: "Could not check for new releases right now.",
+  releaseOpenFailed: "Could not open the release link.",
+  toastHistoryUpdateFailed: "Could not update reading history.",
 
   errInvalidUrlTitle: "Invalid URL",
   errInvalidUrlDetail: "Please paste a valid manga or chapter link (starting with https://...).",
@@ -435,6 +464,20 @@ const vi: Dictionary = {
   toastNoNewChapters: (c) => `Đã kiểm tra ${c} truyện — chưa có chap mới.`,
   toastCheckFailed: "Không thể kiểm tra chap mới lúc này.",
 
+  appUpdatesSection: "Cập nhật ứng dụng",
+  appVersionLabel: (v) => `Phiên bản hiện tại: v${v}`,
+  checkAppUpdatesLabel: "Tự kiểm tra bản phát hành mới khi mở app",
+  checkAppUpdatesDesc: "Tự động thông báo khi có phiên bản RtMaga mới hơn.",
+  checkReleaseNow: "Kiểm tra bản mới",
+  releaseAvailableBanner: (v) => `Đã có phiên bản RtMaga v${v}`,
+  downloadUpdate: "Tải xuống",
+  viewRelease: "Xem chi tiết",
+  dismissUpdate: "Bỏ qua",
+  releaseUpToDate: (v) => `Bạn đang dùng phiên bản mới nhất (v${v}).`,
+  releaseCheckFailed: "Không thể kiểm tra bản phát hành mới lúc này.",
+  releaseOpenFailed: "Không thể mở đường dẫn tải xuống.",
+  toastHistoryUpdateFailed: "Không thể cập nhật lịch sử đọc.",
+
   errInvalidUrlTitle: "Đường dẫn không hợp lệ",
   errInvalidUrlDetail: "Hãy dán link truyện hoặc link chương hợp lệ (bắt đầu bằng https://...).",
   errBlockedTitle: (host) => `Trang ${host} yêu cầu xác minh`,
@@ -578,6 +621,20 @@ const zh: Dictionary = {
   toastNoNewChapters: (c) => `已检查 ${c} 部漫画，暂无更新。`,
   toastCheckFailed: "暂时无法检查更新。",
 
+  appUpdatesSection: "应用更新",
+  appVersionLabel: (v) => `当前版本：v${v}`,
+  checkAppUpdatesLabel: "启动时自动检查新版本",
+  checkAppUpdatesDesc: "发现更新的 RtMaga 正式版本时自动提示。",
+  checkReleaseNow: "检查新版本",
+  releaseAvailableBanner: (v) => `发现新版本 RtMaga v${v}`,
+  downloadUpdate: "立即下载",
+  viewRelease: "查看详情",
+  dismissUpdate: "忽略",
+  releaseUpToDate: (v) => `当前已是最新版本 (v${v})。`,
+  releaseCheckFailed: "暂时无法检查新版本。",
+  releaseOpenFailed: "无法打开下载链接。",
+  toastHistoryUpdateFailed: "无法更新阅读历史。",
+
   errInvalidUrlTitle: "链接无效",
   errInvalidUrlDetail: "请粘贴有效的漫画或章节链接（以 https:// 开头）。",
   errBlockedTitle: (host) => `${host} 需要人机验证`,
@@ -718,6 +775,20 @@ const ja: Dictionary = {
   toastNoHistoryToCheck: "確認対象の履歴がまだありません。",
   toastNoNewChapters: (c) => `${c} 作品を確認しました — 新着はありません。`,
   toastCheckFailed: "更新確認に失敗しました。",
+
+  appUpdatesSection: "アプリの更新",
+  appVersionLabel: (v) => `現在のバージョン: v${v}`,
+  checkAppUpdatesLabel: "起動時に新しいリリースを自動確認",
+  checkAppUpdatesDesc: "新しい RtMaga が公開されたときに自動で通知します。",
+  checkReleaseNow: "リリースを確認",
+  releaseAvailableBanner: (v) => `RtMaga v${v} が利用可能です`,
+  downloadUpdate: "ダウンロード",
+  viewRelease: "リリースを見る",
+  dismissUpdate: "閉じる",
+  releaseUpToDate: (v) => `最新バージョン (v${v}) を使用中です。`,
+  releaseCheckFailed: "現在リリース情報を確認できません。",
+  releaseOpenFailed: "リリースリンクを開けませんでした。",
+  toastHistoryUpdateFailed: "履歴を更新できませんでした。",
 
   errInvalidUrlTitle: "無効な URL",
   errInvalidUrlDetail: "https:// から始まる有効な作品・話リンクを貼り付けてください。",
@@ -864,6 +935,20 @@ const ru: Dictionary = {
   toastNoNewChapters: (c) => `Проверено: ${c} — новых глав пока нет.`,
   toastCheckFailed: "Не удалось проверить обновления.",
 
+  appUpdatesSection: "Обновления приложения",
+  appVersionLabel: (v) => `Текущая версия: v${v}`,
+  checkAppUpdatesLabel: "Проверять новые релизы при запуске",
+  checkAppUpdatesDesc: "Автоматически уведомлять о выходе новой версии RtMaga.",
+  checkReleaseNow: "Проверить релиз",
+  releaseAvailableBanner: (v) => `Доступна новая версия RtMaga v${v}`,
+  downloadUpdate: "Скачать",
+  viewRelease: "Подробнее",
+  dismissUpdate: "Скрыть",
+  releaseUpToDate: (v) => `Установлена последняя версия (v${v}).`,
+  releaseCheckFailed: "Не удалось проверить наличие новых релизов.",
+  releaseOpenFailed: "Не удалось открыть ссылку на релиз.",
+  toastHistoryUpdateFailed: "Не удалось обновить историю чтения.",
+
   errInvalidUrlTitle: "Некорректная ссылка",
   errInvalidUrlDetail: "Вставьте корректную ссылку на мангу или главу (начинается с https://...).",
   errBlockedTitle: (host) => `${host} требует подтверждения`,
@@ -1006,6 +1091,20 @@ const ko: Dictionary = {
   toastNoHistoryToCheck: "확인할 기록이 아직 없습니다.",
   toastNoNewChapters: (c) => `${c}개 확인 완료 — 새 챕터가 없습니다.`,
   toastCheckFailed: "지금은 업데이트를 확인할 수 없습니다.",
+
+  appUpdatesSection: "앱 업데이트",
+  appVersionLabel: (v) => `현재 버전: v${v}`,
+  checkAppUpdatesLabel: "시작 시 새 릴리스 자동 확인",
+  checkAppUpdatesDesc: "새로운 RtMaga 버전이 출시되면 자동으로 알려줍니다.",
+  checkReleaseNow: "릴리스 확인",
+  releaseAvailableBanner: (v) => `RtMaga v${v} 업데이트가 있습니다`,
+  downloadUpdate: "다운로드",
+  viewRelease: "자세히 보기",
+  dismissUpdate: "닫기",
+  releaseUpToDate: (v) => `최신 버전(v${v})을 사용 중입니다.`,
+  releaseCheckFailed: "지금은 새 릴리스를 확인할 수 없습니다.",
+  releaseOpenFailed: "릴리스 링크를 열 수 없습니다.",
+  toastHistoryUpdateFailed: "읽기 기록을 업데이트하지 못했습니다.",
 
   errInvalidUrlTitle: "잘못된 URL",
   errInvalidUrlDetail: "https:// 로 시작하는 유효한 만화 또는 챕터 링크를 붙여넣어 주세요.",
@@ -1150,6 +1249,20 @@ const th: Dictionary = {
   toastNoHistoryToCheck: "ยังไม่มีมังงะในประวัติสำหรับตรวจสอบ",
   toastNoNewChapters: (c) => `ตรวจสอบแล้ว ${c} เรื่อง — ยังไม่มีตอนใหม่`,
   toastCheckFailed: "ไม่สามารถเช็กตอนใหม่ได้ในขณะนี้",
+
+  appUpdatesSection: "อัปเดตแอปพลิเคชัน",
+  appVersionLabel: (v) => `เวอร์ชันปัจจุบัน: v${v}`,
+  checkAppUpdatesLabel: "ตรวจสอบเวอร์ชันใหม่อัตโนมัติเมื่อเปิดแอป",
+  checkAppUpdatesDesc: "แจ้งเตือนอัตโนมัติเมื่อมี RtMaga เวอร์ชันใหม่",
+  checkReleaseNow: "ตรวจหาเวอร์ชันใหม่",
+  releaseAvailableBanner: (v) => `มี RtMaga เวอร์ชันใหม่ v${v}`,
+  downloadUpdate: "ดาวน์โหลด",
+  viewRelease: "ดูรายละเอียด",
+  dismissUpdate: "ปิด",
+  releaseUpToDate: (v) => `คุณใช้เวอร์ชันล่าสุดอยู่แล้ว (v${v})`,
+  releaseCheckFailed: "ไม่สามารถตรวจสอบเวอร์ชันใหม่ได้ในขณะนี้",
+  releaseOpenFailed: "ไม่สามารถเปิดลิงก์ดาวน์โหลดได้",
+  toastHistoryUpdateFailed: "ไม่สามารถอัปเดตประวัติการอ่านได้",
 
   errInvalidUrlTitle: "ลิงก์ไม่ถูกต้อง",
   errInvalidUrlDetail: "กรุณาวางลิงก์มังงะหรือตอนที่ถูกต้อง (ขึ้นต้นด้วย https://...)",

@@ -10,39 +10,56 @@
   let items = $state<HistoryItemView[]>([]);
   let loading = $state(true);
   let confirmingClear = $state(false);
+  let failedCovers = $state<Record<number, boolean>>({});
+  let loadSeq = 0;
 
   const t = $derived(settingsStore.t);
 
-  async function load() {
-    loading = true;
+  async function load(showSkeleton: boolean) {
+    const seq = ++loadSeq;
+    if (showSkeleton) loading = true;
     try {
-      items = await api.listHistory();
-      updatesStore.setNewCountFromHistory(items.filter((i) => i.hasNew).length);
+      const loaded = await api.listHistory();
+      if (seq !== loadSeq) return;
+      items = loaded;
+      updatesStore.setNewCountFromHistory(loaded.filter((i) => i.hasNew).length);
     } catch {
+      if (seq !== loadSeq) return;
       items = [];
     } finally {
-      loading = false;
+      if (seq === loadSeq) {
+        loading = false;
+      }
     }
   }
 
   $effect(() => {
-    load();
+    void updatesStore.lastFound;
+    load(items.length === 0);
   });
 
   async function removeOne(mangaId: number, e: MouseEvent) {
     e.stopPropagation();
-    await api.removeHistory(mangaId);
-    items = items.filter((i) => i.mangaId !== mangaId);
-    updatesStore.setNewCountFromHistory(items.filter((i) => i.hasNew).length);
-    toasts.push(t.toastRemovedHistory, "info");
+    try {
+      await api.removeHistory(mangaId);
+      items = items.filter((i) => i.mangaId !== mangaId);
+      updatesStore.setNewCountFromHistory(items.filter((i) => i.hasNew).length);
+      toasts.push(t.toastRemovedHistory, "info");
+    } catch {
+      toasts.push(t.toastHistoryUpdateFailed, "error");
+    }
   }
 
   async function clearAll() {
-    await api.clearHistory();
-    items = [];
-    confirmingClear = false;
-    updatesStore.setNewCountFromHistory(0);
-    toasts.push(t.toastClearedHistory, "info");
+    try {
+      await api.clearHistory();
+      items = [];
+      confirmingClear = false;
+      updatesStore.setNewCountFromHistory(0);
+      toasts.push(t.toastClearedHistory, "info");
+    } catch {
+      toasts.push(t.toastHistoryUpdateFailed, "error");
+    }
   }
 
   function formatTime(unixSecs: number): string {
@@ -175,11 +192,14 @@
                 class="h-16 w-12 shrink-0 overflow-hidden rounded-lg"
                 style="background-color: var(--surface-subtle);"
               >
-                {#if item.coverToken}
+                {#if item.coverToken && !failedCovers[item.mangaId]}
                   <img
                     src={imgProxyUrl(item.coverToken)}
                     alt={item.title}
                     loading="lazy"
+                    onerror={() => {
+                      failedCovers = { ...failedCovers, [item.mangaId]: true };
+                    }}
                     class="h-full w-full object-cover"
                   />
                 {:else}

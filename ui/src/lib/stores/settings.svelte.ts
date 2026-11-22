@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS: Settings = {
     enabled: true,
     intervalHours: 6,
     notifyWindows: true,
+    checkAppUpdates: true,
   },
   sources: {
     headlessEnabled: true,
@@ -26,6 +27,17 @@ export const DEFAULT_SETTINGS: Settings = {
     maxMb: 1024,
   },
 };
+
+function mergeSettings(raw: Partial<Settings>): Settings {
+  return {
+    language: raw.language ?? DEFAULT_SETTINGS.language,
+    theme: raw.theme ?? DEFAULT_SETTINGS.theme,
+    reader: { ...DEFAULT_SETTINGS.reader, ...(raw.reader ?? {}) },
+    updates: { ...DEFAULT_SETTINGS.updates, ...(raw.updates ?? {}) },
+    sources: { ...DEFAULT_SETTINGS.sources, ...(raw.sources ?? {}) },
+    cache: { ...DEFAULT_SETTINGS.cache, ...(raw.cache ?? {}) },
+  };
+}
 
 function resolveTheme(theme: Theme): "light" | "dark" {
   const prefersDark =
@@ -66,7 +78,7 @@ class SettingsStore {
 
     try {
       const s = await api.getSettings();
-      this.value = { ...DEFAULT_SETTINGS, ...s };
+      this.value = mergeSettings(s);
       this.applyAppearance(this.value.theme, this.value.language);
     } catch {
       // Fallback to defaults when running UI standalone in browser preview.
@@ -77,7 +89,7 @@ class SettingsStore {
     try {
       await api.onSettingsChanged((s) => {
         if (this.saveTimer !== null) return;
-        this.value = { ...DEFAULT_SETTINGS, ...s };
+        this.value = mergeSettings(s);
         this.applyAppearance(this.value.theme, this.value.language);
       });
     } catch {
@@ -109,7 +121,7 @@ class SettingsStore {
       try {
         const saved = await api.setSettings(payload);
         if (version === this.saveVersion) {
-          this.value = { ...DEFAULT_SETTINGS, ...saved };
+          this.value = mergeSettings(saved);
           this.applyAppearance(this.value.theme, this.value.language);
         }
       } catch (err) {

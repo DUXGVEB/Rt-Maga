@@ -5,6 +5,7 @@ pub(crate) mod manga;
 pub(crate) mod settings;
 
 use std::path::Path;
+use std::time::Duration;
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -36,6 +37,7 @@ impl Database {
             .filename(path)
             .create_if_missing(true)
             .foreign_keys(true)
+            .busy_timeout(Duration::from_secs(5))
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal);
 
@@ -165,5 +167,30 @@ mod tests {
             after[1].url,
             "https://example.com/series/demo-1-chap-2-fixed"
         );
+
+        // Non-finite scroll ratios must sanitize to 0.0 instead of violating NOT NULL.
+        db.save_history(
+            id,
+            "https://example.com/series/demo-1-chap-1",
+            "Chapter 1",
+            f64::NAN,
+        )
+        .await
+        .unwrap();
+        let progress = db.get_history_for_manga(id).await.unwrap().unwrap();
+        assert!((progress.2 - 0.0).abs() < f64::EPSILON);
+
+        // Re-checking with an already-known chapter must NOT trigger a false new-chapter alert.
+        let same = db.record_update_check(id, &updated).await.unwrap();
+        assert!(same.is_none(), "known latest chapter must not flag has_new");
+
+        // Adding a genuinely new chapter MUST trigger a new-chapter discovery.
+        updated.chapters.push(ChapterRef {
+            url: Url::parse("https://example.com/series/demo-1-chap-3").unwrap(),
+            name: "Chapter 3".to_owned(),
+            number: Some(3.0),
+        });
+        let discovered = db.record_update_check(id, &updated).await.unwrap();
+        assert_eq!(discovered.as_deref(), Some("Chapter 3"));
     }
 }

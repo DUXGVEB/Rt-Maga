@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { RefreshCw, Trash2 } from "lucide-svelte";
+  import { Download, RefreshCw, Sparkles, Trash2 } from "lucide-svelte";
   import { api } from "../lib/api";
   import { LANGUAGE_OPTIONS } from "../lib/i18n";
+  import { appReleaseStore } from "../lib/stores/appRelease.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
@@ -22,7 +23,11 @@
   }
 
   $effect(() => {
-    loadCacheInfo();
+    void s.cache.maxMb;
+    const timer = window.setTimeout(() => {
+      void loadCacheInfo();
+    }, 300);
+    return () => window.clearTimeout(timer);
   });
 
   function patch(mutator: (draft: Settings) => void, debounceMs = 0) {
@@ -302,6 +307,67 @@
         onchange={(e) => {
           const checked = e.currentTarget.checked;
           patch((d) => (d.updates.notifyWindows = checked));
+        }}
+        class="h-4 w-4 accent-rose-500"
+      />
+    </div>
+  </section>
+
+  <!-- App Release Updates -->
+  <section class="settings-card">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="section-title">{t.appUpdatesSection}</h2>
+        <div class="desc">{t.appVersionLabel(appReleaseStore.currentVersion)}</div>
+      </div>
+
+      <div class="flex items-center gap-2">
+        {#if appReleaseStore.release?.updateAvailable}
+          <button
+            type="button"
+            onclick={() => appReleaseStore.openDownload(true)}
+            class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-white"
+            style="background-color: var(--accent);"
+          >
+            <Download size={13} />
+            <span>{t.downloadUpdate} v{appReleaseStore.release.latestVersion}</span>
+          </button>
+        {/if}
+
+        <button
+          type="button"
+          onclick={() => appReleaseStore.checkNow()}
+          disabled={appReleaseStore.checking}
+          class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium"
+          style="border-color: var(--border); background-color: var(--surface-subtle);"
+        >
+          <RefreshCw size={13} class={appReleaseStore.checking ? "animate-spin" : ""} />
+          <span>{t.checkReleaseNow}</span>
+        </button>
+      </div>
+    </div>
+
+    {#if appReleaseStore.release?.updateAvailable}
+      <div
+        class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium"
+        style="background-color: var(--accent-soft); border-color: var(--accent); color: var(--accent);"
+      >
+        <Sparkles size={14} class="shrink-0" />
+        <span>{t.releaseAvailableBanner(appReleaseStore.release.latestVersion)}</span>
+      </div>
+    {/if}
+
+    <div class="row">
+      <div>
+        <div class="label">{t.checkAppUpdatesLabel}</div>
+        <div class="desc">{t.checkAppUpdatesDesc}</div>
+      </div>
+      <input
+        type="checkbox"
+        checked={s.updates.checkAppUpdates}
+        onchange={(e) => {
+          const checked = e.currentTarget.checked;
+          patch((d) => (d.updates.checkAppUpdates = checked));
         }}
         class="h-4 w-4 accent-rose-500"
       />

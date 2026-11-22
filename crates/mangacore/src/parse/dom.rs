@@ -74,12 +74,13 @@ pub fn abs_url(base: &Url, raw: &str) -> Option<Url> {
     {
         return None;
     }
-    let resolved = if trimmed.starts_with("//") {
+    let mut resolved = if trimmed.starts_with("//") {
         Url::parse(&format!("{}:{trimmed}", base.scheme())).ok()?
     } else {
         base.join(trimmed).ok()?
     };
     if resolved.scheme() == "http" || resolved.scheme() == "https" {
+        resolved.set_fragment(None);
         Some(resolved)
     } else {
         None
@@ -210,7 +211,7 @@ pub fn strip_site_suffix(title: &str) -> String {
     for sep in [" | ", " - ", " — ", " :: "] {
         if let Some((head, _)) = cleaned.split_once(sep) {
             let trimmed = head.trim();
-            if trimmed.len() >= 3 {
+            if trimmed.chars().count() >= 2 {
                 return trimmed.to_owned();
             }
         }

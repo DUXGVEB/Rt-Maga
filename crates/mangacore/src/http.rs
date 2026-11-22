@@ -22,11 +22,17 @@ pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) 
 /// Maximum request timeout for page and image downloads.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Maximum number of retry attempts on transient 5xx or transport errors.
+/// Maximum number of retry attempts on transient 5xx, 429, or transport errors.
 const MAX_RETRIES: u8 = 2;
 
 /// Default maximum concurrent requests allowed per remote host.
 const DEFAULT_MAX_CONN_PER_HOST: usize = 4;
+
+/// Maximum HTML document payload buffered in memory (16 MiB).
+const MAX_HTML_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum single image payload buffered in memory (32 MiB).
+const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Configuration for [`HttpClient`].
 #[derive(Debug, Clone)]
@@ -168,7 +174,9 @@ impl HttpClient {
                 Ok(response) => {
                     let status = response.status();
                     let final_url = response.url().clone();
-                    let body = response.text().await?;
+                    let raw_bytes =
+                        read_bounded_bytes(response, MAX_HTML_BYTES, &final_url).await?;
+                    let body = String::from_utf8_lossy(&raw_bytes).into_owned();
 
                     if looks_like_challenge(status, &body) {
                         let host = final_url.host_str().unwrap_or("unknown").to_owned();
@@ -190,8 +198,10 @@ impl HttpClient {
                         status: status.as_u16(),
                         url: final_url,
                     };
-                    if status.is_server_error() && attempt < MAX_RETRIES {
-                        warn!(%err, attempt, "server error, retrying");
+                    if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+                        && attempt < MAX_RETRIES
+                    {
+                        warn!(%err, attempt, "transient http status, retrying");
                         last_err = Some(err);
                         continue;
                     }
@@ -271,7 +281,7 @@ impl HttpClient {
                                 url: url.clone(),
                             });
                         }
-                        let bytes = response.bytes().await?;
+                        let bytes = read_bounded_bytes(response, MAX_IMAGE_BYTES, url).await?;
                         return Ok(FetchedBytes {
                             bytes,
                             content_type,
@@ -281,7 +291,9 @@ impl HttpClient {
                         status: status.as_u16(),
                         url: url.clone(),
                     };
-                    if status.is_server_error() && attempt < MAX_RETRIES {
+                    if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+                        && attempt < MAX_RETRIES
+                    {
                         last_err = Some(err);
                         continue;
                     }
@@ -391,15 +403,14 @@ pub fn validate_public_http_url(url: &Url) -> Result<(), ScrapeError> {
     }
     if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
         let disallowed = match ip {
-            IpAddr::V4(v4) => {
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_broadcast()
-                    || v4.is_unspecified()
-            }
+            IpAddr::V4(v4) => is_disallowed_ipv4(v4),
             IpAddr::V6(v6) => {
-                v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00
+                let s0 = v6.segments()[0];
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || (s0 & 0xfe00) == 0xfc00
+                    || (s0 & 0xffc0) == 0xfe80
+                    || v6.to_ipv4_mapped().is_some_and(is_disallowed_ipv4)
             }
         };
         if disallowed {
@@ -407,6 +418,51 @@ pub fn validate_public_http_url(url: &Url) -> Result<(), ScrapeError> {
         }
     }
     Ok(())
+}
+
+fn is_disallowed_ipv4(v4: std::net::Ipv4Addr) -> bool {
+    let octets = v4.octets();
+    let is_cgnat = octets[0] == 100 && (octets[1] & 0xc0) == 64;
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_broadcast()
+        || v4.is_unspecified()
+        || octets[0] == 0
+        || is_cgnat
+}
+
+async fn read_bounded_bytes(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    url: &Url,
+) -> Result<Bytes, ScrapeError> {
+    if let Some(len) = response.content_length()
+        && u64::try_from(max_bytes).is_ok_and(|cap| len > cap)
+    {
+        return Err(ScrapeError::HttpStatus {
+            status: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+            url: url.clone(),
+        });
+    }
+
+    let initial_cap = response
+        .content_length()
+        .and_then(|n| usize::try_from(n).ok())
+        .map_or(0, |n| n.min(max_bytes).min(256 * 1024));
+    let mut buf = Vec::with_capacity(initial_cap);
+
+    while let Some(chunk) = response.chunk().await? {
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(ScrapeError::HttpStatus {
+                status: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+                url: url.clone(),
+            });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    Ok(Bytes::from(buf))
 }
 
 /// Detects whether an HTTP response looks like an anti-bot verification challenge page.
@@ -480,6 +536,12 @@ mod tests {
         assert!(normalize_url("http://localhost/a").is_err());
         assert!(normalize_url("http://192.168.1.5/a").is_err());
         assert!(normalize_url("http://10.0.0.1/a").is_err());
+        assert!(normalize_url("http://100.64.0.1/a").is_err());
+        assert!(normalize_url("http://0.1.2.3/a").is_err());
+        assert!(normalize_url("http://[::1]/a").is_err());
+        assert!(normalize_url("http://[fe80::1]/a").is_err());
+        assert!(normalize_url("http://[::ffff:127.0.0.1]/a").is_err());
+        assert!(normalize_url("http://[::ffff:169.254.169.254]/latest").is_err());
     }
 
     #[test]

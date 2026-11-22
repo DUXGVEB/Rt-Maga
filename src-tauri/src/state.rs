@@ -1,6 +1,7 @@
 //! Shared application state owned by the Tauri runtime.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use mangacore::Registry;
 use rand::RngCore;
@@ -9,6 +10,7 @@ use tokio::task::JoinHandle;
 
 use crate::cache::{ChapterCache, ImageCache};
 use crate::repo::Database;
+use crate::services::app_release::AppReleaseInfo;
 use crate::settings::Settings;
 
 /// Central state injected into Tauri commands, background tasks, and the `img://` proxy.
@@ -28,6 +30,10 @@ pub(crate) struct AppState {
     pub proxy_key: [u8; 32],
     /// Handle to the background periodic update-checker task.
     pub update_task: Mutex<Option<JoinHandle<()>>>,
+    /// Guards against overlapping manual and scheduled chapter-update runs.
+    pub update_check_running: AtomicBool,
+    /// Cached result of the latest application release check.
+    pub latest_release: RwLock<Option<AppReleaseInfo>>,
 }
 
 impl AppState {
@@ -49,6 +55,8 @@ impl AppState {
             settings: RwLock::new(settings),
             proxy_key,
             update_task: Mutex::new(None),
+            update_check_running: AtomicBool::new(false),
+            latest_release: RwLock::new(None),
         })
     }
 

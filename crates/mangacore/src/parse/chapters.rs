@@ -71,13 +71,17 @@ pub fn extract_chapters(doc: &Html, base: &Url) -> Vec<ChapterRef> {
             .push((dom_idx, ChapterRef { url, name, number }));
     }
 
-    let Some(mut best_group) = groups.into_values().max_by_key(Vec::len) else {
+    let Some(mut best_group) = groups
+        .into_values()
+        .map(|mut group| {
+            let mut seen = HashSet::new();
+            group.retain(|(_, ch)| seen.insert(ch.url.as_str().to_owned()));
+            group
+        })
+        .max_by_key(Vec::len)
+    else {
         return Vec::new();
     };
-
-    // Deduplicate while preserving the first occurrence.
-    let mut seen = HashSet::new();
-    best_group.retain(|(_, ch)| seen.insert(ch.url.as_str().to_owned()));
 
     // Sort ascending by chapter number; break ties by DOM order.
     best_group.sort_by(|(idx_a, a), (idx_b, b)| match (a.number, b.number) {

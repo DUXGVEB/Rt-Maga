@@ -20,46 +20,65 @@
   let loading = $state(true);
   let refreshing = $state(false);
   let errorText = $state<string | null>(null);
+  let coverError = $state(false);
   let query = $state("");
   let newestFirst = $state(true);
+  let loadSeq = 0;
 
   const t = $derived(settingsStore.t);
 
-  async function load() {
+  async function load(targetId: number) {
+    const seq = ++loadSeq;
     loading = true;
     errorText = null;
+    coverError = false;
     try {
-      manga = await api.getManga(id);
+      const loaded = await api.getManga(targetId);
+      if (seq !== loadSeq) return;
+      manga = loaded;
     } catch (err) {
+      if (seq !== loadSeq) return;
       errorText = formatAppError(err, settingsStore.value.language).detail;
     } finally {
-      loading = false;
+      if (seq === loadSeq) {
+        loading = false;
+      }
     }
   }
 
   async function refresh() {
     if (refreshing) return;
+    const targetId = id;
+    const seq = ++loadSeq;
     refreshing = true;
     try {
-      manga = await api.refreshManga(id);
+      const updated = await api.refreshManga(targetId);
+      if (seq !== loadSeq) return;
+      manga = updated;
+      coverError = false;
       toasts.push(t.toastChaptersUpdated, "success");
     } catch (err) {
-      toasts.push(formatAppError(err, settingsStore.value.language).title, "error");
+      if (seq === loadSeq) {
+        toasts.push(formatAppError(err, settingsStore.value.language).title, "error");
+      }
     } finally {
       refreshing = false;
     }
   }
 
   $effect(() => {
-    void id;
-    load();
+    load(id);
   });
 
   const filteredChapters = $derived(() => {
     if (!manga) return [];
     const q = query.trim().toLowerCase();
     const list = q
-      ? manga.chapters.filter((c) => c.name.toLowerCase().includes(q))
+      ? manga.chapters.filter(
+          (c) =>
+            c.name.toLowerCase().includes(q) ||
+            (c.number !== null && String(c.number).includes(q))
+        )
       : manga.chapters;
     return newestFirst ? [...list].reverse() : list;
   });
@@ -128,10 +147,13 @@
         class="h-60 w-44 shrink-0 overflow-hidden rounded-xl"
         style="background-color: var(--surface-subtle);"
       >
-        {#if manga.coverToken}
+        {#if manga.coverToken && !coverError}
           <img
             src={imgProxyUrl(manga.coverToken)}
             alt={manga.title}
+            onerror={() => {
+              coverError = true;
+            }}
             class="h-full w-full object-cover"
           />
         {:else}

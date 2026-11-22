@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::cache::ImageCache;
 use crate::repo::Database;
-use crate::services::updater;
+use crate::services::{app_release, updater};
 use crate::state::AppState;
 
 /// Number of days to keep non-history manga records before automatic cleanup.
@@ -35,6 +35,7 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol("img", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let uri = request.uri().to_string();
@@ -74,12 +75,15 @@ pub fn run() {
             .expect("failed to initialize RtMaga application state");
 
             let handle = app.handle().clone();
+            let handle_for_release = app.handle().clone();
             let state_for_bg = Arc::clone(&app_state);
+            let state_for_release = Arc::clone(&app_state);
             app.manage(app_state);
 
             tauri::async_runtime::spawn(async move {
                 updater::restart_background_loop(handle, state_for_bg).await;
             });
+            app_release::spawn_startup_check(handle_for_release, state_for_release);
 
             Ok(())
         })
@@ -97,6 +101,10 @@ pub fn run() {
             commands::check_updates_now,
             commands::get_settings,
             commands::set_settings,
+            commands::get_app_version,
+            commands::get_cached_app_release,
+            commands::check_app_release,
+            commands::open_release_url,
             commands::cache_info,
             commands::clear_image_cache,
         ]);

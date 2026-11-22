@@ -28,6 +28,7 @@ sha2.workspace = true
 sqlx.workspace = true
 tauri.workspace = true
 tauri-plugin-notification.workspace = true
+tauri-plugin-opener.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

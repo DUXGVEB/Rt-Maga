@@ -40,6 +40,7 @@
   let lastScrollTop = 0;
   let prefetched = new Map<string, ChapterView>();
   let saveTimer: number | null = null;
+  let pendingProgress: { mangaId: number; url: string; name: string; ratio: number } | null = null;
   let restoreTimer: number | null = null;
   let markedReadSet = new Set<string>();
   let restoredInitialScroll = false;
@@ -70,10 +71,27 @@
 
   const preloadMarginPx = $derived(Math.max(800, readerSettings.preloadImages * 520));
 
-  function clearPendingTimers() {
+  function flushPendingProgress() {
     if (saveTimer !== null) {
       window.clearTimeout(saveTimer);
       saveTimer = null;
+    }
+    if (pendingProgress) {
+      const snap = pendingProgress;
+      pendingProgress = null;
+      void api.saveProgress(snap.mangaId, snap.url, snap.name, snap.ratio).catch(() => {});
+    }
+  }
+
+  function clearPendingTimers(flush = false) {
+    if (flush) {
+      flushPendingProgress();
+    } else {
+      if (saveTimer !== null) {
+        window.clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      pendingProgress = null;
     }
     if (restoreTimer !== null) {
       window.clearTimeout(restoreTimer);
@@ -83,7 +101,7 @@
 
   async function loadInitial(targetUrl: string, scrollRatio: number) {
     const seq = ++loadSeq;
-    clearPendingTimers();
+    clearPendingTimers(true);
     loadingInitial = true;
     errorState = null;
     strip = [];
@@ -123,6 +141,12 @@
       } else {
         restoredInitialScroll = true;
       }
+
+      // Short chapters that fit without scrolling should still be marked read.
+      if (chapterData.images.length <= 2 && !markedReadSet.has(chapterData.url)) {
+        markedReadSet.add(chapterData.url);
+        void api.markRead(mangaId, chapterData.url).catch(() => {});
+      }
     } catch (err) {
       if (seq !== loadSeq) return;
       errorState = formatAppError(err, settingsStore.value.language);
@@ -139,7 +163,7 @@
     loadInitial(chapterUrl, initialScrollRatio);
     return () => {
       loadSeq += 1;
-      clearPendingTimers();
+      clearPendingTimers(true);
     };
   });
 
@@ -149,6 +173,10 @@
     try {
       const data = await api.getChapter(nextUrl, mangaId);
       if (seq === loadSeq) {
+        if (prefetched.size >= 3) {
+          const oldestKey = prefetched.keys().next().value;
+          if (oldestKey) prefetched.delete(oldestKey);
+        }
         prefetched.set(nextUrl, data);
       }
     } catch {
@@ -195,6 +223,7 @@
   }
 
   function jumpToChapter(url: string) {
+    flushPendingProgress();
     quickSettingsOpen = false;
     router.goReader(mangaId, url, 0);
   }
@@ -203,6 +232,13 @@
     if (!scrollEl || strip.length === 0) return;
 
     const top = scrollEl.scrollTop;
+    // If the user starts scrolling manually before the initial restore timer fires, honor user scroll.
+    if (!restoredInitialScroll && restoreTimer !== null && top > 4) {
+      window.clearTimeout(restoreTimer);
+      restoreTimer = null;
+      restoredInitialScroll = true;
+    }
+
     const delta = top - lastScrollTop;
     if (delta > 16 && top > 80) {
       toolbarVisible = false;
@@ -261,11 +297,12 @@
   }
 
   function scheduleSaveProgress(url: string, name: string, ratio: number) {
+    pendingProgress = { mangaId, url, name, ratio };
     if (saveTimer !== null) {
       window.clearTimeout(saveTimer);
     }
     saveTimer = window.setTimeout(() => {
-      api.saveProgress(mangaId, url, name, ratio).catch(() => {});
+      flushPendingProgress();
     }, 900);
   }
 
@@ -281,6 +318,7 @@
   }
 
   async function exitReader() {
+    flushPendingProgress();
     try {
       const win = getCurrentWindow();
       if (await win.isFullscreen()) {
@@ -293,7 +331,13 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    if (
+      e.target instanceof HTMLInputElement ||
+      e.target instanceof HTMLSelectElement ||
+      e.target instanceof HTMLTextAreaElement
+    ) {
+      return;
+    }
 
     if (e.key === "ArrowLeft" && activeChapter?.prev) {
       e.preventDefault();
