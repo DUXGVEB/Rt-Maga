@@ -24,7 +24,6 @@ export interface Dictionary {
 
   // Home
   homeTitle: string;
-  homeSubtitle: string;
   newChapters: string;
   continueReading: string;
   viewAllHistory: string;
@@ -173,8 +172,6 @@ const en: Dictionary = {
   darkMode: "Dark mode",
 
   homeTitle: "Paste a manga link to start reading",
-  homeSubtitle:
-    "Supports manga overview links and direct chapter URLs from TruyenQQ and most manga websites.",
   newChapters: "New Chapters",
   continueReading: "Continue Reading",
   viewAllHistory: "View all history",
@@ -182,7 +179,7 @@ const en: Dictionary = {
   noRecentDesc:
     "Paste any manga link above to start reading. Your reading progress will appear here automatically.",
 
-  linkPlaceholder: "Paste any manga or chapter URL (e.g. https://truyenqqko.com/truyen-tranh/...)",
+  linkPlaceholder: "Paste a manga or chapter URL",
   fetching: "Fetching",
   open: "Open",
   openVerification: "Open verification window",
@@ -320,8 +317,6 @@ const vi: Dictionary = {
   darkMode: "Chế độ tối",
 
   homeTitle: "Dán link truyện để đọc ngay",
-  homeSubtitle:
-    "Hỗ trợ link trang truyện hoặc link chương từ TruyenQQ và hầu hết các web truyện tranh khác.",
   newChapters: "Có chap mới",
   continueReading: "Đọc tiếp",
   viewAllHistory: "Xem tất cả lịch sử",
@@ -329,7 +324,7 @@ const vi: Dictionary = {
   noRecentDesc:
     "Dán một link truyện vào ô phía trên để bắt đầu. Tiến độ đọc sẽ tự động lưu tại đây.",
 
-  linkPlaceholder: "Dán link truyện hoặc link chương bất kỳ (vd: https://truyenqqko.com/truyen-tranh/...)",
+  linkPlaceholder: "Dán link truyện hoặc link chương",
   fetching: "Đang lấy",
   open: "Mở truyện",
   openVerification: "Mở cửa sổ để tự xác minh",
@@ -467,14 +462,13 @@ const zh: Dictionary = {
   darkMode: "深色模式",
 
   homeTitle: "粘贴漫画链接即可开始阅读",
-  homeSubtitle: "支持粘贴漫画详情页或章节直链，适配 TruyenQQ 及大多数漫画网站。",
   newChapters: "有新章节",
   continueReading: "继续阅读",
   viewAllHistory: "查看全部历史",
   noRecentTitle: "暂无阅读记录",
   noRecentDesc: "在上方粘贴漫画链接开始阅读，您的进度会自动保存在这里。",
 
-  linkPlaceholder: "粘贴任意漫画或章节链接 (例如 https://truyenqqko.com/truyen-tranh/...)",
+  linkPlaceholder: "粘贴漫画或章节链接",
   fetching: "获取中",
   open: "打开",
   openVerification: "打开验证窗口",
@@ -609,14 +603,13 @@ const ja: Dictionary = {
   darkMode: "ダークモード",
 
   homeTitle: "マンガのリンクを貼ってすぐ読む",
-  homeSubtitle: "TruyenQQ や多くのマンガサイトの作品ページ・話ページ URL に対応しています。",
   newChapters: "新着チャプター",
   continueReading: "続きを読む",
   viewAllHistory: "履歴をすべて見る",
   noRecentTitle: "最近読んだ作品はありません",
   noRecentDesc: "上の入力欄にリンクを貼ると読み始められ、進捗がここに保存されます。",
 
-  linkPlaceholder: "作品またはチャプターの URL を貼り付け (例: https://truyenqqko.com/truyen-tranh/...)",
+  linkPlaceholder: "作品またはチャプターの URL を貼り付け",
   fetching: "取得中",
   open: "開く",
   openVerification: "認証ウィンドウを開く",
@@ -753,8 +746,6 @@ const ru: Dictionary = {
   darkMode: "Тёмная тема",
 
   homeTitle: "Вставьте ссылку на мангу, чтобы начать читать",
-  homeSubtitle:
-    "Поддерживаются ссылки на страницу манги или главы с TruyenQQ и большинства сайтов.",
   newChapters: "Новые главы",
   continueReading: "Продолжить чтение",
   viewAllHistory: "Вся история",
@@ -762,7 +753,7 @@ const ru: Dictionary = {
   noRecentDesc:
     "Вставьте ссылку выше, чтобы начать. Прогресс чтения будет сохраняться здесь автоматически.",
 
-  linkPlaceholder: "Вставьте ссылку на мангу или главу (напр. https://truyenqqko.com/truyen-tranh/...)",
+  linkPlaceholder: "Вставьте ссылку на мангу или главу",
   fetching: "Загрузка",
   open: "Открыть",
   openVerification: "Открыть окно проверки",
@@ -900,14 +891,13 @@ const ko: Dictionary = {
   darkMode: "다크 모드",
 
   homeTitle: "만화 링크를 붙여넣어 바로 읽기",
-  homeSubtitle: "TruyenQQ 및 대부분의 만화 사이트의 작품 페이지와 챕터 링크를 지원합니다.",
   newChapters: "새 챕터",
   continueReading: "이어서 읽기",
   viewAllHistory: "전체 기록 보기",
   noRecentTitle: "최근 읽은 만화가 없습니다",
   noRecentDesc: "위에 만화 링크를 붙여넣어 시작하세요. 읽기 진행 상황이 자동으로 저장됩니다.",
 
-  linkPlaceholder: "만화 또는 챕터 URL 붙여넣기 (예: https://truyenqqko.com/truyen-tranh/...)",
+  linkPlaceholder: "만화 또는 챕터 URL 붙여넣기",
   fetching: "불러오는 중",
   open: "열기",
   openVerification: "인증 창 열기",
@@ -1044,14 +1034,13 @@ const th: Dictionary = {
   darkMode: "โหมดมืด",
 
   homeTitle: "วางลิงก์มังงะเพื่อเริ่มอ่านทันที",
-  homeSubtitle: "รองรับทั้งลิงก์หน้าเรื่องและลิงก์ตอนจาก TruyenQQ และเว็บมังงะส่วนใหญ่",
   newChapters: "มีตอนใหม่",
   continueReading: "อ่านต่อ",
   viewAllHistory: "ดูประวัติทั้งหมด",
   noRecentTitle: "ยังไม่มีประวัติการอ่าน",
   noRecentDesc: "วางลิงก์มังงะด้านบนเพื่อเริ่มอ่าน ความคืบหน้าจะถูกบันทึกไว้ที่นี่อัตโนมัติ",
 
-  linkPlaceholder: "วางลิงก์มังงะหรือลิงก์ตอนใดก็ได้ (เช่น https://truyenqqko.com/truyen-tranh/...)",
+  linkPlaceholder: "วางลิงก์มังงะหรือลิงก์ตอน",
   fetching: "กำลังดึงข้อมูล",
   open: "เปิดอ่าน",
   openVerification: "เปิดหน้าต่างยืนยันตัวตน",

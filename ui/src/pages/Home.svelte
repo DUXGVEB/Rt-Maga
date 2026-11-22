@@ -39,9 +39,6 @@
   <!-- Hero Paste Box -->
   <section class="flex flex-col items-center gap-4 pt-4 text-center">
     <h1 class="text-2xl font-bold tracking-tight">{t.homeTitle}</h1>
-    <p class="max-w-lg text-sm" style="color: var(--text-muted);">
-      {t.homeSubtitle}
-    </p>
     <div class="mt-1 flex w-full justify-center">
       <LinkInput />
     </div>
