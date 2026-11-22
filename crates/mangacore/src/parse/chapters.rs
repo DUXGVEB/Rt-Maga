@@ -58,7 +58,7 @@ pub fn extract_chapters(doc: &Html, base: &Url) -> Vec<ChapterRef> {
         let name = if text.is_empty() {
             number.map_or_else(
                 || url.path().to_owned(),
-                |n| format!("Chương {}", format_chapter_num(n)),
+                |n| format!("Chapter {}", format_chapter_num(n)),
             )
         } else {
             text

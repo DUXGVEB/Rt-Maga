@@ -65,7 +65,7 @@ pub struct Manga {
 pub struct ChapterRef {
     /// Full URL of the chapter reading page.
     pub url: Url,
-    /// Human-readable chapter label (e.g. `"Chương 45"`).
+    /// Human-readable chapter label (e.g. `"Chapter 45"`).
     pub name: String,
     /// Parsed chapter number when present (supports fractional chapters like `12.5`).
     pub number: Option<f32>,

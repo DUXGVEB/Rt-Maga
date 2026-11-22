@@ -137,8 +137,8 @@ impl TruyenQqSource {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| {
                 extract_chapter_number(page_url.path()).map_or_else(
-                    || "Chương".to_owned(),
-                    |n| format!("Chương {}", crate::parse::chapters::format_chapter_num(n)),
+                    || "Chapter".to_owned(),
+                    |n| format!("Chapter {}", crate::parse::chapters::format_chapter_num(n)),
                 )
             });
 

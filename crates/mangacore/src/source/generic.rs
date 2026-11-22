@@ -71,8 +71,8 @@ impl GenericSource {
         let manga_url = extract_manga_url_from_chapter(&doc, page_url, &base);
         let name = extract_title(&doc).unwrap_or_else(|| {
             extract_chapter_number(page_url.path()).map_or_else(
-                || "Chương".to_owned(),
-                |n| format!("Chương {}", format_chapter_num(n)),
+                || "Chapter".to_owned(),
+                |n| format!("Chapter {}", format_chapter_num(n)),
             )
         });
 

@@ -32,7 +32,7 @@
       </div>
       <div class="leading-tight">
         <div class="text-base font-semibold tracking-tight">RtMaga</div>
-        <div class="text-[11px]" style="color: var(--text-muted);">Đọc truyện gọn nhẹ</div>
+        <div class="text-[11px]" style="color: var(--text-muted);">Clean Manga Reader</div>
       </div>
     </button>
 
@@ -45,7 +45,7 @@
         class:active={router.current.name === "home" || router.current.name === "manga"}
       >
         <Home size={18} />
-        <span>Trang chủ</span>
+        <span>Home</span>
         {#if updatesStore.newCount > 0}
           <span
             class="ml-auto rounded-full px-2 py-0.5 text-[11px] font-semibold text-white"
@@ -63,7 +63,7 @@
         class:active={router.current.name === "history"}
       >
         <Clock size={18} />
-        <span>Lịch sử</span>
+        <span>History</span>
       </button>
 
       <button
@@ -73,7 +73,7 @@
         class:active={router.current.name === "settings"}
       >
         <Settings size={18} />
-        <span>Cài đặt</span>
+        <span>Settings</span>
       </button>
     </nav>
   </div>
@@ -85,16 +85,16 @@
       onclick={() => updatesStore.checkNow()}
       disabled={updatesStore.checking}
       class="nav-item text-xs"
-      title="Kiểm tra chap mới cho các truyện trong lịch sử"
+      title="Check for new chapters across manga in history"
     >
       <RefreshCw size={15} class={updatesStore.checking ? "animate-spin" : ""} />
       <span>
         {#if updatesStore.checking && updatesStore.progress}
-          Đang kiểm tra ({updatesStore.progress.done}/{updatesStore.progress.total})
+          Checking ({updatesStore.progress.done}/{updatesStore.progress.total})
         {:else if updatesStore.checking}
-          Đang kiểm tra...
+          Checking...
         {:else}
-          Kiểm tra chap mới
+          Check for updates
         {/if}
       </span>
     </button>
@@ -102,10 +102,10 @@
     <button type="button" onclick={toggleTheme} class="nav-item text-xs">
       {#if isDark}
         <Sun size={15} />
-        <span>Chế độ sáng</span>
+        <span>Light mode</span>
       {:else}
         <Moon size={15} />
-        <span>Chế độ tối</span>
+        <span>Dark mode</span>
       {/if}
     </button>
   </div>

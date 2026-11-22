@@ -155,15 +155,15 @@ pub(crate) async fn run_update_check(
 
 fn send_windows_notification(app: &AppHandle, found: &[FoundUpdate]) {
     let body = if found.len() == 1 {
-        format!("{} — {}", found[0].title, found[0].latest)
+        format!("{} - {}", found[0].title, found[0].latest)
     } else {
-        format!("Có {} truyện vừa ra chương mới", found.len())
+        format!("{} manga have new chapters available", found.len())
     };
 
     if let Err(err) = app
         .notification()
         .builder()
-        .title("RtMaga — Chương mới")
+        .title("RtMaga - New Chapters")
         .body(body)
         .show()
     {

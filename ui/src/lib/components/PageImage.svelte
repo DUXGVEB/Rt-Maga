@@ -59,7 +59,7 @@
       style="background-color: var(--surface); border-color: var(--border);"
     >
       <span class="text-xs" style="color: var(--text-muted);">
-        Không tải được trang {index + 1}
+        Failed to load page {index + 1}
       </span>
       <button
         type="button"
@@ -68,7 +68,7 @@
         style="background-color: var(--accent);"
       >
         <RotateCcw size={13} />
-        Tải lại ảnh
+        Retry
       </button>
     </div>
   {:else if shouldLoad}
@@ -80,7 +80,7 @@
     {/if}
     <img
       {src}
-      alt={`Trang ${index + 1}`}
+      alt={`Page ${index + 1}`}
       decoding="async"
       onload={() => {
         loaded = true;

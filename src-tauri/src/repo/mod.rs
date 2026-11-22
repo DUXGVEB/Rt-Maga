@@ -111,12 +111,12 @@ mod tests {
             chapters: vec![
                 ChapterRef {
                     url: Url::parse("https://truyenqqko.com/truyen-tranh/demo-1-chap-1").unwrap(),
-                    name: "Chương 1".to_owned(),
+                    name: "Chapter 1".to_owned(),
                     number: Some(1.0),
                 },
                 ChapterRef {
                     url: Url::parse("https://truyenqqko.com/truyen-tranh/demo-1-chap-2").unwrap(),
-                    name: "Chương 2".to_owned(),
+                    name: "Chapter 2".to_owned(),
                     number: Some(2.0),
                 },
             ],
@@ -132,7 +132,7 @@ mod tests {
         db.save_history(
             id,
             "https://truyenqqko.com/truyen-tranh/demo-1-chap-1",
-            "Chương 1",
+            "Chapter 1",
             0.42,
         )
         .await

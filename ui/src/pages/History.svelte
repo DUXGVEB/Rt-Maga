@@ -31,7 +31,7 @@
     await api.removeHistory(mangaId);
     items = items.filter((i) => i.mangaId !== mangaId);
     updatesStore.setNewCountFromHistory(items.filter((i) => i.hasNew).length);
-    toasts.push("Đã xoá khỏi lịch sử và ngừng kiểm tra chap mới.", "info");
+    toasts.push("Removed from history and stopped checking for updates.", "info");
   }
 
   async function clearAll() {
@@ -39,16 +39,16 @@
     items = [];
     confirmingClear = false;
     updatesStore.setNewCountFromHistory(0);
-    toasts.push("Đã xoá toàn bộ lịch sử đọc.", "info");
+    toasts.push("Reading history cleared.", "info");
   }
 
   function formatTime(unixSecs: number): string {
     const date = new Date(unixSecs * 1000);
-    return date.toLocaleString("vi-VN", {
+    return date.toLocaleString("en-US", {
       hour: "2-digit",
       minute: "2-digit",
+      month: "short",
       day: "2-digit",
-      month: "2-digit",
     });
   }
 
@@ -58,13 +58,13 @@
     const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const startYesterday = startToday - 86_400_000;
     const t = d.getTime();
-    if (t >= startToday) return "Hôm nay";
-    if (t >= startYesterday) return "Hôm qua";
-    return "Cũ hơn";
+    if (t >= startToday) return "Today";
+    if (t >= startYesterday) return "Yesterday";
+    return "Earlier";
   }
 
   const grouped = $derived(() => {
-    const order = ["Hôm nay", "Hôm qua", "Cũ hơn"];
+    const order = ["Today", "Yesterday", "Earlier"];
     const map = new Map<string, HistoryItemView[]>();
     for (const label of order) map.set(label, []);
     for (const item of items) {
@@ -80,9 +80,9 @@
 <div class="mx-auto flex w-full max-w-4xl flex-col gap-6 px-8 py-8">
   <div class="flex items-center justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-bold tracking-tight">Lịch sử đọc</h1>
+      <h1 class="text-2xl font-bold tracking-tight">Reading History</h1>
       <p class="mt-1 text-xs" style="color: var(--text-muted);">
-        App tự động kiểm tra chap mới cho các truyện có mặt ở đây. Xoá khỏi lịch sử sẽ ngừng kiểm tra.
+        New chapters are checked automatically for manga listed here. Removing an entry stops update checks.
       </p>
     </div>
 
@@ -95,7 +95,7 @@
             class="rounded-lg px-3 py-1.5 text-xs font-semibold text-white"
             style="background-color: var(--danger);"
           >
-            Xác nhận xoá hết
+            Confirm clear
           </button>
           <button
             type="button"
@@ -105,7 +105,7 @@
             class="rounded-lg border px-3 py-1.5 text-xs"
             style="border-color: var(--border);"
           >
-            Huỷ
+            Cancel
           </button>
         </div>
       {:else}
@@ -118,7 +118,7 @@
           style="background-color: var(--surface); border-color: var(--border); color: var(--danger);"
         >
           <Trash2 size={14} />
-          <span>Xoá tất cả</span>
+          <span>Clear all</span>
         </button>
       {/if}
     {/if}
@@ -139,8 +139,8 @@
       style="border-color: var(--border); color: var(--text-muted);"
     >
       <Clock size={30} strokeWidth={1.5} />
-      <div class="text-sm font-medium" style="color: var(--text);">Lịch sử trống</div>
-      <p class="text-xs">Truyện sẽ xuất hiện tại đây ngay khi bạn mở đọc chương đầu tiên.</p>
+      <div class="text-sm font-medium" style="color: var(--text);">History is empty</div>
+      <p class="text-xs">Manga will appear here as soon as you open your first chapter.</p>
     </div>
   {:else}
     {#each grouped() as group (group.label)}
@@ -189,7 +189,7 @@
                       style="background-color: var(--accent);"
                     >
                       <Sparkles size={10} />
-                      {item.latestChapterName ?? "Chap mới"}
+                      {item.latestChapterName ?? "New"}
                     </span>
                   {/if}
                 </div>
@@ -210,14 +210,14 @@
                   class="rounded-lg border px-2.5 py-1.5 text-xs font-medium"
                   style="border-color: var(--border); background-color: var(--surface-subtle);"
                 >
-                  Chương
+                  Chapters
                 </button>
                 <button
                   type="button"
                   onclick={(e) => removeOne(item.mangaId, e)}
                   class="rounded-lg p-1.5 opacity-60 transition-opacity hover:opacity-100"
                   style="color: var(--danger);"
-                  title="Xoá khỏi lịch sử"
+                  title="Remove from history"
                 >
                   <Trash2 size={15} />
                 </button>

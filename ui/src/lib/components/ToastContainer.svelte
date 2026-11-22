@@ -19,7 +19,7 @@
           type="button"
           onclick={() => toasts.dismiss(toast.id)}
           class="opacity-60 transition-opacity hover:opacity-100"
-          aria-label="Đóng thông báo"
+          aria-label="Dismiss notification"
         >
           <X size={14} />
         </button>

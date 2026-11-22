@@ -31,9 +31,9 @@
     clearingCache = true;
     try {
       cache = await api.clearImageCache();
-      toasts.push("Đã xoá bộ nhớ đệm ảnh.", "success");
+      toasts.push("Image cache cleared.", "success");
     } catch {
-      toasts.push("Không thể xoá bộ nhớ đệm.", "error");
+      toasts.push("Failed to clear image cache.", "error");
     } finally {
       clearingCache = false;
     }
@@ -48,22 +48,22 @@
 
 <div class="mx-auto flex w-full max-w-3xl flex-col gap-6 px-8 py-8">
   <div>
-    <h1 class="text-2xl font-bold tracking-tight">Cài đặt</h1>
+    <h1 class="text-2xl font-bold tracking-tight">Settings</h1>
     <p class="mt-1 text-xs" style="color: var(--text-muted);">
-      Mọi thay đổi được lưu tự động và áp dụng ngay.
+      All changes are saved automatically and take effect immediately.
     </p>
   </div>
 
   <!-- Appearance -->
   <section class="settings-card">
-    <h2 class="section-title">Giao diện</h2>
+    <h2 class="section-title">Appearance</h2>
     <div class="row">
       <div>
-        <div class="label">Chủ đề màu</div>
-        <div class="desc">Chọn giao diện sáng, tối hoặc tự động theo Windows.</div>
+        <div class="label">Color theme</div>
+        <div class="desc">Choose light, dark, or follow your OS preference.</div>
       </div>
       <div class="flex gap-1.5">
-        {#each [["system", "Hệ thống"], ["light", "Sáng"], ["dark", "Tối"]] as [val, label] (val)}
+        {#each [["system", "System"], ["light", "Light"], ["dark", "Dark"]] as [val, label] (val)}
           <button
             type="button"
             onclick={() => patch((d) => (d.theme = val as Theme))}
@@ -79,12 +79,12 @@
 
   <!-- Reader -->
   <section class="settings-card">
-    <h2 class="section-title">Trình đọc cuộn dọc</h2>
+    <h2 class="section-title">Vertical Reader</h2>
 
     <div class="row">
       <div>
-        <div class="label">Chế độ độ rộng ảnh</div>
-        <div class="desc">Giữ cố định theo pixel, theo phần trăm hoặc vừa cửa sổ.</div>
+        <div class="label">Image width mode</div>
+        <div class="desc">Set a fixed pixel width, viewport percentage, or fit to window.</div>
       </div>
       <div class="flex gap-1.5">
         <button
@@ -93,7 +93,7 @@
           class="pill"
           class:pill-active={s.reader.width.mode === "px"}
         >
-          Pixel
+          Pixels
         </button>
         <button
           type="button"
@@ -101,7 +101,7 @@
           class="pill"
           class:pill-active={s.reader.width.mode === "percent"}
         >
-          Phần trăm
+          Percent
         </button>
         <button
           type="button"
@@ -109,14 +109,14 @@
           class="pill"
           class:pill-active={s.reader.width.mode === "fit_window"}
         >
-          Vừa khung
+          Fit window
         </button>
       </div>
     </div>
 
     {#if s.reader.width.mode === "px"}
       <div class="row">
-        <div class="label">Độ rộng ({s.reader.width.value} px)</div>
+        <div class="label">Width ({s.reader.width.value} px)</div>
         <input
           type="range"
           min="480"
@@ -132,7 +132,7 @@
       </div>
     {:else if s.reader.width.mode === "percent"}
       <div class="row">
-        <div class="label">Độ rộng ({s.reader.width.value}%)</div>
+        <div class="label">Width ({s.reader.width.value}%)</div>
         <input
           type="range"
           min="35"
@@ -150,8 +150,8 @@
 
     <div class="row">
       <div>
-        <div class="label">Khoảng cách giữa các ảnh ({s.reader.gapPx} px)</div>
-        <div class="desc">Để 0 px để ảnh nối liền mạch kiểu webtoon.</div>
+        <div class="label">Gap between pages ({s.reader.gapPx} px)</div>
+        <div class="desc">Set to 0 px for seamless Webtoon-style strips.</div>
       </div>
       <input
         type="range"
@@ -169,8 +169,8 @@
 
     <div class="row">
       <div>
-        <div class="label">Số ảnh tải trước ({s.reader.preloadImages} ảnh)</div>
-        <div class="desc">Tải sẵn ảnh phía dưới để cuộn mượt hơn.</div>
+        <div class="label">Preload ahead ({s.reader.preloadImages} images)</div>
+        <div class="desc">Prefetch upcoming pages below the viewport for smoother scrolling.</div>
       </div>
       <input
         type="range"
@@ -188,8 +188,8 @@
 
     <div class="row">
       <div>
-        <div class="label">Tự nối chương tiếp theo khi cuộn hết</div>
-        <div class="desc">Tắt đi nếu bạn muốn hiện nút bấm chuyển chương ở cuối trang.</div>
+        <div class="label">Auto-append next chapter</div>
+        <div class="desc">Disable to show a Next Chapter button at the end instead.</div>
       </div>
       <input
         type="checkbox"
@@ -203,9 +203,9 @@
     </div>
 
     <div class="row">
-      <div class="label">Nền trình đọc</div>
+      <div class="label">Reader background</div>
       <div class="flex gap-1.5">
-        {#each [["dark", "Tối"], ["light", "Sáng"], ["follow_theme", "Theo app"]] as [val, label] (val)}
+        {#each [["dark", "Dark"], ["light", "Light"], ["follow_theme", "App theme"]] as [val, label] (val)}
           <button
             type="button"
             onclick={() => patch((d) => (d.reader.readerBg = val as ReaderBg))}
@@ -222,7 +222,7 @@
   <!-- Updates -->
   <section class="settings-card">
     <div class="flex items-center justify-between">
-      <h2 class="section-title">Kiểm tra chap mới</h2>
+      <h2 class="section-title">Chapter Updates</h2>
       <button
         type="button"
         onclick={() => updatesStore.checkNow()}
@@ -231,14 +231,14 @@
         style="border-color: var(--border); background-color: var(--surface-subtle);"
       >
         <RefreshCw size={13} class={updatesStore.checking ? "animate-spin" : ""} />
-        <span>Kiểm tra ngay</span>
+        <span>Check now</span>
       </button>
     </div>
 
     <div class="row">
       <div>
-        <div class="label">Tự động kiểm tra truyện trong lịch sử</div>
-        <div class="desc">Chạy nền theo chu kỳ đã chọn.</div>
+        <div class="label">Auto-check manga in history</div>
+        <div class="desc">Runs in the background at your selected interval.</div>
       </div>
       <input
         type="checkbox"
@@ -252,7 +252,7 @@
     </div>
 
     <div class="row">
-      <div class="label">Chu kỳ kiểm tra</div>
+      <div class="label">Check interval</div>
       <select
         value={s.updates.intervalHours}
         onchange={(e) => {
@@ -262,18 +262,18 @@
         class="rounded-lg border px-3 py-1.5 text-xs"
         style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
       >
-        <option value={1}>Mỗi 1 giờ</option>
-        <option value={3}>Mỗi 3 giờ</option>
-        <option value={6}>Mỗi 6 giờ</option>
-        <option value={12}>Mỗi 12 giờ</option>
-        <option value={24}>Mỗi 24 giờ</option>
+        <option value={1}>Every 1 hour</option>
+        <option value={3}>Every 3 hours</option>
+        <option value={6}>Every 6 hours</option>
+        <option value={12}>Every 12 hours</option>
+        <option value={24}>Every 24 hours</option>
       </select>
     </div>
 
     <div class="row">
       <div>
-        <div class="label">Gửi thông báo Windows</div>
-        <div class="desc">Hiện thông báo hệ thống khi phát hiện chương mới.</div>
+        <div class="label">Desktop notifications</div>
+        <div class="desc">Show an OS notification when new chapters are found.</div>
       </div>
       <input
         type="checkbox"
@@ -289,13 +289,13 @@
 
   <!-- Scraper / Sources -->
   <section class="settings-card">
-    <h2 class="section-title">Nguồn dữ liệu</h2>
+    <h2 class="section-title">Sources</h2>
 
     <div class="row">
       <div>
-        <div class="label">Trình duyệt chạy ngầm (Headless Edge/Chrome)</div>
+        <div class="label">Headless browser fallback (Edge/Chrome)</div>
         <div class="desc">
-          Tự động bật khi gặp web tải ảnh bằng JavaScript mà bộ phân tích tĩnh không lấy được.
+          Automatically used on Windows when a site renders page images via JavaScript.
         </div>
       </div>
       <input
@@ -312,16 +312,16 @@
 
   <!-- Cache -->
   <section class="settings-card">
-    <h2 class="section-title">Bộ nhớ đệm ảnh</h2>
+    <h2 class="section-title">Image Cache</h2>
 
     <div class="row">
       <div>
-        <div class="label">Dung lượng đang dùng</div>
+        <div class="label">Current disk usage</div>
         <div class="desc">
           {#if cache}
-            {formatBytes(cache.bytes)} ({cache.files} ảnh đã lưu tạm)
+            {formatBytes(cache.bytes)} ({cache.files} cached images)
           {:else}
-            Đang tính...
+            Calculating...
           {/if}
         </div>
       </div>
@@ -333,12 +333,12 @@
         style="border-color: var(--border); color: var(--danger);"
       >
         <Trash2 size={14} />
-        <span>{clearingCache ? "Đang xoá..." : "Xoá cache"}</span>
+        <span>{clearingCache ? "Clearing..." : "Clear cache"}</span>
       </button>
     </div>
 
     <div class="row">
-      <div class="label">Giới hạn tối đa ({s.cache.maxMb} MB)</div>
+      <div class="label">Max cache size ({s.cache.maxMb} MB)</div>
       <input
         type="range"
         min="256"

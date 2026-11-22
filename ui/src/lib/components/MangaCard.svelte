@@ -56,7 +56,7 @@
         style="background-color: var(--accent);"
       >
         <Sparkles size={11} />
-        Chap mới
+        New
       </span>
     {/if}
 
@@ -66,7 +66,7 @@
       class="absolute right-2 bottom-2 rounded-lg px-2 py-1 text-[11px] font-medium text-white opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100"
       style="background-color: rgba(15, 15, 18, 0.72);"
     >
-      DS Chương
+      Chapters
     </button>
   </div>
 

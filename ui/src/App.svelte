@@ -57,7 +57,7 @@
           : 'var(--text-muted)'};"
       >
         <HomeIcon size={19} />
-        <span>Trang chủ</span>
+        <span>Home</span>
       </button>
       <button
         type="button"
@@ -66,7 +66,7 @@
         style="color: {router.current.name === 'history' ? 'var(--accent)' : 'var(--text-muted)'};"
       >
         <Clock size={19} />
-        <span>Lịch sử</span>
+        <span>History</span>
       </button>
       <button
         type="button"
@@ -75,7 +75,7 @@
         style="color: {router.current.name === 'settings' ? 'var(--accent)' : 'var(--text-muted)'};"
       >
         <SettingsIcon size={19} />
-        <span>Cài đặt</span>
+        <span>Settings</span>
       </button>
     </nav>
   {/if}

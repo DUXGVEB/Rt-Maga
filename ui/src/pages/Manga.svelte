@@ -39,7 +39,7 @@
     refreshing = true;
     try {
       manga = await api.refreshManga(id);
-      toasts.push("Đã cập nhật danh sách chương mới nhất.", "success");
+      toasts.push("Chapter list updated.", "success");
     } catch (err) {
       toasts.push(formatAppError(err).title, "error");
     } finally {
@@ -80,7 +80,7 @@
       style="color: var(--text-muted);"
     >
       <ArrowLeft size={16} />
-      <span>Trang chủ</span>
+      <span>Home</span>
     </button>
 
     {#if manga}
@@ -92,7 +92,7 @@
         style="background-color: var(--surface); border-color: var(--border);"
       >
         <RefreshCw size={14} class={refreshing ? "animate-spin" : ""} />
-        <span>{refreshing ? "Đang làm mới..." : "Làm mới chương"}</span>
+        <span>{refreshing ? "Refreshing..." : "Refresh chapters"}</span>
       </button>
     {/if}
   </div>
@@ -148,7 +148,7 @@
               {manga.site}
             </span>
             <span class="text-xs" style="color: var(--text-muted);">
-              {manga.chapters.length} chương
+              {manga.chapters.length} chapters
             </span>
           </div>
 
@@ -167,9 +167,9 @@
             <Play size={16} fill="currentColor" />
             <span>
               {#if manga.progress}
-                Đọc tiếp · {manga.progress.chapterName}
+                Continue · {manga.progress.chapterName}
               {:else}
-                Đọc từ đầu
+                Start reading
               {/if}
             </span>
           </button>
@@ -181,7 +181,7 @@
               class="rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors"
               style="border-color: var(--border); background-color: var(--surface-subtle);"
             >
-              Đọc từ chương đầu
+              Read from Chapter 1
             </button>
           {/if}
         </div>
@@ -191,7 +191,7 @@
     <!-- Chapter list controls -->
     <section class="flex flex-col gap-3">
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <h2 class="text-base font-semibold">Danh sách chương</h2>
+        <h2 class="text-base font-semibold">Chapters</h2>
 
         <div class="flex items-center gap-2">
           <div
@@ -202,7 +202,7 @@
             <input
               type="text"
               bind:value={query}
-              placeholder="Tìm số chương..."
+              placeholder="Filter chapters..."
               class="w-40 bg-transparent text-xs outline-none"
             />
           </div>
@@ -216,7 +216,7 @@
             style="background-color: var(--surface); border-color: var(--border);"
           >
             <ArrowDownUp size={14} />
-            <span>{newestFirst ? "Mới nhất trước" : "Cũ nhất trước"}</span>
+            <span>{newestFirst ? "Newest first" : "Oldest first"}</span>
           </button>
         </div>
       </div>

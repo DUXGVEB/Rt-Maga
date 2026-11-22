@@ -43,9 +43,9 @@
     if (!errorState?.blockedUrl || verifying) return;
     verifying = true;
     try {
-      toasts.push("Đang mở cửa sổ trình duyệt để bạn tự xác minh...", "info", 4500);
+      toasts.push("Opening browser window for manual verification...", "info", 4500);
       await api.openManualVerification(errorState.blockedUrl);
-      toasts.push("Đã xác minh xong, đang thử tải lại truyện...", "success");
+      toasts.push("Verification complete. Retrying manga fetch...", "success");
       await submit(errorState.blockedUrl);
     } catch (err) {
       errorState = formatAppError(err);
@@ -73,7 +73,7 @@
       bind:value={urlInput}
       onpaste={handlePaste}
       disabled={loading}
-      placeholder="Dán link truyện hoặc link chương bất kỳ (vd: https://truyenqqko.com/truyen-tranh/...)"
+      placeholder="Paste any manga or chapter URL (e.g. https://truyenqqko.com/truyen-tranh/...)"
       class="w-full bg-transparent py-2 text-sm outline-none placeholder:opacity-65"
       style="color: var(--text);"
     />
@@ -86,9 +86,9 @@
     >
       {#if loading}
         <Loader2 size={16} class="animate-spin" />
-        <span>Đang lấy</span>
+        <span>Fetching</span>
       {:else}
-        <span>Mở truyện</span>
+        <span>Open</span>
         <ArrowRight size={15} />
       {/if}
     </button>
@@ -115,10 +115,10 @@
           >
             {#if verifying}
               <Loader2 size={14} class="animate-spin" />
-              <span>Đang chờ xác minh...</span>
+              <span>Waiting for verification...</span>
             {:else}
               <ExternalLink size={14} />
-              <span>Mở cửa sổ để tự xác minh</span>
+              <span>Open verification window</span>
             {/if}
           </button>
         {/if}

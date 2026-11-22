@@ -33,42 +33,42 @@ export function formatAppError(err: unknown): {
     switch (e.kind) {
       case "invalid_url":
         return {
-          title: "Đường dẫn không hợp lệ",
-          detail: "Hãy dán link truyện hoặc link chương hợp lệ (bắt đầu bằng https://...).",
+          title: "Invalid URL",
+          detail: "Please paste a valid manga or chapter link (starting with https://...).",
         };
       case "blocked":
         return {
-          title: `Trang ${e.host} yêu cầu xác minh`,
+          title: `${e.host} requires verification`,
           detail:
-            "Trang web đang bật kiểm tra chống bot (Cloudflare). Bạn có thể mở cửa sổ để tự xác minh rồi thử lại.",
+            "This site enabled anti-bot protection (Cloudflare). Open a browser window to complete verification, then try again.",
           blockedUrl: e.url,
         };
       case "not_recognized":
         return {
-          title: "Chưa nhận diện được truyện từ link này",
+          title: "Could not recognize manga content",
           detail:
-            "Hãy thử dán trực tiếp link trang truyện hoặc trang chương, hoặc bật chế độ trình duyệt chạy ngầm (Headless) trong Cài đặt.",
+            "Try pasting a direct manga overview or chapter link, or enable Headless Browser fallback in Settings.",
         };
       case "network":
         return {
-          title: "Không kết nối được tới trang truyện",
+          title: "Could not connect to the website",
           detail: e.message,
         };
       case "not_found":
         return {
-          title: "Không tìm thấy dữ liệu",
+          title: "Not found",
           detail: e.message,
         };
       case "db":
       case "internal":
         return {
-          title: "Lỗi ứng dụng",
+          title: "Application error",
           detail: e.message,
         };
     }
   }
   return {
-    title: "Đã xảy ra lỗi",
+    title: "Something went wrong",
     detail: String(err),
   };
 }

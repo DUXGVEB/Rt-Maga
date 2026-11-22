@@ -21,9 +21,9 @@ class UpdatesStore {
         this.lastFound = found;
         this.newCount += found.length;
         if (found.length === 1) {
-          toasts.push(`Chap mới: ${found[0].title} (${found[0].latest})`, "success", 5000);
+          toasts.push(`New chapter: ${found[0].title} (${found[0].latest})`, "success", 5000);
         } else if (found.length > 1) {
-          toasts.push(`Có ${found.length} truyện vừa ra chap mới`, "success", 5000);
+          toasts.push(`${found.length} manga have new chapters`, "success", 5000);
         }
       });
     } catch {
@@ -43,13 +43,13 @@ class UpdatesStore {
       if (summary.found.length === 0) {
         toasts.push(
           summary.checked === 0
-            ? "Chưa có truyện nào trong lịch sử để kiểm tra."
-            : `Đã kiểm tra ${summary.checked} truyện — chưa có chap mới.`,
+            ? "No manga in history to check yet."
+            : `Checked ${summary.checked} manga - no new chapters yet.`,
           "info"
         );
       }
     } catch {
-      toasts.push("Không thể kiểm tra chap mới lúc này.", "error");
+      toasts.push("Failed to check for updates right now.", "error");
     } finally {
       this.checking = false;
       this.progress = null;

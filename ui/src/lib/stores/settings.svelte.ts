@@ -109,7 +109,7 @@ class SettingsStore {
       } catch (err) {
         if ("__TAURI_INTERNALS__" in window) {
           console.error("Failed to save settings:", err);
-          toasts.push("Không lưu được cài đặt.", "error");
+          toasts.push("Failed to save settings.", "error");
         }
       }
     };
