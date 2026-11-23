@@ -3344,6 +3344,19 @@ export interface V5Dictionary {
   releaseStatusNetworkError: string;
   appFullscreenEnter: string;
   appFullscreenExit: string;
+
+  // Horizontal RTL Reader End-of-Chapter Interstitial & Zones
+  prevChapter: string;
+  endCardFinishedLabel: string;
+  endCardPagesSummary: (pages: number) => string;
+  endCardMetadataHeading: string;
+  endCardCreditsLabel: string;
+  endCardCreditsPlaceholder: string;
+  endCardSourceLabel: string;
+  endCardReturnLastPage: string;
+  zoneNextPageLabel: string;
+  zonePrevPageLabel: string;
+  zoneToggleHudLabel: string;
 }
 
 const V5_EN: V5Dictionary = {
@@ -3399,6 +3412,18 @@ const V5_EN: V5Dictionary = {
   releaseStatusNetworkError: "Network failure while checking for updates.",
   appFullscreenEnter: "Enter Fullscreen (F11)",
   appFullscreenExit: "Windowed Mode (F11)",
+
+  prevChapter: "Previous Chapter",
+  endCardFinishedLabel: "Chapter Completed",
+  endCardPagesSummary: (pages) => `${pages} ${pages === 1 ? "page" : "pages"} read`,
+  endCardMetadataHeading: "Chapter Metadata & Credits",
+  endCardCreditsLabel: "Credits",
+  endCardCreditsPlaceholder: "Translator & scanlation credits unavailable",
+  endCardSourceLabel: "Source",
+  endCardReturnLastPage: "Back to Last Page",
+  zoneNextPageLabel: "Next page",
+  zonePrevPageLabel: "Previous page",
+  zoneToggleHudLabel: "Toggle reader toolbar",
 };
 
 const V5_VI: V5Dictionary = {
@@ -3454,6 +3479,18 @@ const V5_VI: V5Dictionary = {
   releaseStatusNetworkError: "Lỗi mạng khi kiểm tra bản cập nhật.",
   appFullscreenEnter: "Toàn màn hình (F11)",
   appFullscreenExit: "Chế độ cửa sổ (F11)",
+
+  prevChapter: "Chương trước",
+  endCardFinishedLabel: "Đã hoàn thành chương",
+  endCardPagesSummary: (pages) => `Đã đọc ${pages} trang`,
+  endCardMetadataHeading: "Thông tin chương & nhóm dịch",
+  endCardCreditsLabel: "Nhóm dịch / Tín dụng",
+  endCardCreditsPlaceholder: "Chưa có thông tin nhóm dịch",
+  endCardSourceLabel: "Nguồn",
+  endCardReturnLastPage: "Quay lại trang cuối",
+  zoneNextPageLabel: "Trang tiếp theo",
+  zonePrevPageLabel: "Trang trước",
+  zoneToggleHudLabel: "Ẩn/hiện thanh công cụ",
 };
 
 const V5_DICTIONARIES: Record<Language, V5Dictionary> = {

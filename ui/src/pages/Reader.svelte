@@ -4,6 +4,7 @@
     ArrowLeft,
     Bookmark,
     Check,
+    CheckCircle2,
     ChevronDown,
     ChevronLeft,
     ChevronRight,
@@ -27,6 +28,7 @@
   import {
     clampZoomPan,
     computeAnchoredZoom,
+    computeHorizontalTrackMetrics,
     computeNavStepCooldownMs,
     computePageLoadMode,
     computeVerticalSpeedMultiplier,
@@ -44,7 +46,6 @@
     ChapterView,
     FloatingEdge,
     FloatingScreenKey,
-    HorizontalDirection,
     MangaView,
     OrientationLockMode,
     ReaderBg,
@@ -92,9 +93,19 @@
   let zoomContentRect: RectBox | null = null;
   let verticalZoomExtraBottomPx = $state(0);
 
-  // Instant horizontal page/group navigation state (ZERO carousel/sliding animation).
+  // Isolated Horizontal RTL center-focus peek track & snap state.
   let activeGroupIdx = $state(0);
   let horizontalAtEnd = $state(false);
+  let horizontalVpWidth = $state(typeof window !== "undefined" ? window.innerWidth : 1280);
+  let horizontalVpHeight = $state(typeof window !== "undefined" ? window.innerHeight : 800);
+  let horizontalDragging = $state(false);
+  let horizontalDragOffsetPx = $state(0);
+  let suppressTrackTransition = $state(false);
+  let horizontalDragDidMove = false;
+  let horizontalPointers = new Map<number, { x: number; y: number }>();
+  let horizontalPinchStartDist = 0;
+  let horizontalPinchStartScale = 1;
+  let horizontalPinchAnchor = { x: 0, y: 0 };
 
   // Viewport focus tracking.
   let focusedKeys = $state<Set<string>>(new Set());
@@ -182,7 +193,8 @@
   const effectiveVerticalGapPx = $derived(effectiveNoGap ? 0 : vCfg.pageGapPx);
 
   const isHorizontal = $derived(effectiveOrientation === "horizontal");
-  const isRtl = $derived(isHorizontal && hCfg.direction === "rtl");
+  // Strict Right-to-Left (RTL) enforced exclusively when Horizontal mode is active.
+  const isRtl = $derived(isHorizontal);
 
   const activeChapter = $derived(
     strip.find((c) => normUrl(c.url) === normUrl(activeUrl)) ?? strip[strip.length - 1] ?? null
@@ -198,6 +210,77 @@
       ? horizontalGroups[Math.max(0, Math.min(horizontalGroups.length - 1, activeGroupIdx))] ?? null
       : null
   );
+  const horizontalEndSlideIdx = $derived(horizontalGroups.length);
+  const activeHorizontalSlideIdx = $derived(
+    horizontalAtEnd
+      ? horizontalEndSlideIdx
+      : Math.max(0, Math.min(Math.max(0, horizontalGroups.length - 1), activeGroupIdx))
+  );
+  const horizontalTrackMetrics = $derived(
+    computeHorizontalTrackMetrics(
+      horizontalVpWidth,
+      horizontalVpHeight,
+      hCfg.pagesPerGroup,
+      hCfg.groupGapPx || 18
+    )
+  );
+  const horizontalTrackTranslateX = $derived(
+    activeHorizontalSlideIdx * horizontalTrackMetrics.stride + horizontalDragOffsetPx
+  );
+  const horizontalTrackStyle = $derived(
+    `transform: translate3d(${horizontalTrackTranslateX}px, 0, 0); transition: ${
+      horizontalDragging || suppressTrackTransition
+        ? "none"
+        : "transform 320ms cubic-bezier(0.22, 1, 0.36, 1)"
+    }; will-change: transform;`
+  );
+  const visibleHorizontalSlides = $derived.by(() => {
+    if (!isHorizontal || !activeChapter) return [];
+    const endIdx = horizontalEndSlideIdx;
+    const minIdx = Math.max(0, activeHorizontalSlideIdx - 2);
+    const maxIdx = Math.min(endIdx, activeHorizontalSlideIdx + 2);
+    const slides: {
+      slideIdx: number;
+      isActive: boolean;
+      isEndCard: boolean;
+      group: (typeof horizontalGroups)[number] | null;
+      leftCss: string;
+    }[] = [];
+    const halfSlot = horizontalTrackMetrics.slotWidth / 2;
+    const stride = horizontalTrackMetrics.stride;
+    for (let idx = minIdx; idx <= maxIdx; idx += 1) {
+      slides.push({
+        slideIdx: idx,
+        isActive: idx === activeHorizontalSlideIdx,
+        isEndCard: idx === endIdx,
+        group: idx < horizontalGroups.length ? horizontalGroups[idx] : null,
+        leftCss: `calc(50% - ${halfSlot}px - ${idx * stride}px)`,
+      });
+    }
+    return slides;
+  });
+
+  function syncHorizontalViewportSize(instant = true) {
+    if (!scrollEl) return;
+    const w = scrollEl.clientWidth || window.innerWidth;
+    const h = scrollEl.clientHeight || window.innerHeight;
+    if (w > 0) horizontalVpWidth = w;
+    if (h > 0) horizontalVpHeight = h;
+    if (instant) {
+      suppressTrackTransition = true;
+      window.requestAnimationFrame(() => {
+        suppressTrackTransition = false;
+      });
+    }
+  }
+
+  function hideHorizontalHud() {
+    toolbarVisible = false;
+    quickSettingsOpen = false;
+    openQuickCat = null;
+    quickFloatConfig = null;
+    chapterJumpOpen = false;
+  }
 
   const filteredJumpChapters = $derived(() => {
     if (!manga) return [];
@@ -598,11 +681,14 @@
     cancelVerticalSmoothScroll();
     if (isHorizontal) {
       resetZoom();
+      horizontalDragging = false;
+      horizontalDragOffsetPx = 0;
       horizontalAtEnd = false;
       activeGroupIdx = 0;
       focusedPageIdx = 0;
       showScrollTopBtn = false;
       lastScrollOffset = 0;
+      syncHorizontalViewportSize(true);
       captureCurrentProgressNow();
       return;
     }
@@ -854,24 +940,25 @@
 
       const restoreNow = () => {
         if (!scrollEl || !anchorChap) return;
+        if (isHorizontal) {
+          scrollEl.scrollLeft = 0;
+          syncHorizontalViewportSize(true);
+          updateFocusNow();
+          return;
+        }
         const pageEl = scrollEl.querySelector<HTMLElement>(
           `[data-page-key="${CSS.escape(`${anchorChap}:${anchorPage}`)}"]`
         );
         if (pageEl) {
-          if (isHorizontal) {
-            pageEl.scrollIntoView({ behavior: "instant", block: "nearest", inline: "center" });
-            lastScrollOffset = Math.abs(scrollEl.scrollLeft);
-          } else {
-            const sRect = scrollEl.getBoundingClientRect();
-            const pRect = pageEl.getBoundingClientRect();
-            const pageTopInScroll = scrollEl.scrollTop + (pRect.top - sRect.top);
-            const targetTop = Math.max(
-              0,
-              Math.round(pageTopInScroll + intraPageRatio * pRect.height - scrollEl.clientHeight * 0.45)
-            );
-            scrollEl.scrollTop = targetTop;
-            lastScrollOffset = targetTop;
-          }
+          const sRect = scrollEl.getBoundingClientRect();
+          const pRect = pageEl.getBoundingClientRect();
+          const pageTopInScroll = scrollEl.scrollTop + (pRect.top - sRect.top);
+          const targetTop = Math.max(
+            0,
+            Math.round(pageTopInScroll + intraPageRatio * pRect.height - scrollEl.clientHeight * 0.45)
+          );
+          scrollEl.scrollTop = targetTop;
+          lastScrollOffset = targetTop;
         }
         updateFocusNow();
       };
@@ -981,7 +1068,15 @@
   $effect(() => {
     const el = scrollEl;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => scheduleFocusUpdate());
+    if (isHorizontal) {
+      syncHorizontalViewportSize(true);
+    }
+    const ro = new ResizeObserver(() => {
+      if (isHorizontal) {
+        syncHorizontalViewportSize(true);
+      }
+      scheduleFocusUpdate();
+    });
     ro.observe(el);
     return () => ro.disconnect();
   });
@@ -1090,6 +1185,11 @@
     }
 
     resetZoom();
+    horizontalDragging = false;
+    horizontalDragOffsetPx = 0;
+    // Automatically hide top & bottom HUD toolbars the instant a horizontal turn is triggered.
+    hideHorizontalHud();
+
     const groups = horizontalGroups;
     if (groups.length === 0) return;
 
@@ -1112,14 +1212,6 @@
       activeGroupIdx = nextIdx;
       focusedPageIdx = groups[nextIdx]?.items[0]?.pageIdx ?? 0;
       showScrollTopBtn = activeGroupIdx > 0;
-      if (deltaStep > 0) {
-        // Advancing forward hides reader overlays quietly like scrolling downward.
-        toolbarVisible = false;
-        quickSettingsOpen = false;
-        openQuickCat = null;
-        quickFloatConfig = null;
-        chapterJumpOpen = false;
-      }
       const ratio = groups.length <= 1 ? 1 : activeGroupIdx / (groups.length - 1);
       scheduleSaveProgress(activeChapter.url, activeChapter.name, ratio, focusedPageIdx);
       if (ratio >= 0.85) {
@@ -1134,13 +1226,9 @@
 
     if (deltaStep > 0) {
       markChapterReadLocalAndRemote(activeChapter.url);
-      if (activeChapter.next) {
-        horizontalAtEnd = true;
-        toolbarVisible = true;
-      } else {
-        horizontalAtEnd = true;
-        toolbarVisible = true;
-      }
+      horizontalAtEnd = true;
+      showScrollTopBtn = true;
+      captureCurrentProgressNow();
     } else if (deltaStep < 0 && activeChapter.prev) {
       jumpToChapter(activeChapter.prev);
     }
@@ -1155,7 +1243,11 @@
       const targetEl = target instanceof HTMLElement ? target.closest("img") : null;
       const imgs = targetEl
         ? [targetEl]
-        : Array.from(horizontalStageEl?.querySelectorAll<HTMLImageElement>("img") ?? []);
+        : Array.from(
+            horizontalStageEl?.querySelectorAll<HTMLImageElement>(
+              '[data-hslide-active="true"] img'
+            ) ?? []
+          );
       if (imgs.length > 0) {
         let minL = Number.POSITIVE_INFINITY;
         let minT = Number.POSITIVE_INFINITY;
@@ -1199,6 +1291,33 @@
     if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
       return;
     }
+
+    if (isHorizontal) {
+      horizontalPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (horizontalPointers.size >= 2) {
+        // 2-finger pinch-to-zoom: immediately release any horizontal swipe drag.
+        horizontalDragging = false;
+        horizontalDragOffsetPx = 0;
+        zoomPanning = false;
+        const pts = Array.from(horizontalPointers.values());
+        horizontalPinchStartDist = Math.max(
+          1,
+          Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)
+        );
+        horizontalPinchStartScale = zoomScale;
+        if (scrollEl) {
+          const vpRect = scrollEl.getBoundingClientRect();
+          horizontalPinchAnchor = {
+            x: (pts[0].x + pts[1].x) / 2 - vpRect.left,
+            y: (pts[0].y + pts[1].y) / 2 - vpRect.top,
+          };
+        }
+        zoomContentRect = measureZoomTargetRect(e.target);
+        return;
+      }
+      horizontalDragDidMove = false;
+    }
+
     pointerDownX = e.clientX;
     pointerDownY = e.clientY;
     pointerDownAt = Date.now();
@@ -1223,6 +1342,68 @@
   }
 
   function handlePointerMove(e: PointerEvent) {
+    if (isHorizontal && horizontalPointers.has(e.pointerId)) {
+      horizontalPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (horizontalPointers.size >= 2 && scrollEl) {
+        const pts = Array.from(horizontalPointers.values());
+        const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        const ratio = dist / Math.max(1, horizontalPinchStartDist);
+        const targetScale = Math.max(1, Math.min(3, horizontalPinchStartScale * ratio));
+        const vpRect = scrollEl.getBoundingClientRect();
+        const rect = zoomContentRect ?? {
+          left: 0,
+          top: 0,
+          width: vpRect.width,
+          height: vpRect.height,
+        };
+        if (targetScale <= 1.02) {
+          zoomScale = 1;
+          zoomTx = 0;
+          zoomTy = 0;
+        } else {
+          const next = computeAnchoredZoom(
+            horizontalPinchAnchor.x,
+            horizontalPinchAnchor.y,
+            { scale: zoomScale, tx: zoomTx, ty: zoomTy },
+            targetScale,
+            vpRect.width,
+            vpRect.height,
+            rect
+          );
+          zoomScale = next.scale;
+          zoomTx = next.tx;
+          zoomTy = next.ty;
+        }
+        horizontalDragDidMove = true;
+        return;
+      }
+
+      // Live horizontal RTL drag-swipe with rubber-band edge resistance (only when unzoomed).
+      if (!zoomPanning && zoomScale <= 1.01 && activePointerId === e.pointerId) {
+        const dx = e.clientX - pointerDownX;
+        const dy = e.clientY - pointerDownY;
+        if (!horizontalDragging && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.1) {
+          horizontalDragging = true;
+          horizontalDragDidMove = true;
+          hideHorizontalHud();
+          if (scrollEl) {
+            try {
+              scrollEl.setPointerCapture(e.pointerId);
+            } catch {
+              // Ignore capture errors on synthetic events.
+            }
+          }
+        }
+        if (horizontalDragging) {
+          const atRightStartEdge = activeHorizontalSlideIdx === 0 && dx < 0;
+          const atLeftEndEdge = activeHorizontalSlideIdx === horizontalEndSlideIdx && dx > 0;
+          horizontalDragOffsetPx =
+            atRightStartEdge || atLeftEndEdge ? Math.round(dx * 0.28) : Math.round(dx);
+        }
+        return;
+      }
+    }
+
     if (!zoomPanning || activePointerId !== e.pointerId || !scrollEl || zoomScale <= 1.01) return;
     const dx = e.clientX - panStartX;
     const dy = e.clientY - panStartY;
@@ -1251,9 +1432,11 @@
   }
 
   function handlePointerUp(e: PointerEvent) {
+    if (isHorizontal) {
+      horizontalPointers.delete(e.pointerId);
+    }
     if (activePointerId !== e.pointerId) return;
     const dx = e.clientX - pointerDownX;
-    const dy = e.clientY - pointerDownY;
     const elapsed = Date.now() - pointerDownAt;
 
     if (zoomPanning) {
@@ -1266,25 +1449,117 @@
         }
       }
     }
-    activePointerId = null;
 
-    // Horizontal mode intentional horizontal swipe -> instant page replacement (NO slide animation).
-    if (
-      isHorizontal &&
-      zoomScale <= 1.01 &&
-      !didPanDrag &&
-      elapsed < 650 &&
-      Math.abs(dx) >= 56 &&
-      Math.abs(dx) > Math.abs(dy) * 1.45
-    ) {
-      const swipedLeft = dx < 0;
-      const step: 1 | -1 = swipedLeft ? (isRtl ? -1 : 1) : isRtl ? 1 : -1;
-      stepHorizontalGroup(step, false);
+    if (isHorizontal && horizontalDragging) {
+      horizontalDragging = false;
+      horizontalDragOffsetPx = 0;
+      if (scrollEl) {
+        try {
+          scrollEl.releasePointerCapture(e.pointerId);
+        } catch {
+          // Ignore if capture was not set.
+        }
+      }
+      activePointerId = null;
+
+      const distThreshold = Math.min(84, horizontalTrackMetrics.stride * 0.18);
+      const velocity = Math.abs(dx) / Math.max(1, elapsed);
+      if (Math.abs(dx) >= distThreshold || (Math.abs(dx) >= 28 && velocity >= 0.35)) {
+        // Strict RTL track: dragging RIGHT pulls left peeking Next Page into center (+1);
+        // dragging LEFT pulls right peeking Previous Page into center (-1).
+        if (dx > 0) {
+          stepHorizontalGroup(1, false);
+        } else if (activeHorizontalSlideIdx > 0 || activeChapter?.prev) {
+          stepHorizontalGroup(-1, false);
+        }
+      }
+      return;
+    }
+
+    activePointerId = null;
+  }
+
+  function dismissHorizontalOverlayIfOpen(): boolean {
+    if (quickFloatConfig !== null) {
+      quickFloatConfig = null;
+      return true;
+    }
+    if (quickSettingsOpen) {
+      quickSettingsOpen = false;
+      openQuickCat = null;
+      return true;
+    }
+    if (chapterJumpOpen) {
+      chapterJumpOpen = false;
+      return true;
+    }
+    return false;
+  }
+
+  function handleHorizontalLeftZoneClick(e: MouseEvent) {
+    e.stopPropagation();
+    wakeFloatingControls();
+    if (horizontalDragDidMove || Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 10) {
+      horizontalDragDidMove = false;
+      return;
+    }
+    if (dismissHorizontalOverlayIfOpen()) return;
+    // Left Zone (~27% width): Advances to Next Page (slides RTL track right, left peek -> center).
+    stepHorizontalGroup(1, false);
+  }
+
+  function handleHorizontalRightZoneClick(e: MouseEvent) {
+    e.stopPropagation();
+    wakeFloatingControls();
+    if (horizontalDragDidMove || Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 10) {
+      horizontalDragDidMove = false;
+      return;
+    }
+    if (dismissHorizontalOverlayIfOpen()) return;
+    // Right Zone (~27% width): Returns to Previous Page (slides RTL track left, right peek -> center).
+    stepHorizontalGroup(-1, false);
+  }
+
+  function handleHorizontalCenterZoneClick(e: MouseEvent) {
+    e.stopPropagation();
+    wakeFloatingControls();
+    if (horizontalDragDidMove || Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 10) {
+      horizontalDragDidMove = false;
+      return;
+    }
+    if (dismissHorizontalOverlayIfOpen()) return;
+
+    const now = Date.now();
+    const doubleTapEnabled = behavior.doubleTapAction !== "disabled";
+    if (doubleTapEnabled && now - lastTapAt <= 260) {
+      lastTapAt = 0;
+      if (singleTapTimer !== null) {
+        window.clearTimeout(singleTapTimer);
+        singleTapTimer = null;
+      }
+      executeDoubleTap(e.clientX, e.clientY, e.target);
+      return;
+    }
+
+    lastTapAt = now;
+    if (!doubleTapEnabled) {
+      toolbarVisible = !toolbarVisible;
+    } else {
+      singleTapTimer = window.setTimeout(() => {
+        singleTapTimer = null;
+        toolbarVisible = !toolbarVisible;
+      }, 260);
     }
   }
 
   function executeSingleTap(clientX: number) {
-    if (isHorizontal && readerSettings.tapZonesEnabled && scrollEl && zoomScale <= 1.01) {
+    if (
+      isHorizontal &&
+      !horizontalAtEnd &&
+      readerSettings.tapZonesEnabled &&
+      scrollEl &&
+      zoomScale <= 1.01
+    ) {
       const rect = scrollEl.getBoundingClientRect();
       const relX = (clientX - rect.left) / Math.max(1, rect.width);
       if (relX <= 0.25) {
@@ -1727,12 +2002,13 @@
     }
 
     if (isHorizontal) {
-      if (e.key === "ArrowRight") {
+      // Strict RTL horizontal bindings: ArrowLeft = Next Page, ArrowRight = Previous Page.
+      if (e.key === "ArrowLeft") {
         e.preventDefault();
-        stepHorizontalGroup(isRtl ? -1 : 1, e.repeat);
-      } else if (e.key === "ArrowLeft") {
+        stepHorizontalGroup(1, e.repeat);
+      } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        stepHorizontalGroup(isRtl ? 1 : -1, e.repeat);
+        stepHorizontalGroup(-1, e.repeat);
       } else if (e.key === "PageDown" || e.key === " ") {
         e.preventDefault();
         stepHorizontalGroup(e.shiftKey ? -1 : 1, e.repeat);
@@ -1803,12 +2079,6 @@
     const clamped = Math.max(1, Math.min(8, n));
     settingsStore.update((d) => {
       d.reader.horizontal.pagesPerGroup = clamped;
-    });
-  }
-
-  function setHorizontalDirection(dir: HorizontalDirection) {
-    settingsStore.update((d) => {
-      d.reader.horizontal.direction = dir;
     });
   }
 
@@ -2114,7 +2384,7 @@
             <div class="font-semibold">{t.readerCatLayout}</div>
             <div class="truncate text-[10px]" style="color: var(--text-muted);">
               {isHorizontal
-                ? `${t.modeHorizontal} · ${hCfg.direction.toUpperCase()} · ${hCfg.pagesPerGroup}x`
+                ? `${t.modeHorizontal} · RTL · ${hCfg.pagesPerGroup}x`
                 : `${t.modeVertical} · ${effectiveNoGap ? t.noGapModeLabel : `${effectiveVerticalGapPx}px`}`}
             </div>
           </div>
@@ -2153,26 +2423,14 @@
             </div>
 
             {#if isHorizontal}
-              <div class="flex flex-col gap-1.5">
+              <div class="flex items-center justify-between gap-2">
                 <span class="font-medium">{t.horizontalDirLabel}</span>
-                <div class="grid grid-cols-2 gap-1.5">
-                  {#each [["ltr", t.dirLtr], ["rtl", t.dirRtl]] as [val, label] (val)}
-                    <button
-                      type="button"
-                      onclick={() => setHorizontalDirection(val as HorizontalDirection)}
-                      class="rounded-lg border py-1.5 font-medium"
-                      style="border-color: {hCfg.direction === val
-                        ? 'var(--accent)'
-                        : 'var(--border)'}; background-color: {hCfg.direction === val
-                        ? 'var(--accent-soft)'
-                        : 'var(--surface-subtle)'}; color: {hCfg.direction === val
-                        ? 'var(--accent)'
-                        : 'var(--text)'};"
-                    >
-                      {label}
-                    </button>
-                  {/each}
-                </div>
+                <span
+                  class="rounded-md border px-2 py-0.5 text-[11px] font-semibold"
+                  style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
+                >
+                  {t.dirRtl}
+                </span>
               </div>
 
               <div class="flex flex-col gap-1.5">
@@ -2616,7 +2874,9 @@
         ? zoomPanning
           ? "touch-action: none; cursor: grabbing;"
           : "touch-action: none; cursor: grab;"
-        : "touch-action: pan-y;"
+        : horizontalDragging
+          ? "touch-action: none; cursor: grabbing;"
+          : "touch-action: pan-y pinch-zoom;"
       : zoomScale > 1.01
         ? zoomPanning
           ? "touch-action: pan-y; cursor: grabbing;"
@@ -2671,75 +2931,221 @@
         </div>
       </div>
     {:else if isHorizontal && activeChapter}
-      <!-- HORIZONTAL READING MODE (Instant In-Place Replacement, ZERO Sliding / Carousel Animation) -->
+      <!-- ISOLATED HORIZONTAL READING MODE: Strict RTL Track + Center-Focus Peek + Snap Physics -->
       <div
         bind:this={horizontalStageEl}
-        class="relative flex h-full w-full items-center justify-center overflow-hidden"
+        class="relative h-full w-full overflow-hidden"
         style={horizontalZoomStyle}
       >
-        {#if horizontalAtEnd}
-          <div class="flex h-full w-full flex-col items-center justify-center gap-3 px-8 text-center">
-            {#if activeChapter.next}
-              <button
-                type="button"
-                onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
-                class="inline-flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-                style="background-color: var(--accent);"
-              >
-                <span>{t.nextChapter}</span>
-                <ChevronRight size={17} />
-              </button>
-            {:else}
-              <div
-                class="rounded-xl border px-5 py-3 text-xs font-medium"
-                style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
-              >
-                {t.reachedLatest}
-              </div>
-            {/if}
-            {#if horizontalGroups.length > 0}
-              <button
-                type="button"
-                onclick={() => {
-                  horizontalAtEnd = false;
-                  activeGroupIdx = horizontalGroups.length - 1;
-                }}
-                class="inline-flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-medium"
-                style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
-              >
-                <ChevronLeft size={14} />
-                <span>{t.back}</span>
-              </button>
-            {/if}
-          </div>
-        {:else if currentHorizontalGroup}
-          <div
-            dir={isRtl ? "rtl" : "ltr"}
-            data-group-key={`${activeChapter.url}:hg:${currentHorizontalGroup.groupIdx}`}
-            class="box-border flex h-full w-full items-center {hCfg.centerGroups
-              ? 'justify-center'
-              : 'justify-start'}"
-            style="padding-left: max(0.5rem, var(--safe-left)); padding-right: max(0.5rem, var(--safe-right)); gap: {hCfg.pageGapPx}px;"
-          >
-            {#each currentHorizontalGroup.items as entry (`${activeChapter.url}:${entry.pageIdx}`)}
-              <PageImage
-                token={entry.token}
-                index={entry.pageIdx}
-                pageKey={`${activeChapter.url}:${entry.pageIdx}`}
-                loadMode="high"
-                horizontal={true}
-                continuousHorizontal={false}
-                pageGapPx={hCfg.pageGapPx}
-                snapPage={false}
-                snapStopAlways={false}
-                groupPageCount={currentHorizontalGroup.items.length}
-                skipBroken={behavior.skipBrokenImages}
-                onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
-              />
-            {/each}
-          </div>
-        {/if}
+        <!-- RTL Snapping Slide Track (Page 1 at far-right; advancing slides track right toward far-left End Card) -->
+        <div class="relative h-full w-full" style={horizontalTrackStyle}>
+          {#each visibleHorizontalSlides as slide (`${activeChapter.url}:hslide:${slide.slideIdx}`)}
+            <div
+              data-hslide-idx={slide.slideIdx}
+              data-hslide-active={slide.isActive ? "true" : "false"}
+              class="absolute top-0 bottom-0 flex items-center justify-center py-2"
+              style="left: {slide.leftCss}; width: {horizontalTrackMetrics.slotWidth}px; opacity: {slide.isActive
+                ? 1
+                : 0.3}; transition: opacity 300ms cubic-bezier(0.22, 1, 0.36, 1);"
+            >
+              {#if slide.isEndCard}
+                <!-- Far-Left End-of-Chapter Interstitial Summary Card -->
+                <div
+                  class="relative z-20 mx-auto flex max-h-[calc(100%-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 text-center shadow-xl sm:p-6"
+                  style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+                >
+                  <div class="flex flex-col items-center gap-2">
+                    <div
+                      class="flex h-11 w-11 items-center justify-center rounded-2xl"
+                      style="background-color: var(--accent-soft); color: var(--accent);"
+                    >
+                      <CheckCircle2 size={24} />
+                    </div>
+                    <span
+                      class="rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide"
+                      style="background-color: var(--accent-soft); color: var(--accent);"
+                    >
+                      {t.endCardFinishedLabel}
+                    </span>
+                    <h2 class="line-clamp-2 text-base font-bold sm:text-lg">
+                      {activeChapter.name}
+                    </h2>
+                    {#if manga}
+                      <div class="line-clamp-1 text-xs font-medium" style="color: var(--text-muted);">
+                        {manga.title}
+                      </div>
+                    {/if}
+                    <div class="text-[11px]" style="color: var(--text-muted);">
+                      {t.endCardPagesSummary(totalPages)}
+                    </div>
+                  </div>
+
+                  <!-- Generic Metadata & Credits Placeholders -->
+                  <div
+                    class="flex flex-col gap-1.5 rounded-xl border p-3 text-left text-xs"
+                    style="background-color: var(--surface-subtle); border-color: var(--border);"
+                  >
+                    <div
+                      class="text-[10px] font-semibold uppercase tracking-wider"
+                      style="color: var(--text-muted);"
+                    >
+                      {t.endCardMetadataHeading}
+                    </div>
+                    <div class="flex items-baseline justify-between gap-2">
+                      <span style="color: var(--text-muted);">{t.mangaAuthorsLabel}</span>
+                      <span class="truncate font-medium">
+                        {manga && manga.authors.length > 0 ? manga.authors.join(", ") : "—"}
+                      </span>
+                    </div>
+                    <div class="flex items-baseline justify-between gap-2">
+                      <span style="color: var(--text-muted);">{t.endCardSourceLabel}</span>
+                      <span class="truncate font-medium">{manga?.site ?? "—"}</span>
+                    </div>
+                    <div class="flex items-baseline justify-between gap-2">
+                      <span style="color: var(--text-muted);">{t.endCardCreditsLabel}</span>
+                      <span class="truncate text-right" style="color: var(--text-muted);">
+                        {t.endCardCreditsPlaceholder}
+                      </span>
+                    </div>
+                  </div>
+
+                  <!-- Prominent Chapter Navigation Actions -->
+                  <div class="flex flex-col gap-2">
+                    {#if activeChapter.next}
+                      <button
+                        type="button"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          if (activeChapter?.next) jumpToChapter(activeChapter.next);
+                        }}
+                        class="inline-flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
+                        style="background-color: var(--accent);"
+                      >
+                        <span>{t.nextChapter}</span>
+                        <ChevronRight size={17} />
+                      </button>
+                    {:else}
+                      <div
+                        class="rounded-xl border px-4 py-2.5 text-xs font-medium"
+                        style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+                      >
+                        {t.reachedLatest}
+                      </div>
+                    {/if}
+
+                    <div class="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        disabled={!activeChapter.prev}
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          if (activeChapter?.prev) jumpToChapter(activeChapter.prev);
+                        }}
+                        class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
+                        style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+                      >
+                        <ChevronLeft size={14} />
+                        <span class="truncate">{t.prevChapter}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          stepHorizontalGroup(-1, false);
+                        }}
+                        class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
+                        style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+                      >
+                        <span class="truncate">{t.endCardReturnLastPage}</span>
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              {:else if slide.group}
+                <!-- Page Container (Strict RTL Spread Order + Subtle Bottom-Left Page Badge) -->
+                <div
+                  dir="rtl"
+                  data-group-key={`${activeChapter.url}:hg:${slide.group.groupIdx}`}
+                  class="relative flex h-full w-full items-center justify-center"
+                  style="gap: {hCfg.pageGapPx}px;"
+                >
+                  {#each slide.group.items as entry (`${activeChapter.url}:${entry.pageIdx}`)}
+                    <div
+                      class="relative flex h-full items-center justify-center"
+                      style={slide.group.items.length > 1
+                        ? `max-width: calc((100% - ${(slide.group.items.length - 1) * hCfg.pageGapPx}px) / ${slide.group.items.length});`
+                        : "width: 100%; max-width: 100%;"}
+                    >
+                      <PageImage
+                        token={entry.token}
+                        index={entry.pageIdx}
+                        pageKey={`${activeChapter.url}:${entry.pageIdx}`}
+                        loadMode={slide.isActive ? "high" : "preload"}
+                        horizontal={true}
+                        continuousHorizontal={false}
+                        pageGapPx={hCfg.pageGapPx}
+                        snapPage={false}
+                        snapStopAlways={false}
+                        groupPageCount={1}
+                        skipBroken={behavior.skipBrokenImages}
+                        onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
+                      />
+                      <!-- Subtle Bottom-Left Page Badge -->
+                      <span
+                        class="pointer-events-none absolute left-2.5 z-10 rounded-md px-2 py-0.5 text-[11px] font-medium tabular-nums select-none backdrop-blur-sm"
+                        style="bottom: max(0.75rem, var(--safe-bottom)); background-color: rgba(12, 12, 16, 0.62); color: rgba(255, 255, 255, 0.88);"
+                      >
+                        {t.pageAlt(entry.pageIdx + 1)}
+                      </span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
       </div>
+
+      <!-- Scoped 3-Zone Invisible Interactive Hitboxes (Horizontal Mode Only; disabled while zoomed) -->
+      {#if zoomScale <= 1.01 && !horizontalAtEnd}
+        <div class="pointer-events-none absolute inset-0 z-10 flex">
+          <!-- Left Zone (~27%): Next Page (slides RTL track right, bringing left peek to center) -->
+          <div
+            role="button"
+            tabindex="-1"
+            aria-label={t.zoneNextPageLabel}
+            onclick={handleHorizontalLeftZoneClick}
+            class="pointer-events-auto h-full w-[27%] cursor-pointer"
+          ></div>
+          <!-- Center Zone (~46%): Toggle Top & Bottom HUD Toolbars -->
+          <div
+            role="button"
+            tabindex="-1"
+            aria-label={t.zoneToggleHudLabel}
+            onclick={handleHorizontalCenterZoneClick}
+            class="pointer-events-auto h-full flex-1 cursor-default"
+          ></div>
+          <!-- Right Zone (~27%): Previous Page (slides RTL track left, bringing right peek to center) -->
+          <div
+            role="button"
+            tabindex="-1"
+            aria-label={t.zonePrevPageLabel}
+            onclick={handleHorizontalRightZoneClick}
+            class="pointer-events-auto h-full w-[27%] cursor-pointer"
+          ></div>
+        </div>
+      {:else if zoomScale <= 1.01 && horizontalAtEnd}
+        <!-- On End-of-Chapter card: keep card buttons clickable; right peeking edge returns to last page -->
+        <div
+          role="button"
+          tabindex="-1"
+          aria-label={t.zonePrevPageLabel}
+          onclick={handleHorizontalRightZoneClick}
+          class="absolute top-0 right-0 bottom-0 z-10 w-[20%] cursor-pointer"
+        ></div>
+      {/if}
     {:else}
       <!-- VERTICAL READING MODE (Continuous Vertical Scroll + Chapter Dividers) -->
       <div
@@ -2845,6 +3251,23 @@
       >
         <ChevronLeft size={16} />
       </button>
+
+      {#if isHorizontal && manga && manga.chapters.length > 0}
+        {@const selectedChapUrl =
+          manga.chapters.find((c) => normUrl(c.url) === normUrl(activeChapter.url))?.url ??
+          activeChapter.url}
+        <select
+          value={selectedChapUrl}
+          onchange={(e) => jumpToChapter(e.currentTarget.value)}
+          aria-label={t.quickChapterJump}
+          class="max-w-[7.5rem] shrink-0 truncate rounded-lg border px-2 py-1 text-xs font-medium outline-none sm:max-w-[12rem]"
+          style="border-color: var(--border); background-color: var(--surface); color: var(--text);"
+        >
+          {#each [...manga.chapters].reverse() as ch (ch.url)}
+            <option value={ch.url}>{ch.name}</option>
+          {/each}
+        </select>
+      {/if}
 
       <div class="flex min-w-0 flex-1 items-center gap-3">
         <span class="shrink-0 text-xs font-semibold tabular-nums" style="color: var(--accent);">

@@ -251,3 +251,51 @@ export function computeVerticalSpeedMultiplier(speed: number): number {
   const s = Math.max(1, Math.min(10, Math.round(speed) || 5));
   return Number((0.55 + (s - 1) * 0.145).toFixed(3));
 }
+
+export interface HorizontalTrackMetrics {
+  slotWidth: number;
+  gapPx: number;
+  stride: number;
+}
+
+/**
+ * Computes slide slot width, inter-slide gap, and stride for the Horizontal RTL center-focus
+ * "peek" layout so the active page fits cleanly in the center while adjacent Previous (right)
+ * and Next (left) slides remain visibly peeking across desktop, mobile portrait, and landscape.
+ */
+export function computeHorizontalTrackMetrics(
+  vpWidth: number,
+  vpHeight: number,
+  pagesPerGroup: number,
+  configuredGapPx = 16
+): HorizontalTrackMetrics {
+  const safeW = Math.max(240, vpWidth);
+  const safeH = Math.max(200, vpHeight);
+  const count = Math.max(1, Math.min(8, Math.floor(pagesPerGroup) || 1));
+  const maxFraction = count > 1 ? 0.84 : safeW < 640 ? 0.8 : 0.78;
+  const idealByHeight = safeH * 0.75 * count;
+  const minSlot = Math.min(safeW * 0.78, count > 1 ? 300 : 220);
+  const slotWidth = Math.round(Math.max(minSlot, Math.min(safeW * maxFraction, idealByHeight)));
+  const gapPx = Math.max(10, Math.min(48, Math.round(configuredGapPx || 16)));
+  return {
+    slotWidth,
+    gapPx,
+    stride: slotWidth + gapPx,
+  };
+}
+
+/**
+ * Returns the screen-space center X offset (in px relative to viewport center) of `slideIdx`
+ * inside a strict Right-to-Left (RTL) horizontal track:
+ * - `slideIdx === activeSlideIdx` -> `0` (dead center)
+ * - `slideIdx < activeSlideIdx` (Previous pages) -> positive (to the RIGHT)
+ * - `slideIdx > activeSlideIdx` (Next pages & End-of-Chapter card) -> negative (to the LEFT)
+ */
+export function computeHorizontalRtlSlideOffset(
+  slideIdx: number,
+  activeSlideIdx: number,
+  stride: number,
+  dragOffsetPx = 0
+): number {
+  return (activeSlideIdx - slideIdx) * stride + dragOffsetPx;
+}

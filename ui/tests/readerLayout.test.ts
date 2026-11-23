@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   clampZoomPan,
   computeAnchoredZoom,
+  computeHorizontalRtlSlideOffset,
+  computeHorizontalTrackMetrics,
   computeNavStepCooldownMs,
   computeVerticalSpeedMultiplier,
   detectWebtoonFromDimensions,
@@ -96,4 +98,47 @@ test("detectWebtoonFromDimensions distinguishes tall webtoons from standard mang
   ]);
   assert.equal(standard.decided, true);
   assert.equal(standard.isWebtoon, false);
+});
+
+test("computeHorizontalTrackMetrics preserves center fit and visible side peeks across viewports", () => {
+  const viewports = [
+    { name: "desktop 1080p", w: 1920, h: 1080, count: 1 },
+    { name: "laptop 1280x800", w: 1280, h: 800, count: 1 },
+    { name: "mobile portrait", w: 390, h: 844, count: 1 },
+    { name: "mobile landscape", w: 844, h: 390, count: 1 },
+    { name: "desktop 2-page spread", w: 1920, h: 1080, count: 2 },
+  ];
+
+  for (const vp of viewports) {
+    const m = computeHorizontalTrackMetrics(vp.w, vp.h, vp.count, 16);
+    assert.ok(m.slotWidth < vp.w, `${vp.name}: active slot must be narrower than viewport`);
+    assert.equal(m.stride, m.slotWidth + m.gapPx);
+
+    // Adjacent slide inner edge relative to viewport center is (stride - slotWidth / 2).
+    // For a visible peek on both left and right edges, that inner edge must lie strictly inside vp.w / 2!
+    const peekInnerEdgeFromCenter = m.stride - m.slotWidth / 2;
+    assert.ok(
+      peekInnerEdgeFromCenter < vp.w / 2,
+      `${vp.name}: adjacent slides must visibly peek inside viewport (edge=${peekInnerEdgeFromCenter}, halfVp=${vp.w / 2})`
+    );
+  }
+});
+
+test("computeHorizontalRtlSlideOffset enforces strict RTL ordering and center snapping", () => {
+  const stride = 820;
+  // When Page 2 (idx=1) is active:
+  // - Page 1 (idx=0, Previous) sits to the RIGHT (+stride)
+  // - Page 2 (idx=1, Active) sits DEAD CENTER (0)
+  // - Page 3 (idx=2, Next) sits to the LEFT (-stride)
+  // - End-of-Chapter Card (idx=3) sits at FAR LEFT (-2 * stride)
+  assert.equal(computeHorizontalRtlSlideOffset(0, 1, stride, 0), 820);
+  assert.equal(computeHorizontalRtlSlideOffset(1, 1, stride, 0), 0);
+  assert.equal(computeHorizontalRtlSlideOffset(2, 1, stride, 0), -820);
+  assert.equal(computeHorizontalRtlSlideOffset(3, 1, stride, 0), -1640);
+
+  // Dragging RIGHT (+100px) pulls the left peeking Next Page (idx=2) right toward center.
+  assert.equal(computeHorizontalRtlSlideOffset(2, 1, stride, 100), -720);
+  // Advancing to End-of-Chapter Card (idx=3) locks End Card dead center (0) and puts last page on right (+stride).
+  assert.equal(computeHorizontalRtlSlideOffset(3, 3, stride, 0), 0);
+  assert.equal(computeHorizontalRtlSlideOffset(2, 3, stride, 0), 820);
 });
