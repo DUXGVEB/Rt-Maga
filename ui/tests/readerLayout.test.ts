@@ -4,6 +4,7 @@ import {
   clampZoomPan,
   computeAnchoredZoom,
   computeHorizontalRtlSlideOffset,
+  computeHorizontalSlideOffset,
   computeHorizontalTrackMetrics,
   computeNavStepCooldownMs,
   computeVerticalSpeedMultiplier,
@@ -141,4 +142,23 @@ test("computeHorizontalRtlSlideOffset enforces strict RTL ordering and center sn
   // Advancing to End-of-Chapter Card (idx=3) locks End Card dead center (0) and puts last page on right (+stride).
   assert.equal(computeHorizontalRtlSlideOffset(3, 3, stride, 0), 0);
   assert.equal(computeHorizontalRtlSlideOffset(2, 3, stride, 0), 820);
+});
+
+test("computeHorizontalSlideOffset enforces symmetric LTR ordering and center snapping", () => {
+  const stride = 820;
+  // In LTR when Page 2 (idx=1) is active:
+  // - Page 1 (idx=0, Previous) sits to the LEFT (-stride)
+  // - Page 2 (idx=1, Active) sits DEAD CENTER (0)
+  // - Page 3 (idx=2, Next) sits to the RIGHT (+stride)
+  // - End-of-Chapter Card (idx=3) sits at FAR RIGHT (+2 * stride)
+  assert.equal(computeHorizontalSlideOffset(0, 1, stride, "ltr", 0), -820);
+  assert.equal(computeHorizontalSlideOffset(1, 1, stride, "ltr", 0), 0);
+  assert.equal(computeHorizontalSlideOffset(2, 1, stride, "ltr", 0), 820);
+  assert.equal(computeHorizontalSlideOffset(3, 1, stride, "ltr", 0), 1640);
+
+  // Dragging LEFT (-100px) pulls the right peeking Next Page (idx=2) left toward center.
+  assert.equal(computeHorizontalSlideOffset(2, 1, stride, "ltr", -100), 720);
+  // Advancing to End-of-Chapter Card (idx=3) locks End Card dead center (0) and puts last page on left (-stride).
+  assert.equal(computeHorizontalSlideOffset(3, 3, stride, "ltr", 0), 0);
+  assert.equal(computeHorizontalSlideOffset(2, 3, stride, "ltr", 0), -820);
 });

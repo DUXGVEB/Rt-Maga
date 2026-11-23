@@ -46,6 +46,7 @@
     ChapterView,
     FloatingEdge,
     FloatingScreenKey,
+    HorizontalDirection,
     MangaView,
     OrientationLockMode,
     ReaderBg,
@@ -193,8 +194,7 @@
   const effectiveVerticalGapPx = $derived(effectiveNoGap ? 0 : vCfg.pageGapPx);
 
   const isHorizontal = $derived(effectiveOrientation === "horizontal");
-  // Strict Right-to-Left (RTL) enforced exclusively when Horizontal mode is active.
-  const isRtl = $derived(isHorizontal);
+  const isRtl = $derived(isHorizontal && hCfg.direction === "rtl");
 
   const activeChapter = $derived(
     strip.find((c) => normUrl(c.url) === normUrl(activeUrl)) ?? strip[strip.length - 1] ?? null
@@ -224,8 +224,10 @@
       hCfg.groupGapPx || 18
     )
   );
+  const horizontalDirSign = $derived(isRtl ? 1 : -1);
   const horizontalTrackTranslateX = $derived(
-    activeHorizontalSlideIdx * horizontalTrackMetrics.stride + horizontalDragOffsetPx
+    horizontalDirSign * activeHorizontalSlideIdx * horizontalTrackMetrics.stride +
+      horizontalDragOffsetPx
   );
   const horizontalTrackStyle = $derived(
     `transform: translate3d(${horizontalTrackTranslateX}px, 0, 0); transition: ${
@@ -249,12 +251,15 @@
     const halfSlot = horizontalTrackMetrics.slotWidth / 2;
     const stride = horizontalTrackMetrics.stride;
     for (let idx = minIdx; idx <= maxIdx; idx += 1) {
+      const offsetPx = idx * stride;
       slides.push({
         slideIdx: idx,
         isActive: idx === activeHorizontalSlideIdx,
         isEndCard: idx === endIdx,
         group: idx < horizontalGroups.length ? horizontalGroups[idx] : null,
-        leftCss: `calc(50% - ${halfSlot}px - ${idx * stride}px)`,
+        leftCss: isRtl
+          ? `calc(50% - ${halfSlot}px - ${offsetPx}px)`
+          : `calc(50% - ${halfSlot}px + ${offsetPx}px)`,
       });
     }
     return slides;
@@ -1050,6 +1055,7 @@
           0,
           Math.min(Math.max(0, horizontalGroups.length - 1), Math.floor(anchorPage / perGroup))
         );
+        syncHorizontalViewportSize(true);
         updateFocusNow();
         return;
       }
@@ -1395,10 +1401,12 @@
           }
         }
         if (horizontalDragging) {
-          const atRightStartEdge = activeHorizontalSlideIdx === 0 && dx < 0;
-          const atLeftEndEdge = activeHorizontalSlideIdx === horizontalEndSlideIdx && dx > 0;
+          const atStartBoundary =
+            activeHorizontalSlideIdx === 0 && (isRtl ? dx < 0 : dx > 0);
+          const atEndBoundary =
+            activeHorizontalSlideIdx === horizontalEndSlideIdx && (isRtl ? dx > 0 : dx < 0);
           horizontalDragOffsetPx =
-            atRightStartEdge || atLeftEndEdge ? Math.round(dx * 0.28) : Math.round(dx);
+            atStartBoundary || atEndBoundary ? Math.round(dx * 0.28) : Math.round(dx);
         }
         return;
       }
@@ -1465,12 +1473,11 @@
       const distThreshold = Math.min(84, horizontalTrackMetrics.stride * 0.18);
       const velocity = Math.abs(dx) / Math.max(1, elapsed);
       if (Math.abs(dx) >= distThreshold || (Math.abs(dx) >= 28 && velocity >= 0.35)) {
-        // Strict RTL track: dragging RIGHT pulls left peeking Next Page into center (+1);
-        // dragging LEFT pulls right peeking Previous Page into center (-1).
-        if (dx > 0) {
-          stepHorizontalGroup(1, false);
-        } else if (activeHorizontalSlideIdx > 0 || activeChapter?.prev) {
-          stepHorizontalGroup(-1, false);
+        // Dragging RIGHT (`dx > 0`) pulls the left peeking slide into center:
+        // in RTL that is Next (+1); in LTR that is Previous (-1).
+        const step: 1 | -1 = dx > 0 ? (isRtl ? 1 : -1) : isRtl ? -1 : 1;
+        if (step > 0 || activeHorizontalSlideIdx > 0 || activeChapter?.prev) {
+          stepHorizontalGroup(step, false);
         }
       }
       return;
@@ -1504,8 +1511,8 @@
       return;
     }
     if (dismissHorizontalOverlayIfOpen()) return;
-    // Left Zone (~27% width): Advances to Next Page (slides RTL track right, left peek -> center).
-    stepHorizontalGroup(1, false);
+    // Left Zone (~27% width): brings left peeking slide into center (RTL: Next, LTR: Prev).
+    stepHorizontalGroup(isRtl ? 1 : -1, false);
   }
 
   function handleHorizontalRightZoneClick(e: MouseEvent) {
@@ -1516,8 +1523,8 @@
       return;
     }
     if (dismissHorizontalOverlayIfOpen()) return;
-    // Right Zone (~27% width): Returns to Previous Page (slides RTL track left, right peek -> center).
-    stepHorizontalGroup(-1, false);
+    // Right Zone (~27% width): brings right peeking slide into center (RTL: Prev, LTR: Next).
+    stepHorizontalGroup(isRtl ? -1 : 1, false);
   }
 
   function handleHorizontalCenterZoneClick(e: MouseEvent) {
@@ -2002,13 +2009,12 @@
     }
 
     if (isHorizontal) {
-      // Strict RTL horizontal bindings: ArrowLeft = Next Page, ArrowRight = Previous Page.
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        stepHorizontalGroup(1, e.repeat);
+        stepHorizontalGroup(isRtl ? 1 : -1, e.repeat);
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        stepHorizontalGroup(-1, e.repeat);
+        stepHorizontalGroup(isRtl ? -1 : 1, e.repeat);
       } else if (e.key === "PageDown" || e.key === " ") {
         e.preventDefault();
         stepHorizontalGroup(e.shiftKey ? -1 : 1, e.repeat);
@@ -2079,6 +2085,12 @@
     const clamped = Math.max(1, Math.min(8, n));
     settingsStore.update((d) => {
       d.reader.horizontal.pagesPerGroup = clamped;
+    });
+  }
+
+  function setHorizontalDirection(dir: HorizontalDirection) {
+    settingsStore.update((d) => {
+      d.reader.horizontal.direction = dir;
     });
   }
 
@@ -2384,7 +2396,7 @@
             <div class="font-semibold">{t.readerCatLayout}</div>
             <div class="truncate text-[10px]" style="color: var(--text-muted);">
               {isHorizontal
-                ? `${t.modeHorizontal} · RTL · ${hCfg.pagesPerGroup}x`
+                ? `${t.modeHorizontal} · ${hCfg.direction.toUpperCase()} · ${hCfg.pagesPerGroup}x`
                 : `${t.modeVertical} · ${effectiveNoGap ? t.noGapModeLabel : `${effectiveVerticalGapPx}px`}`}
             </div>
           </div>
@@ -2423,14 +2435,26 @@
             </div>
 
             {#if isHorizontal}
-              <div class="flex items-center justify-between gap-2">
+              <div class="flex flex-col gap-1.5">
                 <span class="font-medium">{t.horizontalDirLabel}</span>
-                <span
-                  class="rounded-md border px-2 py-0.5 text-[11px] font-semibold"
-                  style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
-                >
-                  {t.dirRtl}
-                </span>
+                <div class="grid grid-cols-2 gap-1.5">
+                  {#each [["ltr", t.dirLtr], ["rtl", t.dirRtl]] as [val, label] (val)}
+                    <button
+                      type="button"
+                      onclick={() => setHorizontalDirection(val as HorizontalDirection)}
+                      class="rounded-lg border py-1.5 font-medium"
+                      style="border-color: {hCfg.direction === val
+                        ? 'var(--accent)'
+                        : 'var(--border)'}; background-color: {hCfg.direction === val
+                        ? 'var(--accent-soft)'
+                        : 'var(--surface-subtle)'}; color: {hCfg.direction === val
+                        ? 'var(--accent)'
+                        : 'var(--text)'};"
+                    >
+                      {label}
+                    </button>
+                  {/each}
+                </div>
               </div>
 
               <div class="flex flex-col gap-1.5">
@@ -3064,9 +3088,9 @@
                   </div>
                 </div>
               {:else if slide.group}
-                <!-- Page Container (Strict RTL Spread Order + Subtle Bottom-Left Page Badge) -->
+                <!-- Page Container (Respects LTR/RTL Spread Order + Subtle Bottom-Left Page Badge) -->
                 <div
-                  dir="rtl"
+                  dir={isRtl ? "rtl" : "ltr"}
                   data-group-key={`${activeChapter.url}:hg:${slide.group.groupIdx}`}
                   class="relative flex h-full w-full items-center justify-center"
                   style="gap: {hCfg.pageGapPx}px;"
@@ -3111,11 +3135,11 @@
       <!-- Scoped 3-Zone Invisible Interactive Hitboxes (Horizontal Mode Only; disabled while zoomed) -->
       {#if zoomScale <= 1.01 && !horizontalAtEnd}
         <div class="pointer-events-none absolute inset-0 z-10 flex">
-          <!-- Left Zone (~27%): Next Page (slides RTL track right, bringing left peek to center) -->
+          <!-- Left Zone (~27%): RTL = Next Page, LTR = Previous Page -->
           <div
             role="button"
             tabindex="-1"
-            aria-label={t.zoneNextPageLabel}
+            aria-label={isRtl ? t.zoneNextPageLabel : t.zonePrevPageLabel}
             onclick={handleHorizontalLeftZoneClick}
             class="pointer-events-auto h-full w-[27%] cursor-pointer"
           ></div>
@@ -3127,23 +3151,23 @@
             onclick={handleHorizontalCenterZoneClick}
             class="pointer-events-auto h-full flex-1 cursor-default"
           ></div>
-          <!-- Right Zone (~27%): Previous Page (slides RTL track left, bringing right peek to center) -->
+          <!-- Right Zone (~27%): RTL = Previous Page, LTR = Next Page -->
           <div
             role="button"
             tabindex="-1"
-            aria-label={t.zonePrevPageLabel}
+            aria-label={isRtl ? t.zonePrevPageLabel : t.zoneNextPageLabel}
             onclick={handleHorizontalRightZoneClick}
             class="pointer-events-auto h-full w-[27%] cursor-pointer"
           ></div>
         </div>
       {:else if zoomScale <= 1.01 && horizontalAtEnd}
-        <!-- On End-of-Chapter card: keep card buttons clickable; right peeking edge returns to last page -->
+        <!-- On End-of-Chapter card: keep card buttons clickable; peeking last-page edge returns to final page -->
         <div
           role="button"
           tabindex="-1"
           aria-label={t.zonePrevPageLabel}
-          onclick={handleHorizontalRightZoneClick}
-          class="absolute top-0 right-0 bottom-0 z-10 w-[20%] cursor-pointer"
+          onclick={isRtl ? handleHorizontalRightZoneClick : handleHorizontalLeftZoneClick}
+          class="absolute top-0 bottom-0 z-10 w-[20%] cursor-pointer {isRtl ? 'right-0' : 'left-0'}"
         ></div>
       {/if}
     {:else}

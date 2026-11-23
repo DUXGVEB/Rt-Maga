@@ -286,10 +286,24 @@ export function computeHorizontalTrackMetrics(
 
 /**
  * Returns the screen-space center X offset (in px relative to viewport center) of `slideIdx`
- * inside a strict Right-to-Left (RTL) horizontal track:
+ * inside a Horizontal center-focus track for either `"rtl"` or `"ltr"` reading direction:
  * - `slideIdx === activeSlideIdx` -> `0` (dead center)
- * - `slideIdx < activeSlideIdx` (Previous pages) -> positive (to the RIGHT)
- * - `slideIdx > activeSlideIdx` (Next pages & End-of-Chapter card) -> negative (to the LEFT)
+ * - In `"rtl"`: Previous pages sit RIGHT (`+`), Next pages & End Card sit LEFT (`-`).
+ * - In `"ltr"`: Previous pages sit LEFT (`-`), Next pages & End Card sit RIGHT (`+`).
+ */
+export function computeHorizontalSlideOffset(
+  slideIdx: number,
+  activeSlideIdx: number,
+  stride: number,
+  direction: "ltr" | "rtl",
+  dragOffsetPx = 0
+): number {
+  const dirSign = direction === "rtl" ? 1 : -1;
+  return dirSign * (activeSlideIdx - slideIdx) * stride + dragOffsetPx;
+}
+
+/**
+ * Shorthand for strict Right-to-Left (RTL) horizontal slide offset.
  */
 export function computeHorizontalRtlSlideOffset(
   slideIdx: number,
@@ -297,5 +311,5 @@ export function computeHorizontalRtlSlideOffset(
   stride: number,
   dragOffsetPx = 0
 ): number {
-  return (activeSlideIdx - slideIdx) * stride + dragOffsetPx;
+  return computeHorizontalSlideOffset(slideIdx, activeSlideIdx, stride, "rtl", dragOffsetPx);
 }
