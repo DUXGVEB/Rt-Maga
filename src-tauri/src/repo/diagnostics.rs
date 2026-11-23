@@ -25,11 +25,17 @@ pub(crate) struct DiagnosticLogEntry {
     pub source: Option<String>,
     pub chapter_url: Option<String>,
     pub stack_trace: Option<String>,
+    pub failed_url: Option<String>,
+    pub resolved_url: Option<String>,
+    pub http_status: Option<i64>,
+    pub adapter: Option<String>,
+    pub parsing_stage: Option<String>,
+    pub api_error: Option<String>,
 }
 
 /// Input parameters for recording a new diagnostic entry.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub(crate) struct NewDiagnosticLog {
     pub level: String,
     pub category: String,
@@ -38,6 +44,12 @@ pub(crate) struct NewDiagnosticLog {
     pub source: Option<String>,
     pub chapter_url: Option<String>,
     pub stack_trace: Option<String>,
+    pub failed_url: Option<String>,
+    pub resolved_url: Option<String>,
+    pub http_status: Option<i64>,
+    pub adapter: Option<String>,
+    pub parsing_stage: Option<String>,
+    pub api_error: Option<String>,
 }
 
 /// Scrubs credentials, bearer tokens, cookies, and sensitive query parameters from log text.
@@ -64,18 +76,19 @@ pub(crate) fn redact_sensitive(input: &str) -> String {
     }
     out.push_str(rest);
 
-    // Mask common key=value secret patterns case-insensitively without regex allocation overhead.
     let mut sanitized = out;
     for secret_key in [
         "password=",
         "passwd=",
         "token=",
         "authorization:",
+        "bearer ",
         "cookie:",
         "set-cookie:",
         "api_key=",
         "apikey=",
         "secret=",
+        "session=",
     ] {
         sanitized = redact_after_marker(&sanitized, secret_key);
     }
@@ -150,11 +163,17 @@ impl Database {
         let source = sanitize_opt(entry.source.as_deref());
         let chapter_url = sanitize_opt(entry.chapter_url.as_deref());
         let stack_trace = sanitize_opt(entry.stack_trace.as_deref());
+        let failed_url = sanitize_opt(entry.failed_url.as_deref().or(entry.chapter_url.as_deref()));
+        let resolved_url = sanitize_opt(entry.resolved_url.as_deref());
+        let adapter = sanitize_opt(entry.adapter.as_deref());
+        let parsing_stage = sanitize_opt(entry.parsing_stage.as_deref());
+        let api_error = sanitize_opt(entry.api_error.as_deref());
 
         let res = sqlx::query(
             "INSERT INTO diagnostic_log
-                (created_at, level, category, message, detail, source, chapter_url, stack_trace)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (created_at, level, category, message, detail, source, chapter_url, stack_trace,
+                 failed_url, resolved_url, http_status, adapter, parsing_stage, api_error)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(now)
         .bind(level)
@@ -164,6 +183,12 @@ impl Database {
         .bind(source)
         .bind(chapter_url)
         .bind(stack_trace)
+        .bind(failed_url)
+        .bind(resolved_url)
+        .bind(entry.http_status)
+        .bind(adapter)
+        .bind(parsing_stage)
+        .bind(api_error)
         .execute(self.pool())
         .await?;
 

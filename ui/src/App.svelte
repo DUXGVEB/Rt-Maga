@@ -26,6 +26,7 @@
   import { updatesStore } from "./lib/stores/updates.svelte";
   import type { FloatingScreenKey } from "./lib/types";
   import Bookmarks from "./pages/Bookmarks.svelte";
+  import Browse from "./pages/Browse.svelte";
   import History from "./pages/History.svelte";
   import Home from "./pages/Home.svelte";
   import Manga from "./pages/Manga.svelte";
@@ -81,11 +82,21 @@
       forwardClientError("ui_rejection", msg, detail);
     };
 
+    const onGlobalKeydown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || deviceEnv.isAndroid) return;
+      if (e.key === "F11") {
+        e.preventDefault();
+        void deviceEnv.toggleDesktopFullscreen();
+      }
+    };
+
     window.addEventListener("error", onWindowError);
     window.addEventListener("unhandledrejection", onUnhandledRejection);
+    window.addEventListener("keydown", onGlobalKeydown);
     return () => {
       window.removeEventListener("error", onWindowError);
       window.removeEventListener("unhandledrejection", onUnhandledRejection);
+      window.removeEventListener("keydown", onGlobalKeydown);
     };
   });
 
@@ -95,6 +106,7 @@
 
   $effect(() => {
     void router.current.name;
+    void router.navPulse;
     showMainScrollTop = false;
     if (mainEl && !isReader) {
       mainEl.scrollTop = 0;
@@ -215,6 +227,8 @@
 
       {#if router.current.name === "home"}
         <Home />
+      {:else if router.current.name === "browse"}
+        <Browse url={router.current.url} initialCatalog={router.current.initialCatalog} />
       {:else if router.current.name === "bookmarks"}
         <Bookmarks />
       {:else if router.current.name === "manga"}
@@ -246,14 +260,16 @@
 
     <!-- Mobile Bottom Navigation: Home | Bookmarks | History (double-tap resume) | Settings -->
     <nav
-      class="fixed right-0 bottom-0 left-0 z-20 flex items-center justify-around border-t py-1.5 backdrop-blur-md md:hidden"
-      style="padding-bottom: max(0.375rem, var(--safe-bottom)); padding-left: var(--safe-left); padding-right: var(--safe-right); background-color: color-mix(in srgb, var(--surface) 95%, transparent); border-color: var(--border);"
+      class="fixed right-0 bottom-0 left-0 z-20 flex items-center justify-around border-t py-1.5 md:hidden"
+      style="padding-bottom: max(0.375rem, var(--safe-bottom)); padding-left: var(--safe-left); padding-right: var(--safe-right); background-color: var(--surface); border-color: var(--border);"
     >
       <button
         type="button"
         onclick={() => router.goHome()}
         class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
-        style="color: {router.current.name === 'home' || router.current.name === 'manga'
+        style="color: {router.current.name === 'home' ||
+        router.current.name === 'manga' ||
+        router.current.name === 'browse'
           ? 'var(--accent)'
           : 'var(--text-muted)'};"
       >

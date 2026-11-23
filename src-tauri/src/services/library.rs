@@ -1,6 +1,6 @@
 //! Manga resolution, detail loading, and reading history workflows.
 
-use mangacore::{Resolved, normalize_url};
+use mangacore::{CatalogPage, RecognitionDiagnostic, Resolved, UrlKind, normalize_url};
 use serde::Serialize;
 
 use crate::error::AppError;
@@ -30,6 +30,10 @@ pub(crate) struct ChapterRefView {
     pub number: Option<f64>,
     pub idx: i64,
     pub read: bool,
+    pub volume: Option<String>,
+    pub published_at: Option<String>,
+    pub language: Option<String>,
+    pub source_id: Option<String>,
 }
 
 /// Reading progress snapshot attached to a manga view.
@@ -64,6 +68,18 @@ pub(crate) struct MangaView {
     pub reader_mode_override: Option<String>,
     pub detected_webtoon: bool,
     pub latest_chapter_name: Option<String>,
+    pub source_id: Option<String>,
+    pub canonical_url: Option<String>,
+    pub alt_titles: Vec<String>,
+    pub original_title: Option<String>,
+    pub authors: Vec<String>,
+    pub artists: Vec<String>,
+    pub description: Option<String>,
+    pub genres: Vec<String>,
+    pub tags: Vec<String>,
+    pub status: Option<String>,
+    pub language: Option<String>,
+    pub available_languages: Vec<String>,
     pub chapters: Vec<ChapterRefView>,
     pub progress: Option<ProgressView>,
 }
@@ -80,12 +96,64 @@ pub(crate) struct HiddenMangaView {
     pub latest_chapter_name: Option<String>,
 }
 
-/// Response returned when the user pastes any manga or chapter URL.
+/// Single manga entry extracted from a website homepage, catalog, category, or search page.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CatalogEntryView {
+    pub url: String,
+    pub title: String,
+    pub alt_titles: Vec<String>,
+    pub cover_token: Option<String>,
+    pub latest_chapter: Option<String>,
+    pub status: Option<String>,
+    pub genres: Vec<String>,
+    pub source_id: Option<String>,
+}
+
+/// Category or navigation shortcut extracted from a website catalog/homepage.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NavLinkView {
+    pub label: String,
+    pub url: String,
+    pub kind: UrlKind,
+}
+
+/// Pagination metadata for in-app catalog browsing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PaginationView {
+    pub current_page: u32,
+    pub total_pages: Option<u32>,
+    pub prev_url: Option<String>,
+    pub next_url: Option<String>,
+}
+
+/// Resolved catalog/homepage/search view sent to the Svelte Browse page.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CatalogPageView {
+    pub url: String,
+    pub site: String,
+    pub site_name: String,
+    pub title: String,
+    pub url_kind: UrlKind,
+    pub query: Option<String>,
+    pub search_url_template: Option<String>,
+    pub entries: Vec<CatalogEntryView>,
+    pub categories: Vec<NavLinkView>,
+    pub pagination: PaginationView,
+}
+
+/// Response returned when the user submits any homepage, catalog, search, manga, or chapter URL.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ResolveResponse {
-    pub manga: MangaView,
+    pub kind: String,
+    pub manga: Option<MangaView>,
     pub start_at: Option<ChapterRefView>,
+    pub catalog: Option<CatalogPageView>,
+    pub diagnostic: RecognitionDiagnostic,
 }
 
 /// Reading history entry rendered on Home and History pages.
@@ -163,19 +231,31 @@ pub(crate) async fn resolve_url(
     raw_url: &str,
 ) -> Result<ResolveResponse, AppError> {
     let policy = state.current_settings().await.headless_policy();
-    let resolved = match state.registry.resolve(raw_url, policy).await {
-        Ok(r) => r,
-        Err(err) => {
+    let (resolved, diagnostic) = match state
+        .registry
+        .resolve_with_diagnostics(raw_url, policy)
+        .await
+    {
+        Ok(pair) => pair,
+        Err(boxed) => {
+            let (err, diag) = *boxed;
             let app_err = AppError::from(err);
             let _ = state
                 .db
                 .record_diagnostic_log(&NewDiagnosticLog {
                     level: "error".to_owned(),
                     category: app_err.category().to_owned(),
-                    message: "Failed to resolve pasted manga/chapter URL".to_owned(),
-                    detail: Some(app_err.to_string()),
-                    source: None,
+                    message: format!("Failed to resolve URL ({:?})", diag.status),
+                    detail: Some(diag.detail.clone()),
+                    source: diag.website.clone(),
                     chapter_url: Some(raw_url.to_owned()),
+                    failed_url: Some(diag.submitted_url.clone()),
+                    resolved_url: diag.resolved_url.clone(),
+                    http_status: diag.http_status.map(i64::from),
+                    adapter: diag.adapter.clone(),
+                    parsing_stage: Some(diag.stage.clone()),
+                    api_error: matches!(app_err, AppError::ApiFailure { .. })
+                        .then(|| app_err.to_string()),
                     stack_trace: None,
                 })
                 .await;
@@ -183,37 +263,109 @@ pub(crate) async fn resolve_url(
         }
     };
 
-    let (manga, start_chapter) = match resolved {
-        Resolved::Manga(m) => (m, None),
-        Resolved::Chapter { manga, at } => (manga, Some(at)),
-        _ => {
-            return Err(AppError::Internal {
-                message: "unexpected resolve variant".to_owned(),
-            });
-        }
-    };
-
-    let manga_id = state.db.upsert_manga(&manga).await?;
-    let view = build_manga_view(state, manga_id).await?;
-    let start_at = start_chapter.map(|target| {
-        let target_norm = target.url.as_str().trim_end_matches('/');
-        view.chapters
-            .iter()
-            .find(|c| c.url.trim_end_matches('/') == target_norm)
-            .cloned()
-            .unwrap_or_else(|| ChapterRefView {
-                url: target.url.into(),
-                name: target.name,
-                number: target.number.map(f64::from),
-                idx: 0,
-                read: false,
+    match resolved {
+        Resolved::Catalog(cat) => Ok(ResolveResponse {
+            kind: "catalog".to_owned(),
+            manga: None,
+            start_at: None,
+            catalog: Some(map_catalog_view(*cat, &state.proxy_key)),
+            diagnostic,
+        }),
+        Resolved::Manga(manga) => {
+            let manga_id = state.db.upsert_manga(&manga).await?;
+            let view = build_manga_view(state, manga_id).await?;
+            Ok(ResolveResponse {
+                kind: "manga".to_owned(),
+                manga: Some(view),
+                start_at: None,
+                catalog: None,
+                diagnostic,
             })
-    });
+        }
+        Resolved::Chapter { manga, at } => {
+            let manga_id = state.db.upsert_manga(&manga).await?;
+            let view = build_manga_view(state, manga_id).await?;
+            let target_norm = at.url.as_str().trim_end_matches('/');
+            let matched = view
+                .chapters
+                .iter()
+                .find(|c| c.url.trim_end_matches('/') == target_norm)
+                .cloned()
+                .unwrap_or_else(|| ChapterRefView {
+                    url: at.url.into(),
+                    name: at.name,
+                    number: at.number.map(f64::from),
+                    idx: 0,
+                    read: false,
+                    volume: at.volume,
+                    published_at: at.published_at,
+                    language: at.language,
+                    source_id: at.source_id,
+                });
+            Ok(ResolveResponse {
+                kind: "chapter".to_owned(),
+                manga: Some(view),
+                start_at: Some(matched),
+                catalog: None,
+                diagnostic,
+            })
+        }
+        _ => Err(AppError::Internal {
+            message: "unexpected resolve variant".to_owned(),
+        }),
+    }
+}
 
-    Ok(ResolveResponse {
-        manga: view,
-        start_at,
-    })
+fn map_catalog_view(cat: CatalogPage, proxy_key: &[u8; 32]) -> CatalogPageView {
+    let site_key = cat.site.as_storage_key();
+    let referer = cat.url.as_str();
+    let entries =
+        cat.entries
+            .into_iter()
+            .map(|entry| {
+                let cover_token = entry.cover.as_ref().map(|c| {
+                    encode_cover_token(c.as_str(), referer, None, Some(&site_key), proxy_key)
+                });
+                CatalogEntryView {
+                    url: entry.url.into(),
+                    title: entry.title,
+                    alt_titles: entry.alt_titles,
+                    cover_token,
+                    latest_chapter: entry.latest_chapter,
+                    status: entry.status,
+                    genres: entry.genres,
+                    source_id: entry.source_id,
+                }
+            })
+            .collect();
+
+    let categories = cat
+        .categories
+        .into_iter()
+        .map(|nav| NavLinkView {
+            label: nav.label,
+            url: nav.url.into(),
+            kind: nav.kind,
+        })
+        .collect();
+
+    CatalogPageView {
+        url: cat.url.into(),
+        site: site_key,
+        site_name: cat.site_name,
+        title: cat.title,
+        url_kind: cat.url_kind,
+        query: cat.query,
+        search_url_template: cat.search_url_template,
+        entries,
+        categories,
+        pagination: PaginationView {
+            current_page: cat.pagination.current_page,
+            total_pages: cat.pagination.total_pages,
+            prev_url: cat.pagination.prev_url.map(Into::into),
+            next_url: cat.pagination.next_url.map(Into::into),
+        },
+    }
 }
 
 /// Loads a stored manga by ID, optionally refreshing its chapter list from the web first.
@@ -249,17 +401,22 @@ pub(crate) async fn get_manga(
                         detail: Some(app_err.to_string()),
                         source: Some(row.site.clone()),
                         chapter_url: Some(row.url.clone()),
-                        stack_trace: None,
+                        failed_url: Some(row.url.clone()),
+                        http_status: app_err.http_status().map(i64::from),
+                        parsing_stage: Some("manga_refresh".to_owned()),
+                        ..NewDiagnosticLog::default()
                     })
                     .await;
                 return Err(app_err);
             }
         };
-        let _ = state
-            .db
-            .upsert_manga_with_id(Some(manga_id), resolved.manga())
-            .await?;
-        state.db.clear_has_new(manga_id).await?;
+        if let Some(refreshed_manga) = resolved.as_manga() {
+            let _ = state
+                .db
+                .upsert_manga_with_id(Some(manga_id), refreshed_manga)
+                .await?;
+            state.db.clear_has_new(manga_id).await?;
+        }
     }
 
     build_manga_view(state, manga_id).await
@@ -540,6 +697,11 @@ async fn build_manga_view(state: &AppState, manga_id: i64) -> Result<MangaView, 
     ))
 }
 
+fn parse_json_vec(raw: Option<String>) -> Vec<String> {
+    raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+}
+
 #[expect(
     clippy::fn_params_excessive_bools,
     reason = "internal view mapper receiving boolean display flags"
@@ -572,6 +734,18 @@ fn map_manga_view(
         reader_mode_override: row.reader_mode_override,
         detected_webtoon: row.detected_webtoon != 0,
         latest_chapter_name: row.latest_chapter_name,
+        source_id: row.source_id,
+        canonical_url: row.canonical_url,
+        alt_titles: parse_json_vec(row.alt_titles_json),
+        original_title: row.original_title,
+        authors: parse_json_vec(row.authors_json),
+        artists: parse_json_vec(row.artists_json),
+        description: row.description,
+        genres: parse_json_vec(row.genres_json),
+        tags: parse_json_vec(row.tags_json),
+        status: row.status,
+        language: row.language,
+        available_languages: parse_json_vec(row.available_languages_json),
         chapters: chapters
             .into_iter()
             .map(|c| ChapterRefView {
@@ -580,6 +754,10 @@ fn map_manga_view(
                 number: c.number,
                 idx: c.idx,
                 read: c.read != 0,
+                volume: c.volume,
+                published_at: c.published_at,
+                language: c.language,
+                source_id: c.source_id,
             })
             .collect(),
         progress: progress.map(|p| ProgressView {

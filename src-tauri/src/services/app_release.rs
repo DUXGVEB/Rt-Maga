@@ -238,19 +238,53 @@ pub(crate) async fn check_latest_release(state: &AppState) -> Result<AppReleaseI
         .get(LATEST_RELEASE_API_URL)
         .send()
         .await
-        .map_err(|e| AppError::Network {
-            message: e.to_string(),
+        .map_err(|e| {
+            if e.is_timeout() {
+                AppError::Timeout {
+                    timeout_secs: RELEASE_CHECK_TIMEOUT.as_secs(),
+                    message: format!("Update server timed out: {e}"),
+                }
+            } else {
+                AppError::Network {
+                    message: e.to_string(),
+                }
+            }
         })?;
 
-    if !resp.status().is_success() {
-        return Err(AppError::Network {
-            message: format!("release check returned HTTP {}", resp.status().as_u16()),
+    let status = resp.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (status == reqwest::StatusCode::FORBIDDEN
+            && resp
+                .headers()
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok())
+                == Some("0"))
+    {
+        return Err(AppError::RateLimited {
+            retry_after_secs: None,
+            message: "GitHub release API rate limit reached; try again later.".to_owned(),
         });
     }
 
-    let payload: RemoteRelease = resp.json().await.map_err(|e| AppError::Network {
-        message: format!("invalid release metadata payload: {e}"),
+    if !status.is_success() {
+        return Err(AppError::HttpError {
+            status: status.as_u16(),
+            message: format!("Update server returned HTTP {}", status.as_u16()),
+        });
+    }
+
+    let payload: RemoteRelease = resp.json().await.map_err(|e| AppError::CorruptedData {
+        message: format!("Invalid release metadata payload: {e}"),
     })?;
+
+    if parse_version(&payload.tag_name).is_none() {
+        return Err(AppError::CorruptedData {
+            message: format!(
+                "Invalid release metadata: unrecognized version tag '{}'",
+                payload.tag_name
+            ),
+        });
+    }
 
     let info = build_release_info(CURRENT_APP_VERSION, &payload);
     {

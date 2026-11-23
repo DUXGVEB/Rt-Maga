@@ -157,27 +157,31 @@ mod tests {
     use super::*;
     use crate::settings::{Settings, Theme};
 
+    fn ch(url: &str, name: &str, number: Option<f32>) -> ChapterRef {
+        ChapterRef::simple(Url::parse(url).unwrap(), name.to_owned(), number)
+    }
+
     #[tokio::test]
     async fn round_trips_manga_history_and_settings() {
         let db = Database::open_in_memory().await.unwrap();
-        let manga = Manga {
-            url: Url::parse("https://example.com/series/demo-1").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Demo Manga".to_owned(),
-            cover: Some(Url::parse("https://cdn.example.com/demo.jpg").unwrap()),
-            chapters: vec![
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/demo-1-chap-1").unwrap(),
-                    name: "Chapter 1".to_owned(),
-                    number: Some(1.0),
-                },
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/demo-1-chap-2").unwrap(),
-                    name: "Chapter 2".to_owned(),
-                    number: Some(2.0),
-                },
+        let manga = Manga::minimal(
+            Url::parse("https://example.com/series/demo-1").unwrap(),
+            SiteId::generic("example.com"),
+            "Demo Manga".to_owned(),
+            Some(Url::parse("https://cdn.example.com/demo.jpg").unwrap()),
+            vec![
+                ch(
+                    "https://example.com/series/demo-1-chap-1",
+                    "Chapter 1",
+                    Some(1.0),
+                ),
+                ch(
+                    "https://example.com/series/demo-1-chap-2",
+                    "Chapter 2",
+                    Some(2.0),
+                ),
             ],
-        };
+        );
 
         let id = db.upsert_manga(&manga).await.unwrap();
         let loaded = db.get_manga_by_id(id).await.unwrap().unwrap();
@@ -251,16 +255,16 @@ mod tests {
         );
 
         // Adding multiple genuinely new chapters MUST return all of them in order.
-        updated.chapters.push(ChapterRef {
-            url: Url::parse("https://example.com/series/demo-1-chap-3").unwrap(),
-            name: "Chapter 3".to_owned(),
-            number: Some(3.0),
-        });
-        updated.chapters.push(ChapterRef {
-            url: Url::parse("https://example.com/series/demo-1-chap-4").unwrap(),
-            name: "Chapter 4".to_owned(),
-            number: Some(4.0),
-        });
+        updated.chapters.push(ch(
+            "https://example.com/series/demo-1-chap-3",
+            "Chapter 3",
+            Some(3.0),
+        ));
+        updated.chapters.push(ch(
+            "https://example.com/series/demo-1-chap-4",
+            "Chapter 4",
+            Some(4.0),
+        ));
         let discovered = db.record_update_check(id, &updated).await.unwrap();
         assert_eq!(discovered.len(), 2);
         assert_eq!(discovered[0].name, "Chapter 3");
@@ -272,28 +276,28 @@ mod tests {
         use crate::repo::bookmark::BookmarkSort;
 
         let db = Database::open_in_memory().await.unwrap();
-        let hist_only = Manga {
-            url: Url::parse("https://example.com/series/hist-only").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Alpha History".to_owned(),
-            cover: None,
-            chapters: vec![ChapterRef {
-                url: Url::parse("https://example.com/series/hist-only-1").unwrap(),
-                name: "Chapter 1".to_owned(),
-                number: Some(1.0),
-            }],
-        };
-        let bookmarked = Manga {
-            url: Url::parse("https://example.com/series/fav-manga").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Beta Bookmark".to_owned(),
-            cover: None,
-            chapters: vec![ChapterRef {
-                url: Url::parse("https://example.com/series/fav-119").unwrap(),
-                name: "Chapter 119".to_owned(),
-                number: Some(119.0),
-            }],
-        };
+        let hist_only = Manga::minimal(
+            Url::parse("https://example.com/series/hist-only").unwrap(),
+            SiteId::generic("example.com"),
+            "Alpha History".to_owned(),
+            None,
+            vec![ch(
+                "https://example.com/series/hist-only-1",
+                "Chapter 1",
+                Some(1.0),
+            )],
+        );
+        let bookmarked = Manga::minimal(
+            Url::parse("https://example.com/series/fav-manga").unwrap(),
+            SiteId::generic("example.com"),
+            "Beta Bookmark".to_owned(),
+            None,
+            vec![ch(
+                "https://example.com/series/fav-119",
+                "Chapter 119",
+                Some(119.0),
+            )],
+        );
 
         let id_hist = db.upsert_manga(&hist_only).await.unwrap();
         let id_fav = db.upsert_manga(&bookmarked).await.unwrap();
@@ -322,10 +326,12 @@ mod tests {
 
         // Multi-chapter discovery must create a concise range ("120–125") and deduplicate repeats.
         let fresh_chaps: Vec<ChapterRef> = (120..=125)
-            .map(|n| ChapterRef {
-                url: Url::parse(&format!("https://example.com/series/fav-{n}")).unwrap(),
-                name: format!("Chapter {n}"),
-                number: Some(f32::from(u8::try_from(n).unwrap())),
+            .map(|n| {
+                ChapterRef::simple(
+                    Url::parse(&format!("https://example.com/series/fav-{n}")).unwrap(),
+                    format!("Chapter {n}"),
+                    Some(f32::from(u8::try_from(n).unwrap())),
+                )
             })
             .collect();
         let row = db.get_manga_by_id(id_fav).await.unwrap().unwrap();
@@ -371,17 +377,17 @@ mod tests {
         let db_path = dir.join("rtmaga.db");
 
         let db = Database::open(&db_path).await.unwrap();
-        let manga = Manga {
-            url: Url::parse("https://example.com/series/backup-demo").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Backup Demo".to_owned(),
-            cover: None,
-            chapters: vec![ChapterRef {
-                url: Url::parse("https://example.com/series/backup-demo-chap-1").unwrap(),
-                name: "Chapter 1".to_owned(),
-                number: Some(1.0),
-            }],
-        };
+        let manga = Manga::minimal(
+            Url::parse("https://example.com/series/backup-demo").unwrap(),
+            SiteId::generic("example.com"),
+            "Backup Demo".to_owned(),
+            None,
+            vec![ch(
+                "https://example.com/series/backup-demo-chap-1",
+                "Chapter 1",
+                Some(1.0),
+            )],
+        );
         let id = db.upsert_manga(&manga).await.unwrap();
         db.save_history(
             id,
@@ -515,19 +521,23 @@ mod tests {
     async fn sync_merge_resolves_duplicates_by_chapter_progress_and_unions_read_flags() {
         let db = Database::open_in_memory().await.unwrap();
 
-        let mk_manga = |slug: &str, title: &str| Manga {
-            url: Url::parse(&format!("https://example.com/series/{slug}")).unwrap(),
-            site: SiteId::generic("example.com"),
-            title: title.to_owned(),
-            cover: None,
-            chapters: (1..=5)
-                .map(|n| ChapterRef {
-                    url: Url::parse(&format!("https://example.com/series/{slug}-chap-{n}"))
-                        .unwrap(),
-                    name: format!("Chapter {n}"),
-                    number: Some(f32::from(u8::try_from(n).unwrap())),
-                })
-                .collect(),
+        let mk_manga = |slug: &str, title: &str| {
+            Manga::minimal(
+                Url::parse(&format!("https://example.com/series/{slug}")).unwrap(),
+                SiteId::generic("example.com"),
+                title.to_owned(),
+                None,
+                (1..=5)
+                    .map(|n| {
+                        ChapterRef::simple(
+                            Url::parse(&format!("https://example.com/series/{slug}-chap-{n}"))
+                                .unwrap(),
+                            format!("Chapter {n}"),
+                            Some(f32::from(u8::try_from(n).unwrap())),
+                        )
+                    })
+                    .collect(),
+            )
         };
 
         let id_same = db
@@ -605,20 +615,22 @@ mod tests {
         use crate::repo::sync::{SyncBundle, SyncHistoryPayload, SyncMangaPayload};
 
         let db = Database::open_in_memory().await.unwrap();
-        let manga = Manga {
-            url: Url::parse("https://example.com/series/protect").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Protected Series".to_owned(),
-            cover: None,
-            chapters: (1..=5)
-                .map(|n| ChapterRef {
-                    url: Url::parse(&format!("https://example.com/series/protect-chap-{n}"))
-                        .unwrap(),
-                    name: format!("Chapter {n}"),
-                    number: Some(f32::from(u8::try_from(n).unwrap())),
+        let manga = Manga::minimal(
+            Url::parse("https://example.com/series/protect").unwrap(),
+            SiteId::generic("example.com"),
+            "Protected Series".to_owned(),
+            None,
+            (1..=5)
+                .map(|n| {
+                    ChapterRef::simple(
+                        Url::parse(&format!("https://example.com/series/protect-chap-{n}"))
+                            .unwrap(),
+                        format!("Chapter {n}"),
+                        Some(f32::from(u8::try_from(n).unwrap())),
+                    )
                 })
                 .collect(),
-        };
+        );
         let id = db.upsert_manga(&manga).await.unwrap();
         db.save_history(
             id,
@@ -694,24 +706,24 @@ mod tests {
         use crate::repo::manga::HideAction;
 
         let db = Database::open_in_memory().await.unwrap();
-        let mut series = Manga {
-            url: Url::parse("https://example.com/series/complete-demo").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Complete Demo".to_owned(),
-            cover: None,
-            chapters: vec![
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/complete-demo-1").unwrap(),
-                    name: "Chapter 1".to_owned(),
-                    number: Some(1.0),
-                },
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/complete-demo-2").unwrap(),
-                    name: "Chapter 2".to_owned(),
-                    number: Some(2.0),
-                },
+        let mut series = Manga::minimal(
+            Url::parse("https://example.com/series/complete-demo").unwrap(),
+            SiteId::generic("example.com"),
+            "Complete Demo".to_owned(),
+            None,
+            vec![
+                ch(
+                    "https://example.com/series/complete-demo-1",
+                    "Chapter 1",
+                    Some(1.0),
+                ),
+                ch(
+                    "https://example.com/series/complete-demo-2",
+                    "Chapter 2",
+                    Some(2.0),
+                ),
             ],
-        };
+        );
 
         let id = db.upsert_manga(&series).await.unwrap();
         db.save_history(
@@ -732,11 +744,11 @@ mod tests {
         assert_eq!(hist[0].is_completed, 1);
         assert_eq!(hist[0].unread_count, 1);
 
-        series.chapters.push(ChapterRef {
-            url: Url::parse("https://example.com/series/complete-demo-3").unwrap(),
-            name: "Chapter 3".to_owned(),
-            number: Some(3.0),
-        });
+        series.chapters.push(ch(
+            "https://example.com/series/complete-demo-3",
+            "Chapter 3",
+            Some(3.0),
+        ));
         let fresh = db.record_update_check(id, &series).await.unwrap();
         assert_eq!(fresh.len(), 1);
         let hist_after = db.list_history().await.unwrap();
@@ -795,8 +807,7 @@ mod tests {
             message: "Timed out".to_owned(),
             detail: Some("token=secret999".to_owned()),
             source: Some("example.com".to_owned()),
-            chapter_url: None,
-            stack_trace: None,
+            ..NewDiagnosticLog::default()
         })
         .await
         .unwrap();
@@ -818,17 +829,17 @@ mod tests {
         use crate::settings::SettingsSection;
 
         let db = Database::open_in_memory().await.unwrap();
-        let manga = Manga {
-            url: Url::parse("https://example.com/series/cache-demo").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Cache Demo".to_owned(),
-            cover: None,
-            chapters: vec![ChapterRef {
-                url: Url::parse("https://example.com/series/cache-demo-1").unwrap(),
-                name: "Chapter 1".to_owned(),
-                number: Some(1.0),
-            }],
-        };
+        let manga = Manga::minimal(
+            Url::parse("https://example.com/series/cache-demo").unwrap(),
+            SiteId::generic("example.com"),
+            "Cache Demo".to_owned(),
+            None,
+            vec![ch(
+                "https://example.com/series/cache-demo-1",
+                "Chapter 1",
+                Some(1.0),
+            )],
+        );
         let id = db.upsert_manga(&manga).await.unwrap();
         db.save_history(
             id,
@@ -918,40 +929,40 @@ mod tests {
     #[tokio::test]
     async fn single_chapter_fallback_preserves_multi_chapter_metadata_and_read_flags() {
         let db = Database::open_in_memory().await.unwrap();
-        let multi = Manga {
-            url: Url::parse("https://example.com/series/multi-guard").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Original Series Title".to_owned(),
-            cover: None,
-            chapters: vec![
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/multi-guard/chap-1").unwrap(),
-                    name: "Chapter 1".to_owned(),
-                    number: Some(1.0),
-                },
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/multi-guard/chap-2").unwrap(),
-                    name: "Chapter 2".to_owned(),
-                    number: Some(2.0),
-                },
+        let multi = Manga::minimal(
+            Url::parse("https://example.com/series/multi-guard").unwrap(),
+            SiteId::generic("example.com"),
+            "Original Series Title".to_owned(),
+            None,
+            vec![
+                ch(
+                    "https://example.com/series/multi-guard/chap-1",
+                    "Chapter 1",
+                    Some(1.0),
+                ),
+                ch(
+                    "https://example.com/series/multi-guard/chap-2",
+                    "Chapter 2",
+                    Some(2.0),
+                ),
             ],
-        };
+        );
         let id = db.upsert_manga(&multi).await.unwrap();
         db.mark_chapter_read(id, "https://example.com/series/multi-guard/chap-1")
             .await
             .unwrap();
 
-        let single_fallback = Manga {
-            url: Url::parse("https://example.com/series/multi-guard").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Original Series Title - Chapter 1".to_owned(),
-            cover: None,
-            chapters: vec![ChapterRef {
-                url: Url::parse("https://example.com/series/multi-guard/chap-1/").unwrap(),
-                name: "Chapter 1".to_owned(),
-                number: Some(1.0),
-            }],
-        };
+        let single_fallback = Manga::minimal(
+            Url::parse("https://example.com/series/multi-guard").unwrap(),
+            SiteId::generic("example.com"),
+            "Original Series Title - Chapter 1".to_owned(),
+            None,
+            vec![ch(
+                "https://example.com/series/multi-guard/chap-1/",
+                "Chapter 1",
+                Some(1.0),
+            )],
+        );
         db.upsert_manga_with_id(Some(id), &single_fallback)
             .await
             .unwrap();
@@ -971,24 +982,24 @@ mod tests {
         use crate::repo::manga::HideAction;
 
         let db = Database::open_in_memory().await.unwrap();
-        let active_series = Manga {
-            url: Url::parse("https://example.com/series/active-guard").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Active Guard".to_owned(),
-            cover: None,
-            chapters: vec![
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/active-guard/chap-1").unwrap(),
-                    name: "Chapter 1".to_owned(),
-                    number: Some(1.0),
-                },
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/active-guard/chap-2").unwrap(),
-                    name: "Chapter 2".to_owned(),
-                    number: Some(2.0),
-                },
+        let active_series = Manga::minimal(
+            Url::parse("https://example.com/series/active-guard").unwrap(),
+            SiteId::generic("example.com"),
+            "Active Guard".to_owned(),
+            None,
+            vec![
+                ch(
+                    "https://example.com/series/active-guard/chap-1",
+                    "Chapter 1",
+                    Some(1.0),
+                ),
+                ch(
+                    "https://example.com/series/active-guard/chap-2",
+                    "Chapter 2",
+                    Some(2.0),
+                ),
             ],
-        };
+        );
         let id = db.upsert_manga(&active_series).await.unwrap();
         db.save_history(
             id,
@@ -1000,17 +1011,17 @@ mod tests {
         .await
         .unwrap();
 
-        let completed_series = Manga {
-            url: Url::parse("https://example.com/series/done-series").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Done Series".to_owned(),
-            cover: None,
-            chapters: vec![ChapterRef {
-                url: Url::parse("https://example.com/series/done-series/chap-1").unwrap(),
-                name: "Chapter 1".to_owned(),
-                number: Some(1.0),
-            }],
-        };
+        let completed_series = Manga::minimal(
+            Url::parse("https://example.com/series/done-series").unwrap(),
+            SiteId::generic("example.com"),
+            "Done Series".to_owned(),
+            None,
+            vec![ch(
+                "https://example.com/series/done-series/chap-1",
+                "Chapter 1",
+                Some(1.0),
+            )],
+        );
         let done_id = db.upsert_manga(&completed_series).await.unwrap();
         db.save_history(
             done_id,
@@ -1065,24 +1076,24 @@ mod tests {
     #[tokio::test]
     async fn get_last_reading_destination_ignores_removed_history() {
         let db = Database::open_in_memory().await.unwrap();
-        let manga = Manga {
-            url: Url::parse("https://example.com/series/removed-hist").unwrap(),
-            site: SiteId::generic("example.com"),
-            title: "Removed History Series".to_owned(),
-            cover: None,
-            chapters: vec![
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/removed-hist/chap-1").unwrap(),
-                    name: "Chapter 1".to_owned(),
-                    number: Some(1.0),
-                },
-                ChapterRef {
-                    url: Url::parse("https://example.com/series/removed-hist/chap-2").unwrap(),
-                    name: "Chapter 2".to_owned(),
-                    number: Some(2.0),
-                },
+        let manga = Manga::minimal(
+            Url::parse("https://example.com/series/removed-hist").unwrap(),
+            SiteId::generic("example.com"),
+            "Removed History Series".to_owned(),
+            None,
+            vec![
+                ch(
+                    "https://example.com/series/removed-hist/chap-1",
+                    "Chapter 1",
+                    Some(1.0),
+                ),
+                ch(
+                    "https://example.com/series/removed-hist/chap-2",
+                    "Chapter 2",
+                    Some(2.0),
+                ),
             ],
-        };
+        );
         let id = db.upsert_manga(&manga).await.unwrap();
         db.save_history(
             id,
@@ -1106,5 +1117,71 @@ mod tests {
             db.get_last_reading_destination().await.unwrap().is_none(),
             "removed history item must not be resurrected by LAST_READING_KEY"
         );
+    }
+
+    #[tokio::test]
+    async fn source_id_prevents_duplicates_without_merging_similar_titles() {
+        let db = Database::open_in_memory().await.unwrap();
+        let mut first = Manga::minimal(
+            Url::parse("https://example.com/truyen-tranh/alpha-100").unwrap(),
+            SiteId::known("truyenqq"),
+            "Alpha Tale".to_owned(),
+            None,
+            vec![ch(
+                "https://example.com/truyen-tranh/alpha-100-chap-1",
+                "Ch 1",
+                Some(1.0),
+            )],
+        );
+        first.source_id = Some("truyenqq:100".to_owned());
+        first.authors = vec!["Author A".to_owned()];
+
+        let mut renamed_url = Manga::minimal(
+            Url::parse("https://example.com/truyen-tranh/alpha-renamed-100").unwrap(),
+            SiteId::known("truyenqq"),
+            "Alpha Tale".to_owned(),
+            None,
+            vec![
+                ch(
+                    "https://example.com/truyen-tranh/alpha-100-chap-1",
+                    "Ch 1",
+                    Some(1.0),
+                ),
+                ch(
+                    "https://example.com/truyen-tranh/alpha-100-chap-2",
+                    "Ch 2",
+                    Some(2.0),
+                ),
+            ],
+        );
+        renamed_url.source_id = Some("truyenqq:100".to_owned());
+
+        let mut distinct_same_title = Manga::minimal(
+            Url::parse("https://example.com/truyen-tranh/alpha-200").unwrap(),
+            SiteId::known("truyenqq"),
+            "Alpha Tale".to_owned(),
+            None,
+            vec![ch(
+                "https://example.com/truyen-tranh/alpha-200-chap-1",
+                "Ch 1",
+                Some(1.0),
+            )],
+        );
+        distinct_same_title.source_id = Some("truyenqq:200".to_owned());
+
+        let id1 = db.upsert_manga(&first).await.unwrap();
+        let id2 = db.upsert_manga(&renamed_url).await.unwrap();
+        let id3 = db.upsert_manga(&distinct_same_title).await.unwrap();
+
+        assert_eq!(
+            id1, id2,
+            "same source_id must deduplicate across URL changes"
+        );
+        assert_ne!(
+            id1, id3,
+            "different source_id must NOT be merged merely because titles match"
+        );
+        let stored = db.get_manga_by_id(id1).await.unwrap().unwrap();
+        assert_eq!(stored.authors_json.as_deref(), Some("[\"Author A\"]"));
     }
 }

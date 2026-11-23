@@ -6,7 +6,8 @@ use mangacore::{
     DohConfig, DohTestResult, NetworkProviderInfo, ProxyEndpoint, ProxyTestResult,
     network_provider_catalog, test_doh_config,
 };
-use tauri::{AppHandle, Emitter, State};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::android_env::{DeviceEnvInfo, NotificationPermissionInfo, OrientationLockReply};
@@ -406,16 +407,27 @@ pub(crate) async fn clear_diagnostic_logs(state: State<'_, Arc<AppState>>) -> Re
     state.db.clear_diagnostic_logs().await
 }
 
-/// Generates a structured, credential-free JSON diagnostic report ready for copy or file download.
-#[tauri::command]
-pub(crate) async fn export_diagnostic_logs(
-    app: AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<String, AppError> {
+/// Result returned when exporting diagnostic logs directly to a local file on disk.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SavedDiagnosticFile {
+    /// Complete filesystem path where the diagnostic report was written.
+    pub path: String,
+    /// Exact byte size written to disk.
+    pub bytes: u64,
+    /// Number of diagnostic log entries included in the exported file.
+    pub log_count: usize,
+}
+
+async fn build_diagnostic_export_json(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<(String, usize), AppError> {
     let settings = state.current_settings().await;
     let logs = state.db.list_diagnostic_logs(500).await?;
+    let log_count = logs.len();
     let cache = state.images.info().await.ok();
-    let env = crate::android_env::get_device_env(&app).ok();
+    let env = crate::android_env::get_device_env(app).ok();
 
     let payload = serde_json::json!({
         "app": "RtMaga",
@@ -431,12 +443,87 @@ pub(crate) async fn export_diagnostic_logs(
         })),
         "cache": cache,
         "settings": settings.redacted_for_diagnostics(),
-        "logCount": logs.len(),
+        "logCount": log_count,
         "logs": logs,
     });
 
-    serde_json::to_string_pretty(&payload).map_err(|e| AppError::Internal {
+    let pretty = serde_json::to_string_pretty(&payload).map_err(|e| AppError::Internal {
         message: format!("failed to serialize diagnostic bundle: {e}"),
+    })?;
+    Ok((pretty, log_count))
+}
+
+/// Generates a structured, credential-free JSON diagnostic report ready for copy or inspection.
+#[tauri::command]
+pub(crate) async fn export_diagnostic_logs(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, AppError> {
+    let (json, _) = build_diagnostic_export_json(&app, &state).await?;
+    Ok(json)
+}
+
+/// Writes a structured, credential-free JSON diagnostic log file atomically to disk and returns
+/// the exact saved file path.
+#[tauri::command]
+pub(crate) async fn save_diagnostic_logs_file(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<SavedDiagnosticFile, AppError> {
+    let (json, log_count) = build_diagnostic_export_json(&app, &state).await?;
+    let ts = crate::repo::now_unix_secs();
+    let filename = format!("rtmaga-diagnostics-{ts}.json");
+
+    let target_dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().document_dir())
+        .or_else(|_| app.path().app_local_data_dir().map(|d| d.join("logs")))
+        .map_err(|e| AppError::Internal {
+            message: format!("failed to resolve diagnostic export directory: {e}"),
+        })?;
+
+    tokio::fs::create_dir_all(&target_dir)
+        .await
+        .map_err(|e| AppError::Internal {
+            message: format!(
+                "failed to prepare export directory '{}': {e}",
+                target_dir.display()
+            ),
+        })?;
+
+    let dest_path = target_dir.join(&filename);
+    let tmp_path = target_dir.join(format!(".{filename}.tmp"));
+    let data = json.as_bytes();
+
+    if let Err(err) = tokio::fs::write(&tmp_path, data).await {
+        return Err(AppError::Internal {
+            message: format!("failed to write diagnostic log file: {err}"),
+        });
+    }
+    if let Err(err) = tokio::fs::rename(&tmp_path, &dest_path).await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(AppError::Internal {
+            message: format!(
+                "failed to finalize diagnostic log file '{}': {err}",
+                dest_path.display()
+            ),
+        });
+    }
+
+    let final_path = tokio::fs::canonicalize(&dest_path)
+        .await
+        .unwrap_or(dest_path);
+    let display_path = final_path
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_owned();
+    let bytes = u64::try_from(data.len()).unwrap_or(0);
+
+    Ok(SavedDiagnosticFile {
+        path: display_path,
+        bytes,
+        log_count,
     })
 }
 

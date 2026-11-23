@@ -3,6 +3,9 @@
 pub mod generic;
 #[cfg(feature = "headless")]
 pub mod headless;
+pub mod mangadex;
+pub mod moetruyen;
+pub mod truyenqq;
 
 use async_trait::async_trait;
 use url::Url;
@@ -10,6 +13,16 @@ use url::Url;
 use crate::error::ScrapeError;
 use crate::http::HttpClient;
 use crate::model::{Chapter, Resolved};
+
+/// Returns the built-in dedicated website adapters checked before the generic fallback.
+#[must_use]
+pub fn default_adapters() -> Vec<Box<dyn Source>> {
+    vec![
+        Box::new(mangadex::MangaDexSource),
+        Box::new(truyenqq::TruyenQQSource),
+        Box::new(moetruyen::MoeTruyenSource),
+    ]
+}
 
 /// A site adapter capable of resolving manga/chapter URLs and fetching chapter images.
 #[async_trait]

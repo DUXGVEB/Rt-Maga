@@ -142,9 +142,12 @@ pub(crate) async fn run_update_check(
 
         match state.registry.resolve(&manga_row.url, policy).await {
             Ok(resolved) => {
+                let Some(resolved_manga) = resolved.as_manga() else {
+                    continue;
+                };
                 if let Ok(discovered) = state
                     .db
-                    .record_update_check(manga_row.id, resolved.manga())
+                    .record_update_check(manga_row.id, resolved_manga)
                     .await
                     && !discovered.is_empty()
                 {

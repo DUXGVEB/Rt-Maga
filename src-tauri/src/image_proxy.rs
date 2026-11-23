@@ -212,7 +212,10 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
             detail: Some(last_detail.clone()),
             source: payload.s.clone(),
             chapter_url: Some(payload.r.clone()),
-            stack_trace: None,
+            failed_url: Some(payload.u.clone()),
+            http_status: Some(i64::from(last_status.as_u16())),
+            parsing_stage: Some("image_proxy_fetch".to_owned()),
+            ..NewDiagnosticLog::default()
         })
         .await;
 

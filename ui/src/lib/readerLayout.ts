@@ -140,3 +140,114 @@ export function computePageLoadMode(
   }
   return "idle";
 }
+
+export interface RectBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface ZoomTransform {
+  scale: number;
+  tx: number;
+  ty: number;
+}
+
+/**
+ * Clamps horizontal and vertical pan offsets so a zoomed content box (`contentRect` in unscaled
+ * viewport-relative coordinates) stays anchored cleanly inside a viewport (`vpWidth x vpHeight`)
+ * without exposing unnecessary empty margins or pushing the image off-screen.
+ */
+export function clampZoomPan(
+  tx: number,
+  ty: number,
+  scale: number,
+  vpWidth: number,
+  vpHeight: number,
+  contentRect: RectBox
+): { tx: number; ty: number } {
+  if (scale <= 1.001) {
+    return { tx: 0, ty: 0 };
+  }
+
+  const scaledW = contentRect.width * scale;
+  const scaledH = contentRect.height * scale;
+  const contentRight = contentRect.left + contentRect.width;
+  const contentBottom = contentRect.top + contentRect.height;
+
+  let clampedTx: number;
+  if (scaledW <= vpWidth) {
+    // Center the scaled content horizontally inside the viewport.
+    clampedTx = (vpWidth - scaledW) / 2 - contentRect.left * scale;
+  } else {
+    const minTx = vpWidth - contentRight * scale;
+    const maxTx = -contentRect.left * scale;
+    clampedTx = Math.max(minTx, Math.min(maxTx, tx));
+  }
+
+  let clampedTy: number;
+  if (scaledH <= vpHeight) {
+    clampedTy = (vpHeight - scaledH) / 2 - contentRect.top * scale;
+  } else {
+    const minTy = vpHeight - contentBottom * scale;
+    const maxTy = -contentRect.top * scale;
+    clampedTy = Math.max(minTy, Math.min(maxTy, ty));
+  }
+
+  return {
+    tx: Number(clampedTx.toFixed(2)),
+    ty: Number(clampedTy.toFixed(2)),
+  };
+}
+
+/**
+ * Computes the exact `(scale, tx, ty)` transform (with `transform-origin: 0 0`) that keeps the
+ * tapped/clicked image pixel anchored directly under `(pointerX, pointerY)` (viewport-relative)
+ * while enforcing viewport boundary constraints.
+ */
+export function computeAnchoredZoom(
+  pointerX: number,
+  pointerY: number,
+  current: ZoomTransform,
+  targetScale: number,
+  vpWidth: number,
+  vpHeight: number,
+  contentRect: RectBox
+): ZoomTransform {
+  if (targetScale <= 1.001) {
+    return { scale: 1, tx: 0, ty: 0 };
+  }
+
+  const safeCurScale = Math.max(0.5, current.scale);
+  // Recover unscaled point under pointer before scaling.
+  const ux = (pointerX - current.tx) / safeCurScale;
+  const uy = (pointerY - current.ty) / safeCurScale;
+
+  const rawTx = pointerX - ux * targetScale;
+  const rawTy = pointerY - uy * targetScale;
+  const clamped = clampZoomPan(rawTx, rawTy, targetScale, vpWidth, vpHeight, contentRect);
+
+  return {
+    scale: targetScale,
+    tx: clamped.tx,
+    ty: clamped.ty,
+  };
+}
+
+/**
+ * Maps user navigation speed (`1..=10`) to horizontal step cooldown in milliseconds so mouse
+ * wheel notches and held arrow keys never double-skip images while staying responsive.
+ */
+export function computeNavStepCooldownMs(speed: number): number {
+  const s = Math.max(1, Math.min(10, Math.round(speed) || 5));
+  return Math.round(320 - (s - 1) * 26);
+}
+
+/**
+ * Maps user navigation speed (`1..=10`) to vertical scroll step multiplier (`0.55x..1.85x`).
+ */
+export function computeVerticalSpeedMultiplier(speed: number): number {
+  const s = Math.max(1, Math.min(10, Math.round(speed) || 5));
+  return Number((0.55 + (s - 1) * 0.145).toFixed(3));
+}

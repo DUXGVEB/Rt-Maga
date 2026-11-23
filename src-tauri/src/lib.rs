@@ -98,6 +98,7 @@ pub fn run() {
             commands::list_diagnostic_logs,
             commands::clear_diagnostic_logs,
             commands::export_diagnostic_logs,
+            commands::save_diagnostic_logs_file,
             commands::get_network_providers,
             commands::test_doh_provider,
             commands::test_proxy,
@@ -191,6 +192,13 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     });
     app_release::spawn_startup_check(handle_for_release, state_for_release);
 
+    #[cfg(desktop)]
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(err) = window.set_fullscreen(true) {
+            warn!(%err, "failed to enter default desktop fullscreen mode on startup");
+        }
+    }
+
     Ok(())
 }
 
@@ -223,9 +231,8 @@ async fn import_pending_crash_file(db: &Database, crash_file: &std::path::Path) 
                     category: "internal".to_owned(),
                     message: "Previous session ended with an unhandled crash".to_owned(),
                     detail: Some(trimmed.to_owned()),
-                    source: None,
-                    chapter_url: None,
                     stack_trace: Some(trimmed.to_owned()),
+                    ..repo::diagnostics::NewDiagnosticLog::default()
                 })
                 .await;
         }

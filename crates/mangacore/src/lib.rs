@@ -11,6 +11,7 @@ pub mod error;
 pub mod http;
 pub mod model;
 pub mod parse;
+pub mod recognize;
 pub mod registry;
 pub mod source;
 pub mod throttle;
@@ -24,7 +25,14 @@ pub use http::{
     DomainProxyRule, DomainRuleAction, FetchedBytes, FetchedPage, HttpClient, HttpPolicy,
     ProxyConfig, ProxyEndpoint, ProxyProtocol, ProxyTestResult, normalize_url,
 };
-pub use model::{Chapter, ChapterRef, Manga, PageImage, Resolved, SiteId};
+pub use model::{
+    CatalogEntry, CatalogPage, Chapter, ChapterRef, Manga, NavLink, PageImage, PaginationInfo,
+    Resolved, SiteId,
+};
+pub use recognize::{
+    PreFetchClassification, RecognitionDiagnostic, RecognitionStatus, UrlKind,
+    classify_normalized_url, classify_url_pre_fetch, diagnostic_from_error,
+};
 pub use registry::{HeadlessPolicy, Registry};
 pub use source::Source;
 pub use throttle::{BandwidthLimiter, MAX_SPEED_LIMIT_KBPS};

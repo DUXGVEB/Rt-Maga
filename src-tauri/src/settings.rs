@@ -281,8 +281,9 @@ pub(crate) struct FloatingButtonsSettings {
     pub auto_dim_in_reader: bool,
 }
 
-const VALID_FLOATING_SCREENS: [&str; 6] = [
+const VALID_FLOATING_SCREENS: [&str; 7] = [
     "home",
+    "browse",
     "bookmarks",
     "history",
     "manga",
@@ -359,6 +360,10 @@ pub(crate) struct ReaderBehaviorSettings {
     pub toolbar_auto_hide_secs: u8,
     /// Horizontal side margin in CSS pixels for vertical reading (`0..=64 px`).
     pub vertical_margin_px: u8,
+    /// Adjustable scroll / input navigation responsiveness speed (`1..=10`, default `5`).
+    /// Controls vertical smooth scroll speed and horizontal input repeat pacing without adding
+    /// horizontal slide transitions.
+    pub navigation_speed: u8,
 }
 
 impl Default for ReaderBehaviorSettings {
@@ -370,6 +375,7 @@ impl Default for ReaderBehaviorSettings {
             double_tap_action: DoubleTapAction::Zoom,
             toolbar_auto_hide_secs: 3,
             vertical_margin_px: 0,
+            navigation_speed: 5,
         }
     }
 }
@@ -578,6 +584,7 @@ impl Settings {
                 self.reader.behavior.toolbar_auto_hide_secs.clamp(2, 15)
             };
         self.reader.behavior.vertical_margin_px = self.reader.behavior.vertical_margin_px.min(64);
+        self.reader.behavior.navigation_speed = self.reader.behavior.navigation_speed.clamp(1, 10);
 
         // Sanitize floating controls screens & bounds.
         let mut clean_screens: Vec<String> = Vec::with_capacity(VALID_FLOATING_SCREENS.len());
@@ -647,6 +654,7 @@ impl Settings {
                 "orientationLock": self.reader.orientation_lock,
                 "verticalNoGap": self.reader.vertical.no_gap_mode,
                 "verticalMarginPx": self.reader.behavior.vertical_margin_px,
+                "navigationSpeed": self.reader.behavior.navigation_speed,
                 "doubleTapAction": self.reader.behavior.double_tap_action,
                 "toolbarAutoHideSecs": self.reader.behavior.toolbar_auto_hide_secs,
                 "keepScreenOn": self.reader.behavior.keep_screen_on,

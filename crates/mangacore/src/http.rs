@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use dashmap::DashMap;
 use reqwest::cookie::Jar;
-use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, HeaderMap, HeaderValue, REFERER};
+use reqwest::header::{
+    ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, HeaderMap, HeaderValue, REFERER, RETRY_AFTER, USER_AGENT,
+};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -753,6 +755,89 @@ impl HttpClient {
         fetch_html_with_client(&direct, url, None, limiter, timeout_secs).await
     }
 
+    /// Fetches a JSON API endpoint while enforcing SSRF checks, per-host concurrency limits,
+    /// proxy/DoH routing, rate-limit detection, and structured API error reporting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError::DisallowedHost`], [`ScrapeError::DnsFailure`],
+    /// [`ScrapeError::TlsFailure`], [`ScrapeError::RateLimited`],
+    /// [`ScrapeError::AccessRestricted`], [`ScrapeError::ApiFailure`], or [`ScrapeError::Proxy`].
+    pub async fn fetch_json(
+        &self,
+        url: &Url,
+        service: &'static str,
+        user_agent_override: Option<&str>,
+    ) -> Result<FetchedPage, ScrapeError> {
+        validate_public_http_url(url)?;
+        let _permit = self.acquire_host_permit(url).await;
+
+        let limiter = &self.inner.limiter;
+        let timeout_secs = self.inner.timeout.as_secs();
+
+        if let Some((endpoint, allow_fallback)) = self.proxy_config().resolve_for_url(url) {
+            let proxy_client = match self.client_for_proxy(&endpoint) {
+                Ok(c) => c,
+                Err(err) if allow_fallback => {
+                    warn!(%err, "proxy unavailable for API request; falling back to direct mode");
+                    let direct = self.direct_client()?;
+                    return fetch_json_with_client(
+                        &direct,
+                        url,
+                        service,
+                        user_agent_override,
+                        None,
+                        limiter,
+                        timeout_secs,
+                    )
+                    .await;
+                }
+                Err(err) => return Err(err),
+            };
+
+            match fetch_json_with_client(
+                &proxy_client,
+                url,
+                service,
+                user_agent_override,
+                Some(&endpoint),
+                limiter,
+                timeout_secs,
+            )
+            .await
+            {
+                Ok(page) => return Ok(page),
+                Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
+                    warn!(%err, "proxied API request failed; falling back to direct mode");
+                    let direct = self.direct_client()?;
+                    return fetch_json_with_client(
+                        &direct,
+                        url,
+                        service,
+                        user_agent_override,
+                        None,
+                        limiter,
+                        timeout_secs,
+                    )
+                    .await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        let direct = self.direct_client()?;
+        fetch_json_with_client(
+            &direct,
+            url,
+            service,
+            user_agent_override,
+            None,
+            limiter,
+            timeout_secs,
+        )
+        .await
+    }
+
     /// Downloads raw image bytes with an explicit `Referer` header and active proxy routing.
     ///
     /// # Errors
@@ -966,6 +1051,11 @@ async fn fetch_html_with_client(
                         "proxy authentication failed (HTTP 407)".to_owned(),
                     ));
                 }
+                let retry_after = response
+                    .headers()
+                    .get(RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok());
                 let final_url = response.url().clone();
                 let raw_bytes =
                     read_bounded_bytes(response, MAX_HTML_BYTES, &final_url, limiter).await?;
@@ -987,10 +1077,7 @@ async fn fetch_html_with_client(
                     });
                 }
 
-                let err = ScrapeError::HttpStatus {
-                    status: status.as_u16(),
-                    url: final_url,
-                };
+                let err = map_http_status_err(status, &final_url, retry_after, &body);
                 if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
                     && attempt < MAX_RETRIES
                 {
@@ -1017,6 +1104,164 @@ async fn fetch_html_with_client(
         status: 500,
         url: url.clone(),
     }))
+}
+
+async fn fetch_json_with_client(
+    client: &Client,
+    url: &Url,
+    service: &'static str,
+    user_agent_override: Option<&str>,
+    proxy_ep: Option<&ProxyEndpoint>,
+    limiter: &BandwidthLimiter,
+    timeout_secs: u64,
+) -> Result<FetchedPage, ScrapeError> {
+    let mut last_err: Option<ScrapeError> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(500 * u64::from(attempt))).await;
+        }
+
+        let mut req = client.get(url.as_str()).header(ACCEPT, "application/json");
+        if let Some(ua) = user_agent_override
+            && let Ok(val) = HeaderValue::from_str(ua)
+        {
+            req = req.header(USER_AGENT, val);
+        }
+
+        match req.send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status == StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+                    return Err(ScrapeError::Proxy(
+                        "proxy authentication failed (HTTP 407)".to_owned(),
+                    ));
+                }
+                let retry_after = response
+                    .headers()
+                    .get(RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok());
+                let final_url = response.url().clone();
+                let raw_bytes =
+                    read_bounded_bytes(response, MAX_HTML_BYTES, &final_url, limiter).await?;
+                let body = String::from_utf8_lossy(&raw_bytes).into_owned();
+
+                if status.is_success() {
+                    debug!(%final_url, len = body.len(), service, "fetched json api response");
+                    return Ok(FetchedPage {
+                        final_url,
+                        html: body,
+                    });
+                }
+
+                let err = if status == StatusCode::TOO_MANY_REQUESTS {
+                    ScrapeError::RateLimited {
+                        url: final_url.as_str().to_owned(),
+                        retry_after_secs: retry_after,
+                    }
+                } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+                    let host = final_url.host_str().unwrap_or("unknown").to_owned();
+                    ScrapeError::AccessRestricted {
+                        host,
+                        url: final_url.as_str().to_owned(),
+                        status: status.as_u16(),
+                        detail: extract_api_error_snippet(&body),
+                    }
+                } else {
+                    ScrapeError::ApiFailure {
+                        service: service.to_owned(),
+                        url: final_url.as_str().to_owned(),
+                        status: Some(status.as_u16()),
+                        detail: extract_api_error_snippet(&body),
+                    }
+                };
+
+                if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
+                    && attempt < MAX_RETRIES
+                {
+                    warn!(%err, attempt, service, "transient api error, retrying");
+                    last_err = Some(err);
+                    continue;
+                }
+                return Err(err);
+            }
+            Err(err) => {
+                let retryable = err.is_timeout() || err.is_connect();
+                let mapped = map_transport_err(err, proxy_ep, url, timeout_secs);
+                if retryable && attempt < MAX_RETRIES {
+                    warn!(%mapped, attempt, service, "transient api transport error, retrying");
+                    last_err = Some(mapped);
+                    continue;
+                }
+                return Err(mapped);
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| ScrapeError::ApiFailure {
+        service: service.to_owned(),
+        url: url.as_str().to_owned(),
+        status: Some(500),
+        detail: "exhausted api retries".to_owned(),
+    }))
+}
+
+fn extract_api_error_snippet(body: &str) -> String {
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(first) = json
+            .get("errors")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+    {
+        let title = first.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let detail = first.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+        let combined = format!("{title} {detail}").trim().to_owned();
+        if !combined.is_empty() {
+            return combined;
+        }
+    }
+    let clean: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.is_empty() {
+        "empty error response".to_owned()
+    } else {
+        clean.chars().take(180).collect()
+    }
+}
+
+fn map_http_status_err(
+    status: StatusCode,
+    final_url: &Url,
+    retry_after: Option<u64>,
+    body: &str,
+) -> ScrapeError {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return ScrapeError::RateLimited {
+            url: final_url.as_str().to_owned(),
+            retry_after_secs: retry_after,
+        };
+    }
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        let host = final_url.host_str().unwrap_or("unknown").to_owned();
+        let snippet: String = body
+            .split_whitespace()
+            .take(24)
+            .collect::<Vec<_>>()
+            .join(" ");
+        return ScrapeError::AccessRestricted {
+            host,
+            url: final_url.as_str().to_owned(),
+            status: status.as_u16(),
+            detail: if snippet.is_empty() {
+                format!("HTTP {}", status.as_u16())
+            } else {
+                snippet
+            },
+        };
+    }
+    ScrapeError::HttpStatus {
+        status: status.as_u16(),
+        url: final_url.clone(),
+    }
 }
 
 async fn fetch_image_with_client(
@@ -1121,21 +1366,74 @@ fn map_transport_err(
     timeout_secs: u64,
 ) -> ScrapeError {
     if let Some(ep) = proxy_ep {
-        ScrapeError::Proxy(redact_secrets(&err.to_string(), ep))
-    } else if err.is_timeout() {
-        ScrapeError::Timeout {
+        return ScrapeError::Proxy(redact_secrets(&err.to_string(), ep));
+    }
+    if err.is_timeout() {
+        return ScrapeError::Timeout {
             url: url.clone(),
             timeout_secs,
-        }
-    } else {
-        ScrapeError::Network(err)
+        };
     }
+    let chain = collect_error_chain(&err);
+    let lower = chain.to_ascii_lowercase();
+    let host = url.host_str().unwrap_or("unknown").to_owned();
+    if lower.contains("dns error")
+        || lower.contains("failed to lookup")
+        || lower.contains("no such host")
+        || lower.contains("name or service not known")
+        || lower.contains("could not resolve")
+        || lower.contains("doh")
+    {
+        return ScrapeError::DnsFailure {
+            host,
+            url: url.as_str().to_owned(),
+            detail: chain,
+        };
+    }
+    if lower.contains("tls")
+        || lower.contains("ssl")
+        || lower.contains("handshake")
+        || lower.contains("certificate")
+        || lower.contains("schannel")
+        || lower.contains("rustls")
+        || lower.contains("connection reset")
+        || lower.contains("forcibly closed")
+        || lower.contains("unexpected eof")
+    {
+        return ScrapeError::TlsFailure {
+            host,
+            url: url.as_str().to_owned(),
+            detail: chain,
+        };
+    }
+    ScrapeError::Network(err)
+}
+
+fn collect_error_chain(err: &dyn std::error::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut cur = err.source();
+    let mut depth = 0;
+    while let Some(src) = cur
+        && depth < 6
+    {
+        let s = src.to_string();
+        if !parts.last().is_some_and(|p| p.contains(&s)) {
+            parts.push(s);
+        }
+        cur = src.source();
+        depth += 1;
+    }
+    parts.join(": ")
 }
 
 fn is_proxy_fallback_eligible(err: &ScrapeError) -> bool {
     matches!(
         err,
-        ScrapeError::Proxy(_) | ScrapeError::Network(_) | ScrapeError::Timeout { .. }
+        ScrapeError::Proxy(_)
+            | ScrapeError::Network(_)
+            | ScrapeError::Timeout { .. }
+            | ScrapeError::DnsFailure { .. }
+            | ScrapeError::TlsFailure { .. }
     )
 }
 
@@ -1188,14 +1486,24 @@ fn domain_matches(host: &str, rule_domain: &str) -> bool {
 /// [`ScrapeError::DisallowedHost`] if the host is local or private.
 pub fn normalize_url(raw: &str) -> Result<Url, ScrapeError> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(ScrapeError::InvalidUrl("empty url".to_owned()));
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return Err(ScrapeError::InvalidUrl(
+            "empty or whitespace-containing url".to_owned(),
+        ));
     }
 
     let with_scheme = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         trimmed.to_owned()
     } else if trimmed.starts_with("//") {
         format!("https:{trimmed}")
+    } else if trimmed.contains("://")
+        || trimmed.split_once(':').is_some_and(|(scheme, rest)| {
+            !scheme.is_empty()
+                && scheme.chars().all(|c| c.is_ascii_alphabetic())
+                && !rest.chars().next().is_some_and(|c| c.is_ascii_digit())
+        })
+    {
+        trimmed.to_owned()
     } else {
         format!("https://{trimmed}")
     };
@@ -1207,6 +1515,15 @@ pub fn normalize_url(raw: &str) -> Result<Url, ScrapeError> {
         return Err(ScrapeError::InvalidUrl(format!(
             "unsupported scheme: {}",
             url.scheme()
+        )));
+    }
+
+    if let Some(host) = url.host_str()
+        && !host.contains('.')
+        && !host.contains(':')
+    {
+        return Err(ScrapeError::InvalidUrl(format!(
+            "invalid domain name: {host}"
         )));
     }
 

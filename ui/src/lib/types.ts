@@ -25,6 +25,7 @@ export type FloatingEdge = "left" | "right";
 
 export type FloatingScreenKey =
   | "home"
+  | "browse"
   | "bookmarks"
   | "history"
   | "manga"
@@ -95,6 +96,7 @@ export interface ReaderBehaviorSettings {
   doubleTapAction: DoubleTapAction;
   toolbarAutoHideSecs: number;
   verticalMarginPx: number;
+  navigationSpeed: number;
 }
 
 export interface ReaderSettings {
@@ -295,12 +297,66 @@ export interface OrientationLockReply {
   mode: string;
 }
 
+export type UrlKind =
+  | "WEBSITE_HOME"
+  | "CATALOG_PAGE"
+  | "SEARCH_PAGE"
+  | "MANGA_DETAIL"
+  | "CHAPTER_PAGE"
+  | "IMAGE_URL"
+  | "API_ENDPOINT"
+  | "REDIRECTED_URL"
+  | "UNSUPPORTED_URL"
+  | "INVALID_URL"
+  | "BLOCKED_OR_RESTRICTED";
+
+export type RecognitionStatus =
+  | "WEBSITE_IDENTIFIED"
+  | "PAGE_TYPE_IDENTIFIED"
+  | "MANGA_IDENTIFIED"
+  | "CATALOG_IDENTIFIED"
+  | "SEARCH_RESULTS_EXTRACTED"
+  | "CHAPTER_IDENTIFIED"
+  | "IMAGE_RESOURCES_EXTRACTED"
+  | "WEBSITE_SUPPORTED_BUT_PAGE_UNRECOGNIZED"
+  | "UNSUPPORTED_WEBSITE"
+  | "INVALID_URL"
+  | "NETWORK_FAILURE"
+  | "DNS_FAILURE"
+  | "TLS_FAILURE"
+  | "API_FAILURE"
+  | "RATE_LIMITED"
+  | "HTTP_ERROR"
+  | "PARSING_FAILURE"
+  | "MISSING_METADATA"
+  | "IMAGE_EXTRACTION_FAILURE"
+  | "ACCESS_RESTRICTED"
+  | "VERIFICATION_REQUIRED";
+
+export interface RecognitionDiagnostic {
+  status: RecognitionStatus;
+  urlKind: UrlKind;
+  website: string | null;
+  adapter: string | null;
+  submittedUrl: string;
+  resolvedUrl: string | null;
+  stage: string;
+  httpStatus: number | null;
+  detail: string;
+  suggestedAction: string | null;
+  timestampUnix: number;
+}
+
 export interface ChapterRefView {
   url: string;
   name: string;
   number: number | null;
   idx: number;
   read: boolean;
+  volume: string | null;
+  publishedAt: string | null;
+  language: string | null;
+  sourceId: string | null;
 }
 
 export interface ProgressView {
@@ -327,6 +383,18 @@ export interface MangaView {
   readerModeOverride: ReaderModeOverride;
   detectedWebtoon: boolean;
   latestChapterName: string | null;
+  sourceId: string | null;
+  canonicalUrl: string | null;
+  altTitles: string[];
+  originalTitle: string | null;
+  authors: string[];
+  artists: string[];
+  description: string | null;
+  genres: string[];
+  tags: string[];
+  status: string | null;
+  language: string | null;
+  availableLanguages: string[];
   chapters: ChapterRefView[];
   progress: ProgressView | null;
 }
@@ -340,9 +408,49 @@ export interface HiddenMangaView {
   latestChapterName: string | null;
 }
 
+export interface CatalogEntryView {
+  url: string;
+  title: string;
+  altTitles: string[];
+  coverToken: string | null;
+  latestChapter: string | null;
+  status: string | null;
+  genres: string[];
+  sourceId: string | null;
+}
+
+export interface NavLinkView {
+  label: string;
+  url: string;
+  kind: UrlKind;
+}
+
+export interface PaginationView {
+  currentPage: number;
+  totalPages: number | null;
+  prevUrl: string | null;
+  nextUrl: string | null;
+}
+
+export interface CatalogPageView {
+  url: string;
+  site: string;
+  siteName: string;
+  title: string;
+  urlKind: UrlKind;
+  query: string | null;
+  searchUrlTemplate: string | null;
+  entries: CatalogEntryView[];
+  categories: NavLinkView[];
+  pagination: PaginationView;
+}
+
 export interface ResolveResponse {
-  manga: MangaView;
+  kind: "manga" | "chapter" | "catalog" | string;
+  manga: MangaView | null;
   startAt: ChapterRefView | null;
+  catalog: CatalogPageView | null;
+  diagnostic: RecognitionDiagnostic;
 }
 
 export interface ChapterView {
@@ -461,6 +569,12 @@ export interface DiagnosticLogEntry {
   source: string | null;
   chapterUrl: string | null;
   stackTrace: string | null;
+  failedUrl: string | null;
+  resolvedUrl: string | null;
+  httpStatus: number | null;
+  adapter: string | null;
+  parsingStage: string | null;
+  apiError: string | null;
 }
 
 export interface NewDiagnosticLog {
@@ -471,6 +585,18 @@ export interface NewDiagnosticLog {
   source?: string | null;
   chapterUrl?: string | null;
   stackTrace?: string | null;
+  failedUrl?: string | null;
+  resolvedUrl?: string | null;
+  httpStatus?: number | null;
+  adapter?: string | null;
+  parsingStage?: string | null;
+  apiError?: string | null;
+}
+
+export interface SavedDiagnosticFile {
+  path: string;
+  bytes: number;
+  logCount: number;
 }
 
 export interface FoundUpdate {
@@ -524,10 +650,16 @@ export type AppError =
   | { kind: "invalid_url"; message: string }
   | { kind: "unsupported_source"; host: string; message: string }
   | { kind: "timeout"; timeout_secs: number; message: string }
+  | { kind: "dns_failure"; host: string; message: string }
+  | { kind: "tls_failure"; host: string; message: string }
+  | { kind: "rate_limited"; retry_after_secs: number | null; message: string }
+  | { kind: "access_restricted"; host: string; status: number; message: string }
+  | { kind: "api_failure"; service: string; status: number | null; message: string }
   | { kind: "http_error"; status: number; message: string }
   | { kind: "network"; message: string }
   | { kind: "blocked"; host: string; url: string }
   | { kind: "not_recognized"; message: string }
+  | { kind: "missing_metadata"; message: string }
   | { kind: "missing_images"; message: string }
   | { kind: "invalid_image_format"; message: string }
   | { kind: "corrupted_data"; message: string }

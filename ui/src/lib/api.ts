@@ -33,6 +33,7 @@ import type {
   ProxyTestResult,
   ReaderModeOverride,
   ResolveResponse,
+  SavedDiagnosticFile,
   Settings,
   SettingsSection,
   SyncDecision,
@@ -80,6 +81,31 @@ export function formatAppError(
           title: t.errTimeoutTitle,
           detail: e.message,
         };
+      case "dns_failure":
+        return {
+          title: t.errDnsFailureTitle(e.host),
+          detail: e.message,
+        };
+      case "tls_failure":
+        return {
+          title: t.errTlsFailureTitle(e.host),
+          detail: e.message,
+        };
+      case "rate_limited":
+        return {
+          title: t.errRateLimitedTitle,
+          detail: e.message,
+        };
+      case "access_restricted":
+        return {
+          title: t.errAccessRestrictedTitle(e.host, e.status),
+          detail: e.message,
+        };
+      case "api_failure":
+        return {
+          title: t.errApiFailureTitle(e.service),
+          detail: e.message,
+        };
       case "http_error":
         return {
           title: t.errHttpStatusTitle(e.status),
@@ -90,6 +116,11 @@ export function formatAppError(
           title: t.errBlockedTitle(e.host),
           detail: t.errBlockedDetail,
           blockedUrl: e.url,
+        };
+      case "missing_metadata":
+        return {
+          title: t.errMissingMetadataTitle,
+          detail: e.message,
         };
       case "not_recognized":
         return {
@@ -226,6 +257,7 @@ export const api = {
     invoke<DiagnosticLogEntry[]>("list_diagnostic_logs", { limit }),
   clearDiagnosticLogs: () => invoke<void>("clear_diagnostic_logs"),
   exportDiagnosticLogs: () => invoke<string>("export_diagnostic_logs"),
+  saveDiagnosticLogsFile: () => invoke<SavedDiagnosticFile>("save_diagnostic_logs_file"),
 
   getNetworkProviders: () => invoke<NetworkProviderInfo[]>("get_network_providers"),
   testDohProvider: (config: DohConfig) => invoke<DohTestResult>("test_doh_provider", { config }),

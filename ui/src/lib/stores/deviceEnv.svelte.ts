@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "../api";
 import type { DeviceEnvInfo, OrientationLockMode } from "../types";
 
@@ -29,6 +30,7 @@ class DeviceEnvStore {
   viewportWidth = $state(typeof window !== "undefined" ? window.innerWidth : 1280);
   viewportHeight = $state(typeof window !== "undefined" ? window.innerHeight : 800);
   lastOrientationChangeAt = $state(0);
+  desktopFullscreen = $state(false);
 
   isAndroid = $derived(this.info.platform === "android");
   isMobile = $derived(this.info.platform === "android" || this.viewportWidth < 768);
@@ -38,6 +40,32 @@ class DeviceEnvStore {
 
   private initialized = false;
 
+  async syncDesktopFullscreen() {
+    if (this.isAndroid) {
+      this.desktopFullscreen = false;
+      return;
+    }
+    try {
+      this.desktopFullscreen = await getCurrentWindow().isFullscreen();
+    } catch {
+      // Standalone browser preview fallback.
+      this.desktopFullscreen = Boolean(document.fullscreenElement);
+    }
+  }
+
+  async toggleDesktopFullscreen(): Promise<boolean> {
+    if (this.isAndroid) return false;
+    try {
+      const win = getCurrentWindow();
+      const next = !(await win.isFullscreen());
+      await win.setFullscreen(next);
+      this.desktopFullscreen = next;
+      return next;
+    } catch {
+      return this.desktopFullscreen;
+    }
+  }
+
   async init() {
     if (this.initialized) return;
     this.initialized = true;
@@ -45,6 +73,9 @@ class DeviceEnvStore {
     const updateViewport = () => {
       this.viewportWidth = window.innerWidth;
       this.viewportHeight = window.innerHeight;
+      if (!this.isAndroid) {
+        void this.syncDesktopFullscreen();
+      }
     };
     window.addEventListener("resize", updateViewport);
     window.addEventListener("orientationchange", () => {
@@ -93,6 +124,8 @@ class DeviceEnvStore {
       };
       if (env.platform === "android") {
         void api.setImmersive(true).catch(() => {});
+      } else {
+        await this.syncDesktopFullscreen();
       }
     } catch {
       // Browser preview fallback.

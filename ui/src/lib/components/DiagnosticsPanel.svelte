@@ -1,6 +1,8 @@
 <script lang="ts">
   import {
     AlertCircle,
+    Check,
+    CheckCircle2,
     ChevronDown,
     ChevronRight,
     Copy,
@@ -10,16 +12,19 @@
     Trash2,
   } from "lucide-svelte";
   import { onMount } from "svelte";
-  import { api } from "../api";
+  import { api, formatAppError } from "../api";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
-  import type { DiagnosticLogEntry } from "../types";
+  import type { DiagnosticLogEntry, SavedDiagnosticFile } from "../types";
 
   let logs = $state<DiagnosticLogEntry[]>([]);
   let loading = $state(false);
   let exporting = $state(false);
   let clearing = $state(false);
   let expandedIds = $state<Record<number, boolean>>({});
+  let savedFile = $state<SavedDiagnosticFile | null>(null);
+  let exportError = $state<string | null>(null);
+  let copiedPath = $state(false);
 
   const t = $derived(settingsStore.t);
 
@@ -52,6 +57,11 @@
     });
   }
 
+  function formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
   function levelColor(level: string): string {
     switch (level) {
       case "panic":
@@ -77,25 +87,36 @@
     }
   }
 
-  async function downloadLogs() {
+  async function saveLogsToFile() {
     exporting = true;
+    exportError = null;
+    copiedPath = false;
     try {
-      const payload = await api.exportDiagnosticLogs();
-      const stamp = new Date().toISOString().slice(0, 10);
-      const blob = new Blob([payload], { type: "application/json;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `rtmaga-diagnostics-${stamp}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toasts.push(t.diagnosticsExported, "success", 2400);
-    } catch {
-      await copyLogs();
+      const result = await api.saveDiagnosticLogsFile();
+      savedFile = result;
+      toasts.push(t.diagnosticsExported, "success", 2800);
+    } catch (err) {
+      savedFile = null;
+      const formatted = formatAppError(err, settingsStore.value.language);
+      const msg = t.diagnosticsSaveFailed(formatted.detail || formatted.title);
+      exportError = msg;
+      toasts.push(msg, "error", 4000);
     } finally {
       exporting = false;
+    }
+  }
+
+  async function copySavedPath() {
+    if (!savedFile) return;
+    try {
+      await navigator.clipboard.writeText(savedFile.path);
+      copiedPath = true;
+      toasts.push(t.diagnosticsPathCopied, "success", 2200);
+      window.setTimeout(() => {
+        copiedPath = false;
+      }, 2200);
+    } catch {
+      toasts.push(t.clipboardPermissionError, "info", 2800);
     }
   }
 
@@ -144,9 +165,9 @@
       </button>
       <button
         type="button"
-        onclick={downloadLogs}
+        onclick={saveLogsToFile}
         disabled={exporting}
-        class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white"
+        class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
         style="background-color: var(--accent);"
       >
         <Download size={12} />
@@ -166,6 +187,51 @@
       {/if}
     </div>
   </div>
+
+  <!-- Explicit Exported File Path Feedback (Part 6) -->
+  {#if savedFile}
+    <div
+      class="flex flex-col gap-2 rounded-xl border p-3 text-xs"
+      style="background-color: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.4);"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-1.5 font-semibold" style="color: #10b981;">
+          <CheckCircle2 size={14} />
+          <span>{t.diagnosticsSavedTitle}</span>
+          <span class="font-normal opacity-80">({formatSize(savedFile.bytes)})</span>
+        </div>
+        <button
+          type="button"
+          onclick={copySavedPath}
+          class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium"
+          style="border-color: rgba(16, 185, 129, 0.45); background-color: var(--surface); color: var(--text);"
+        >
+          {#if copiedPath}
+            <Check size={12} style="color: #10b981;" />
+          {:else}
+            <Copy size={12} />
+          {/if}
+          <span>{t.diagnosticsCopyPathBtn}</span>
+        </button>
+      </div>
+      <div
+        class="rounded-lg border px-2.5 py-1.5 font-mono text-[11px] break-all select-all"
+        style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+      >
+        {savedFile.path}
+      </div>
+    </div>
+  {/if}
+
+  {#if exportError}
+    <div
+      class="flex items-start gap-2 rounded-xl border p-3 text-xs"
+      style="background-color: rgba(239, 68, 68, 0.08); border-color: var(--danger); color: var(--danger);"
+    >
+      <AlertCircle size={15} class="mt-0.5 shrink-0" />
+      <span class="break-words">{exportError}</span>
+    </div>
+  {/if}
 
   {#if logs.length === 0}
     <div
@@ -212,7 +278,19 @@
                 >
                   {entry.category}
                 </span>
-                {#if entry.source}
+                {#if entry.httpStatus !== null}
+                  <span
+                    class="rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                    style="background-color: var(--surface-hover); color: var(--danger);"
+                  >
+                    HTTP {entry.httpStatus}
+                  </span>
+                {/if}
+                {#if entry.adapter}
+                  <span class="truncate text-[10px]" style="color: var(--accent);">
+                    {entry.adapter}
+                  </span>
+                {:else if entry.source}
                   <span class="truncate text-[10px]" style="color: var(--text-muted);">
                     {entry.source}
                   </span>
@@ -229,15 +307,31 @@
 
           {#if open}
             <div
-              class="border-t px-3 py-2 font-mono text-[11px] break-all whitespace-pre-wrap"
+              class="flex flex-col gap-1 border-t px-3 py-2 font-mono text-[11px] break-all whitespace-pre-wrap"
               style="border-color: var(--border); color: var(--text-muted); background-color: var(--surface-subtle);"
             >
+              {#if entry.failedUrl}
+                <div>Failed URL: {entry.failedUrl}</div>
+              {/if}
+              {#if entry.resolvedUrl && entry.resolvedUrl !== entry.failedUrl}
+                <div>Resolved URL: {entry.resolvedUrl}</div>
+              {/if}
               {#if entry.chapterUrl}
-                <div>URL: {entry.chapterUrl}</div>
+                <div>Chapter URL: {entry.chapterUrl}</div>
+              {/if}
+              {#if entry.parsingStage}
+                <div>Stage: {entry.parsingStage}</div>
+              {/if}
+              {#if entry.apiError}
+                <div>API Error: {entry.apiError}</div>
               {/if}
               {#if entry.detail}
                 <div class="mt-1">{entry.detail}</div>
-              {:else}
+              {/if}
+              {#if entry.stackTrace}
+                <div class="mt-1 opacity-85">{entry.stackTrace}</div>
+              {/if}
+              {#if !entry.failedUrl && !entry.chapterUrl && !entry.parsingStage && !entry.apiError && !entry.detail && !entry.stackTrace}
                 <div>(no additional detail)</div>
               {/if}
             </div>

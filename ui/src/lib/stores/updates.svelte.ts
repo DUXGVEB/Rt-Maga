@@ -1,5 +1,6 @@
 import { api } from "../api";
 import type { FoundUpdate, UpdateProgress } from "../types";
+import { appReleaseStore } from "./appRelease.svelte";
 import { settingsStore } from "./settings.svelte";
 import { toasts } from "./toast.svelte";
 
@@ -38,21 +39,31 @@ class UpdatesStore {
   }
 
   async checkNow() {
-    if (this.checking) return;
+    if (this.checking || appReleaseStore.checking) return;
     this.checking = true;
     const t = settingsStore.t;
     try {
-      const summary = await api.checkUpdatesNow();
-      if (summary.found.length === 0) {
-        toasts.push(
-          summary.checked === 0
-            ? t.toastNoHistoryToCheck
-            : t.toastNoNewChapters(summary.checked),
-          "info"
-        );
+      // Check both manga chapter updates and application release version cleanly
+      // so both update locations explicitly notify when the app is already up to date.
+      const [chapterResult, releaseStatus] = await Promise.allSettled([
+        api.checkUpdatesNow(),
+        appReleaseStore.checkNow({ showToast: true }),
+      ]);
+
+      if (chapterResult.status === "fulfilled") {
+        const summary = chapterResult.value;
+        if (summary.found.length === 0) {
+          const msg =
+            summary.checked === 0
+              ? t.toastNoHistoryToCheck
+              : t.toastNoNewChapters(summary.checked);
+          toasts.push(msg, "info", 3000);
+        }
+      } else if (releaseStatus.status === "rejected") {
+        toasts.push(t.toastCheckFailed, "error");
+      } else {
+        toasts.push(t.toastCheckFailed, "error");
       }
-    } catch {
-      toasts.push(t.toastCheckFailed, "error");
     } finally {
       this.checking = false;
       this.progress = null;

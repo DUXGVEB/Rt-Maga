@@ -5,6 +5,7 @@ import { toasts } from "./toast.svelte";
 
 const ALL_FLOATING_SCREENS: FloatingScreenKey[] = [
   "home",
+  "browse",
   "bookmarks",
   "history",
   "manga",
@@ -56,6 +57,7 @@ export const DEFAULT_SETTINGS: Settings = {
       doubleTapAction: "zoom",
       toolbarAutoHideSecs: 3,
       verticalMarginPx: 0,
+      navigationSpeed: 5,
     },
   },
   floating: {

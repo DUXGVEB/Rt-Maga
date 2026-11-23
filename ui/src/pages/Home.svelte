@@ -4,16 +4,17 @@
   import { api } from "../lib/api";
   import LinkInput from "../lib/components/LinkInput.svelte";
   import MangaCard from "../lib/components/MangaCard.svelte";
+  import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
-  import type { CrashRecoverySession, HistoryItemView } from "../lib/types";
+  import type { CrashRecoverySession } from "../lib/types";
 
-  let history = $state<HistoryItemView[]>([]);
-  let loading = $state(true);
+  let loading = $state(!libraryCache.historyLoaded);
   let crashSession = $state<CrashRecoverySession | null>(null);
   let loadSeq = 0;
 
+  const history = $derived(libraryCache.history);
   const t = $derived(settingsStore.t);
 
   async function loadHistory(showSkeleton: boolean) {
@@ -22,11 +23,13 @@
     try {
       const items = await api.listHistory();
       if (seq !== loadSeq) return;
-      history = items;
+      libraryCache.setHistory(items);
       updatesStore.setNewCountFromHistory(items.filter((i) => i.hasNew).length);
     } catch {
       if (seq !== loadSeq) return;
-      history = [];
+      if (!libraryCache.historyLoaded) {
+        libraryCache.setHistory([]);
+      }
     } finally {
       if (seq === loadSeq) {
         loading = false;
@@ -61,7 +64,8 @@
 
   $effect(() => {
     void updatesStore.lastFound;
-    void loadHistory(history.length === 0);
+    void router.navPulse;
+    void loadHistory(!libraryCache.historyLoaded);
   });
 
   // Partition history strictly without duplicates:

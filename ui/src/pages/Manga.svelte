@@ -38,6 +38,7 @@
   let query = $state("");
   let jumpInput = $state("");
   let newestFirst = $state(true);
+  let selectedChapterLang = $state<string>("auto");
   let loadSeq = 0;
 
   const t = $derived(settingsStore.t);
@@ -107,16 +108,43 @@
     void load(id);
   });
 
+  const chapterLanguages = $derived(() => {
+    if (!manga) return [];
+    const set = new Set<string>();
+    for (const c of manga.chapters) {
+      if (c.language && c.language.trim()) {
+        set.add(c.language.trim().toLowerCase());
+      }
+    }
+    return Array.from(set).sort();
+  });
+
+  const activeChapterLang = $derived(() => {
+    const langs = chapterLanguages();
+    if (langs.length <= 1) return "all";
+    if (selectedChapterLang !== "auto") return selectedChapterLang;
+    const uiLang = settingsStore.value.language.toLowerCase();
+    if (langs.includes(uiLang)) return uiLang;
+    if (langs.includes("en")) return "en";
+    return "all";
+  });
+
   const filteredChapters = $derived(() => {
     if (!manga) return [];
+    const lang = activeChapterLang();
+    const langFiltered =
+      lang === "all"
+        ? manga.chapters
+        : manga.chapters.filter((c) => (c.language ?? "").toLowerCase() === lang);
     const q = query.trim().toLowerCase();
     const list = q
-      ? manga.chapters.filter(
+      ? langFiltered.filter(
           (c) =>
             c.name.toLowerCase().includes(q) ||
-            (c.number !== null && String(c.number).includes(q))
+            (c.number !== null && String(c.number).includes(q)) ||
+            (c.volume !== null && c.volume.toLowerCase().includes(q))
         )
-      : manga.chapters;
+      : langFiltered;
     return newestFirst ? [...list].reverse() : list;
   });
 
@@ -374,7 +402,74 @@
           </div>
 
           <h1 class="text-2xl font-bold leading-tight tracking-tight">{manga.title}</h1>
-          <div class="truncate text-xs" style="color: var(--text-muted);">{manga.url}</div>
+          {#if manga.originalTitle && manga.originalTitle.toLowerCase() !== manga.title.toLowerCase()}
+            <div class="text-xs font-medium" style="color: var(--text-muted);">
+              {manga.originalTitle}
+            </div>
+          {/if}
+          {#if manga.altTitles.length > 0}
+            <div class="text-xs leading-relaxed" style="color: var(--text-muted);">
+              <span class="font-semibold">{t.mangaAltTitlesLabel}:</span>
+              {manga.altTitles.slice(0, 4).join(" · ")}
+            </div>
+          {/if}
+
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" style="color: var(--text-muted);">
+            {#if manga.authors.length > 0}
+              <span>
+                <strong style="color: var(--text);">{t.mangaAuthorsLabel}:</strong>
+                {manga.authors.join(", ")}
+              </span>
+            {/if}
+            {#if manga.artists.length > 0 && manga.artists.join(",") !== manga.authors.join(",")}
+              <span>
+                <strong style="color: var(--text);">{t.mangaArtistsLabel}:</strong>
+                {manga.artists.join(", ")}
+              </span>
+            {/if}
+            {#if manga.status}
+              <span
+                class="rounded-md px-2 py-0.5 text-[11px] font-semibold capitalize"
+                style="background-color: var(--surface-subtle); color: var(--text);"
+              >
+                {t.mangaStatusLabel}: {manga.status}
+              </span>
+            {/if}
+          </div>
+
+          {#if manga.genres.length > 0 || manga.tags.length > 0}
+            <div class="flex flex-wrap gap-1.5 pt-0.5">
+              {#each manga.genres as genre (genre)}
+                <span
+                  class="rounded-md px-2 py-0.5 text-[11px] font-medium"
+                  style="background-color: var(--accent-soft); color: var(--accent);"
+                >
+                  {genre}
+                </span>
+              {/each}
+              {#each manga.tags.slice(0, 8) as tag (tag)}
+                <span
+                  class="rounded-md px-2 py-0.5 text-[11px]"
+                  style="background-color: var(--surface-subtle); color: var(--text-muted);"
+                >
+                  {tag}
+                </span>
+              {/each}
+            </div>
+          {/if}
+
+          {#if manga.description}
+            <p
+              class="line-clamp-4 text-xs leading-relaxed"
+              style="color: var(--text-muted);"
+            >
+              {manga.description}
+            </p>
+          {/if}
+
+          <div class="truncate text-[11px] opacity-75" style="color: var(--text-muted);">
+            {manga.canonicalUrl ?? manga.url}
+          </div>
         </div>
 
         <div class="flex flex-wrap items-center gap-3">
@@ -485,6 +580,49 @@
         </div>
       </div>
 
+      {#if chapterLanguages().length > 1}
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="text-xs font-medium" style="color: var(--text-muted);">
+            {t.mangaLangFilterLabel}:
+          </span>
+          <button
+            type="button"
+            onclick={() => {
+              selectedChapterLang = "all";
+            }}
+            class="rounded-lg border px-2.5 py-1 text-xs font-medium"
+            style="border-color: {activeChapterLang() === 'all'
+              ? 'var(--accent)'
+              : 'var(--border)'}; background-color: {activeChapterLang() === 'all'
+              ? 'var(--accent-soft)'
+              : 'var(--surface)'}; color: {activeChapterLang() === 'all'
+              ? 'var(--accent)'
+              : 'var(--text)'};"
+          >
+            {t.mangaLangAll} ({manga.chapters.length})
+          </button>
+          {#each chapterLanguages() as lang (lang)}
+            {@const count = manga.chapters.filter((c) => (c.language ?? "").toLowerCase() === lang).length}
+            <button
+              type="button"
+              onclick={() => {
+                selectedChapterLang = lang;
+              }}
+              class="rounded-lg border px-2.5 py-1 text-xs font-medium uppercase"
+              style="border-color: {activeChapterLang() === lang
+                ? 'var(--accent)'
+                : 'var(--border)'}; background-color: {activeChapterLang() === lang
+                ? 'var(--accent-soft)'
+                : 'var(--surface)'}; color: {activeChapterLang() === lang
+                ? 'var(--accent)'
+                : 'var(--text)'};"
+            >
+              {lang} ({count})
+            </button>
+          {/each}
+        </div>
+      {/if}
+
       <div
         class="grid max-h-[55vh] grid-cols-1 gap-1.5 overflow-y-auto rounded-2xl border p-3 sm:grid-cols-2 lg:grid-cols-3"
         style="background-color: var(--surface); border-color: var(--border);"
@@ -512,7 +650,29 @@
                 ? 'var(--text-muted)'
                 : 'var(--text)'}; opacity: {chapter.read && !isCurrent ? 0.56 : 1};"
           >
-            <span class="truncate font-medium">{chapter.name}</span>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5">
+                {#if chapter.volume}
+                  <span
+                    class="shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold"
+                    style="background-color: var(--surface-hover); color: var(--text-muted);"
+                  >
+                    V.{chapter.volume}
+                  </span>
+                {/if}
+                <span class="truncate font-medium">{chapter.name}</span>
+              </div>
+              {#if chapter.publishedAt || (chapter.language && chapterLanguages().length > 1)}
+                <div class="mt-0.5 flex items-center gap-1.5 text-[10px]" style="color: var(--text-muted);">
+                  {#if chapter.language && chapterLanguages().length > 1}
+                    <span class="uppercase font-semibold">[{chapter.language}]</span>
+                  {/if}
+                  {#if chapter.publishedAt}
+                    <span>{chapter.publishedAt}</span>
+                  {/if}
+                </div>
+              {/if}
+            </div>
             {#if chapter.read}
               <Check size={14} class="shrink-0 opacity-75" />
             {/if}
@@ -531,7 +691,7 @@
     aria-modal="true"
   >
     <div
-      class="flex w-full max-w-md flex-col gap-4 rounded-2xl border p-5 shadow-2xl"
+      class="flex max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
       style="background-color: var(--surface); border-color: var(--border);"
     >
       <div class="flex items-start gap-3">

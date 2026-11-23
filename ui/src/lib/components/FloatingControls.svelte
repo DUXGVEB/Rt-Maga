@@ -28,6 +28,7 @@
     hasBottomNav = false,
     inReader = false,
     dimmed = false,
+    fadedOut = false,
   }: {
     screen: FloatingScreenKey;
     showScrollTop?: boolean;
@@ -42,6 +43,7 @@
     hasBottomNav?: boolean;
     inReader?: boolean;
     dimmed?: boolean;
+    fadedOut?: boolean;
   } = $props();
 
   let holdingId = $state<FloatingBtnId | null>(null);
@@ -172,17 +174,24 @@
     return new Map(placed.map((p) => [p.id, p]));
   });
 
+  const isHiddenByFade = $derived(
+    inReader && fadedOut && !readerSettingsActive && !holdingId
+  );
+
   const effectiveOpacity = $derived(
-    inReader && floatingCfg.autoDimInReader && dimmed && !readerSettingsActive && !holdingId
-      ? 0.38
-      : 0.94
+    isHiddenByFade
+      ? 0
+      : inReader && floatingCfg.autoDimInReader && dimmed && !readerSettingsActive && !holdingId
+        ? 0.38
+        : 0.94
   );
 
   function styleFor(id: string): string {
     const pos = resolvedMap().get(id);
     if (!pos) return "display: none;";
     const edgeCss = pos.edge === "left" ? `left: ${pos.offsetPx}px;` : `right: ${pos.offsetPx}px;`;
-    return `top: ${pos.topPx}px; ${edgeCss} width: ${pos.sizePx}px; height: ${pos.sizePx}px; opacity: ${effectiveOpacity}; -webkit-touch-callout: none; -webkit-user-select: none;`;
+    const pointerCss = isHiddenByFade ? "pointer-events: none;" : "";
+    return `top: ${pos.topPx}px; ${edgeCss} width: ${pos.sizePx}px; height: ${pos.sizePx}px; opacity: ${effectiveOpacity}; ${pointerCss} -webkit-touch-callout: none; -webkit-user-select: none;`;
   }
 
   const orientationTitle = $derived(() => {

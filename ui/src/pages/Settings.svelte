@@ -1,7 +1,9 @@
 <script lang="ts">
   import {
+    AlertCircle,
     AlertTriangle,
     Bell,
+    CheckCircle2,
     ChevronDown,
     ChevronUp,
     Download,
@@ -40,7 +42,6 @@
     FloatingScreenKey,
     HiddenMangaView,
     HorizontalDirection,
-    HorizontalSnapMode,
     Language,
     NotificationPermissionInfo,
     ReaderBg,
@@ -83,6 +84,7 @@
 
   const floatingScreens: FloatingScreenKey[] = [
     "home",
+    "browse",
     "bookmarks",
     "history",
     "manga",
@@ -170,11 +172,13 @@
       t.doubleTapActionDesc,
       t.tapZonesLabel,
       t.tapZonesDesc,
+      t.navigationSpeedLabel(s.reader.behavior.navigationSpeed),
+      t.navigationSpeedDesc,
       t.toolbarAutoHideLabel,
       t.toolbarAutoHideDesc,
       t.keepScreenOnLabel,
       t.keepScreenOnDesc,
-      "controls gestures double tap zoom toolbar auto hide screen awake dieu khien cham dup thanh cong cu man hinh"
+      "controls gestures double tap zoom speed wheel scroll keyboard toolbar auto hide screen awake dieu khien cham dup toc do thanh cong cu man hinh"
     )
   );
   const matchCatBehavior = $derived(
@@ -360,6 +364,8 @@
     switch (key) {
       case "home":
         return t.navHome;
+      case "browse":
+        return t.floatingScreenBrowse;
       case "bookmarks":
         return t.navBookmarks;
       case "history":
@@ -987,26 +993,6 @@
 
                   <div class="row">
                     <div>
-                      <div class="label">{t.snapModeLabel}</div>
-                      <div class="desc">{t.snapModeDesc}</div>
-                    </div>
-                    <div class="flex gap-1.5">
-                      {#each [["none", t.snapNone], ["page", t.snapPage], ["group", t.snapGroup]] as [val, label] (val)}
-                        <button
-                          type="button"
-                          onclick={() =>
-                            patch((d) => (d.reader.horizontal.snapMode = val as HorizontalSnapMode))}
-                          class="pill"
-                          class:pill-active={s.reader.horizontal.snapMode === val}
-                        >
-                          {label}
-                        </button>
-                      {/each}
-                    </div>
-                  </div>
-
-                  <div class="row">
-                    <div>
                       <div class="label">{t.centerGroupsLabel}</div>
                       <div class="desc">{t.centerGroupsDesc}</div>
                     </div>
@@ -1225,6 +1211,25 @@
                       patch((d) => (d.reader.tapZonesEnabled = checked));
                     }}
                     class="h-4 w-4 accent-rose-500"
+                  />
+                </div>
+
+                <div class="row">
+                  <div>
+                    <div class="label">{t.navigationSpeedLabel(s.reader.behavior.navigationSpeed)}</div>
+                    <div class="desc">{t.navigationSpeedDesc}</div>
+                  </div>
+                  <input
+                    type="range"
+                    min="1"
+                    max="10"
+                    step="1"
+                    value={s.reader.behavior.navigationSpeed}
+                    oninput={(e) => {
+                      const v = Math.max(1, Math.min(10, Math.round(Number(e.currentTarget.value))));
+                      patch((d) => (d.reader.behavior.navigationSpeed = v), 100);
+                    }}
+                    class="w-40 accent-rose-500 sm:w-48"
                   />
                 </div>
 
@@ -1561,11 +1566,14 @@
           <button
             type="button"
             onclick={() => updatesStore.checkNow()}
-            disabled={updatesStore.checking}
-            class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium"
+            disabled={updatesStore.checking || appReleaseStore.checking}
+            class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-55"
             style="border-color: var(--border); background-color: var(--surface-subtle);"
           >
-            <RefreshCw size={13} class={updatesStore.checking ? "animate-spin" : ""} />
+            <RefreshCw
+              size={13}
+              class={updatesStore.checking || appReleaseStore.checking ? "animate-spin" : ""}
+            />
             <span>{t.checkNow}</span>
           </button>
           <button
@@ -1683,13 +1691,37 @@
         </div>
       </div>
 
-      {#if appReleaseStore.release?.updateAvailable}
+      {#if appReleaseStore.checkStatus === "checking"}
+        <div
+          class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium"
+          style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+        >
+          <Loader2 size={14} class="shrink-0 animate-spin" style="color: var(--accent);" />
+          <span>{t.releaseStatusChecking}</span>
+        </div>
+      {:else if appReleaseStore.release?.updateAvailable}
         <div
           class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium"
           style="background-color: var(--accent-soft); border-color: var(--accent); color: var(--accent);"
         >
           <Sparkles size={14} class="shrink-0" />
           <span>{t.releaseAvailableBanner(appReleaseStore.release.latestVersion)}</span>
+        </div>
+      {:else if appReleaseStore.checkStatus === "up_to_date" && appReleaseStore.statusMessage}
+        <div
+          class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium"
+          style="background-color: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.45); color: #10b981;"
+        >
+          <CheckCircle2 size={14} class="shrink-0" />
+          <span>{appReleaseStore.statusMessage}</span>
+        </div>
+      {:else if appReleaseStore.statusMessage && (appReleaseStore.checkStatus === "server_unavailable" || appReleaseStore.checkStatus === "invalid_metadata" || appReleaseStore.checkStatus === "rate_limited" || appReleaseStore.checkStatus === "network_error")}
+        <div
+          class="flex items-start gap-2 rounded-xl border px-3 py-2 text-xs font-medium"
+          style="background-color: rgba(239, 68, 68, 0.08); border-color: var(--danger); color: var(--danger);"
+        >
+          <AlertCircle size={14} class="mt-0.5 shrink-0" />
+          <span class="break-words">{appReleaseStore.statusMessage}</span>
         </div>
       {/if}
 
@@ -2119,7 +2151,7 @@
     aria-modal="true"
   >
     <div
-      class="flex w-full max-w-md flex-col gap-4 rounded-2xl border p-5 shadow-2xl"
+      class="flex max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
       style="background-color: var(--surface); border-color: var(--border);"
     >
       <div class="flex items-start gap-3">
@@ -2175,7 +2207,7 @@
     aria-modal="true"
   >
     <div
-      class="flex w-full max-w-md flex-col gap-4 rounded-2xl border p-5 shadow-2xl"
+      class="flex max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
       style="background-color: var(--surface); border-color: var(--border);"
     >
       <div class="flex items-start gap-3">
@@ -2236,9 +2268,10 @@
 
   .section-header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: 0.65rem 0.75rem;
   }
 
   .section-title {
@@ -2268,9 +2301,33 @@
 
   .row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
+    gap: 0.65rem 1rem;
+  }
+
+  .row > :first-child {
+    min-width: 0;
+    flex: 1 1 13rem;
+  }
+
+  .row :global(input[type="range"]),
+  .row :global(select),
+  .row :global(input[type="text"]) {
+    max-width: 100%;
+  }
+
+  @media (max-height: 500px) {
+    .settings-card {
+      padding: 0.9rem 1rem;
+      gap: 0.75rem;
+    }
+
+    .cat-body {
+      padding: 0.75rem;
+      gap: 0.75rem;
+    }
   }
 
   .label {

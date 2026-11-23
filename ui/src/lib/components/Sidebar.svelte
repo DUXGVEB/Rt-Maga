@@ -1,6 +1,19 @@
 <script lang="ts">
-  import { Bell, Bookmark, Clock, Home, Moon, RefreshCw, Settings, Sun } from "lucide-svelte";
+  import {
+    Bell,
+    Bookmark,
+    Clock,
+    Home,
+    Maximize,
+    Minimize,
+    Moon,
+    RefreshCw,
+    Settings,
+    Sun,
+  } from "lucide-svelte";
   import logoUrl from "../../assets/logo.png";
+  import { appReleaseStore } from "../stores/appRelease.svelte";
+  import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { notificationsStore } from "../stores/notifications.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
@@ -8,6 +21,7 @@
 
   const isDark = $derived(settingsStore.resolvedTheme === "dark");
   const t = $derived(settingsStore.t);
+  const checkingAny = $derived(updatesStore.checking || appReleaseStore.checking);
 
   function toggleTheme() {
     settingsStore.update((d) => {
@@ -17,10 +31,10 @@
 </script>
 
 <aside
-  class="hidden h-full w-56 shrink-0 flex-col justify-between overflow-y-auto border-r select-none md:flex"
+  class="sidebar-shell hidden h-full w-56 shrink-0 flex-col justify-between overflow-y-auto border-r select-none md:flex"
   style="padding-top: calc(1.25rem + var(--safe-top)); padding-bottom: calc(1.25rem + var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: 0.75rem; background-color: var(--surface); border-color: var(--border);"
 >
-  <div class="flex flex-col gap-6">
+  <div class="sidebar-top flex flex-col gap-6">
     <!-- Brand + Bell Notification Center -->
     <div class="flex items-center justify-between gap-1 px-1">
       <button
@@ -67,7 +81,9 @@
         type="button"
         onclick={() => router.goHome()}
         class="nav-item"
-        class:active={router.current.name === "home" || router.current.name === "manga"}
+        class:active={router.current.name === "home" ||
+          router.current.name === "manga" ||
+          router.current.name === "browse"}
       >
         <Home size={18} />
         <span>{t.navHome}</span>
@@ -115,25 +131,42 @@
   </div>
 
   <!-- Footer controls -->
-  <div class="flex flex-col gap-2 border-t pt-3" style="border-color: var(--border);">
+  <div class="flex flex-col gap-1.5 border-t pt-3" style="border-color: var(--border);">
     <button
       type="button"
       onclick={() => updatesStore.checkNow()}
-      disabled={updatesStore.checking}
+      disabled={checkingAny}
       class="nav-item text-xs"
       title={t.checkUpdatesTooltip}
     >
-      <RefreshCw size={15} class={updatesStore.checking ? "animate-spin" : ""} />
+      <RefreshCw size={15} class={checkingAny ? "animate-spin" : ""} />
       <span>
         {#if updatesStore.checking && updatesStore.progress}
           {t.checkingProgress(updatesStore.progress.done, updatesStore.progress.total)}
-        {:else if updatesStore.checking}
+        {:else if checkingAny}
           {t.checking}
         {:else}
           {t.checkUpdates}
         {/if}
       </span>
     </button>
+
+    {#if !deviceEnv.isAndroid}
+      <button
+        type="button"
+        onclick={() => void deviceEnv.toggleDesktopFullscreen()}
+        class="nav-item text-xs"
+        title={deviceEnv.desktopFullscreen ? t.appFullscreenExit : t.appFullscreenEnter}
+      >
+        {#if deviceEnv.desktopFullscreen}
+          <Minimize size={15} />
+          <span>{t.appFullscreenExit}</span>
+        {:else}
+          <Maximize size={15} />
+          <span>{t.appFullscreenEnter}</span>
+        {/if}
+      </button>
+    {/if}
 
     <button type="button" onclick={toggleTheme} class="nav-item text-xs">
       {#if isDark}
@@ -178,5 +211,22 @@
   .nav-item:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+
+  @media (max-height: 500px) {
+    .sidebar-shell {
+      width: 12.5rem;
+      padding-top: calc(0.6rem + var(--safe-top)) !important;
+      padding-bottom: calc(0.6rem + var(--safe-bottom)) !important;
+    }
+
+    .sidebar-top {
+      gap: 0.75rem;
+    }
+
+    .nav-item {
+      padding: 0.4rem 0.6rem;
+      font-size: 0.8rem;
+    }
   }
 </style>

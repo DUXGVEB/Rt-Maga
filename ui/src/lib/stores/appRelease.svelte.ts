@@ -1,9 +1,24 @@
 import { api, formatAppError } from "../api";
-import type { AppReleaseInfo, InstallStatus, UpdateDownloadProgress } from "../types";
+import type {
+  AppError,
+  AppReleaseInfo,
+  InstallStatus,
+  UpdateDownloadProgress,
+} from "../types";
 import { settingsStore } from "./settings.svelte";
 import { toasts } from "./toast.svelte";
 
 const DISMISSED_KEY = "rtmaga.dismissedReleaseTag";
+
+export type ReleaseCheckStatus =
+  | "idle"
+  | "checking"
+  | "up_to_date"
+  | "update_available"
+  | "server_unavailable"
+  | "invalid_metadata"
+  | "rate_limited"
+  | "network_error";
 
 function loadDismissedTag(): string | null {
   try {
@@ -25,10 +40,58 @@ function saveDismissedTag(tag: string | null) {
   }
 }
 
+function classifyReleaseError(err: unknown): {
+  status: ReleaseCheckStatus;
+  message: string;
+} {
+  const t = settingsStore.t;
+  const payload =
+    err && typeof err === "object" && "kind" in err
+      ? (err as AppError)
+      : null;
+
+  if (payload) {
+    switch (payload.kind) {
+      case "rate_limited":
+        return { status: "rate_limited", message: t.releaseStatusRateLimited };
+      case "http_error":
+      case "timeout":
+      case "access_restricted":
+        return { status: "server_unavailable", message: t.releaseStatusServerUnavailable };
+      case "api_failure":
+      case "missing_metadata":
+      case "corrupted_data":
+        return { status: "invalid_metadata", message: t.releaseStatusInvalidMetadata };
+      case "dns_failure":
+      case "tls_failure":
+      case "network":
+        return { status: "network_error", message: t.releaseStatusNetworkError };
+      default:
+        break;
+    }
+  }
+
+  const formatted = formatAppError(err, settingsStore.value.language);
+  const raw = `${formatted.title} ${formatted.detail}`.toLowerCase();
+  if (raw.includes("429") || raw.includes("rate limit")) {
+    return { status: "rate_limited", message: t.releaseStatusRateLimited };
+  }
+  if (raw.includes("invalid") || raw.includes("metadata") || raw.includes("json")) {
+    return { status: "invalid_metadata", message: t.releaseStatusInvalidMetadata };
+  }
+  if (raw.includes("503") || raw.includes("502") || raw.includes("500") || raw.includes("timeout")) {
+    return { status: "server_unavailable", message: t.releaseStatusServerUnavailable };
+  }
+  return { status: "network_error", message: formatted.detail || t.releaseStatusNetworkError };
+}
+
 class AppReleaseStore {
-  currentVersion = $state("2.0.1");
+  currentVersion = $state("");
   release = $state<AppReleaseInfo | null>(null);
   checking = $state(false);
+  checkStatus = $state<ReleaseCheckStatus>("idle");
+  statusMessage = $state<string | null>(null);
+  lastCheckedAt = $state<number | null>(null);
   dismissedTag = $state<string | null>(loadDismissedTag());
 
   promptOpen = $state(false);
@@ -46,8 +109,12 @@ class AppReleaseStore {
   private handleDetectedRelease(info: AppReleaseInfo) {
     this.release = info;
     this.currentVersion = info.currentVersion;
-    if (info.updateAvailable && this.dismissedTag !== info.tagName) {
-      this.promptOpen = true;
+    if (info.updateAvailable) {
+      this.checkStatus = "update_available";
+      this.statusMessage = settingsStore.t.releaseAvailableBanner(info.latestVersion);
+      if (this.dismissedTag !== info.tagName) {
+        this.promptOpen = true;
+      }
     }
   }
 
@@ -77,26 +144,48 @@ class AppReleaseStore {
     }
   }
 
-  async checkNow() {
-    if (this.checking) return;
+  async checkNow(options?: { showToast?: boolean }): Promise<ReleaseCheckStatus> {
+    if (this.checking) return this.checkStatus;
+    const showToast = options?.showToast ?? true;
     this.checking = true;
+    this.checkStatus = "checking";
     const t = settingsStore.t;
+    this.statusMessage = t.releaseStatusChecking;
+
     try {
       const info = await api.checkAppRelease();
       this.release = info;
       this.currentVersion = info.currentVersion;
+      this.lastCheckedAt = Date.now();
+
       if (info.updateAvailable) {
         this.dismissedTag = null;
         saveDismissedTag(null);
         this.installError = null;
         this.installStatus = null;
         this.progress = null;
+        this.checkStatus = "update_available";
+        this.statusMessage = t.releaseAvailableBanner(info.latestVersion);
         this.promptOpen = true;
-      } else {
-        toasts.push(t.releaseUpToDate(info.currentVersion), "info");
+        return "update_available";
       }
-    } catch {
-      toasts.push(t.releaseCheckFailed, "error");
+
+      const msg = t.releaseStatusUpToDate(info.currentVersion);
+      this.checkStatus = "up_to_date";
+      this.statusMessage = msg;
+      if (showToast) {
+        toasts.push(msg, "success", 3200);
+      }
+      return "up_to_date";
+    } catch (err) {
+      this.lastCheckedAt = Date.now();
+      const classified = classifyReleaseError(err);
+      this.checkStatus = classified.status;
+      this.statusMessage = classified.message;
+      if (showToast) {
+        toasts.push(classified.message, "error", 4000);
+      }
+      return classified.status;
     } finally {
       this.checking = false;
     }

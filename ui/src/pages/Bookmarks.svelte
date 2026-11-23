@@ -1,18 +1,19 @@
 <script lang="ts">
   import { Bookmark, BookOpen, CheckCircle2, Play, Sparkles, Trash2 } from "lucide-svelte";
   import { api, imgProxyUrl } from "../lib/api";
+  import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
   import type { BookmarkItemView, BookmarkSort } from "../lib/types";
 
-  let items = $state<BookmarkItemView[]>([]);
   let sort = $state<BookmarkSort>("newest");
-  let loading = $state(true);
+  let loading = $state(!libraryCache.bookmarksLoaded["newest"]);
   let failedCovers = $state<Record<number, boolean>>({});
   let loadSeq = 0;
 
+  const items = $derived(libraryCache.bookmarksBySort[sort] ?? []);
   const t = $derived(settingsStore.t);
 
   async function load(selectedSort: BookmarkSort, showSkeleton: boolean) {
@@ -21,10 +22,12 @@
     try {
       const loaded = await api.listBookmarks(selectedSort);
       if (seq !== loadSeq) return;
-      items = loaded;
+      libraryCache.setBookmarks(selectedSort, loaded);
     } catch {
       if (seq !== loadSeq) return;
-      items = [];
+      if (!libraryCache.bookmarksLoaded[selectedSort]) {
+        libraryCache.setBookmarks(selectedSort, []);
+      }
     } finally {
       if (seq === loadSeq) {
         loading = false;
@@ -34,14 +37,14 @@
 
   $effect(() => {
     void updatesStore.lastFound;
-    void load(sort, items.length === 0);
+    void load(sort, !libraryCache.bookmarksLoaded[sort]);
   });
 
   async function removeBookmark(mangaId: number, e: MouseEvent) {
     e.stopPropagation();
     try {
       await api.toggleBookmark(mangaId);
-      items = items.filter((i) => i.mangaId !== mangaId);
+      libraryCache.removeBookmarkItem(mangaId);
       toasts.push(t.toastBookmarkRemoved, "info", 1800);
     } catch {
       toasts.push(t.toastHistoryUpdateFailed, "error");

@@ -1,10 +1,12 @@
 import { api } from "../api";
-import type { SettingsSection } from "../types";
+import type { CatalogPageView, SettingsSection } from "../types";
+import { notificationsStore } from "./notifications.svelte";
 import { settingsStore } from "./settings.svelte";
 import { toasts } from "./toast.svelte";
 
 export type Route =
   | { name: "home" }
+  | { name: "browse"; url: string; initialCatalog?: CatalogPageView }
   | { name: "bookmarks" }
   | { name: "manga"; id: number }
   | {
@@ -24,6 +26,7 @@ const DOUBLE_BACK_EXIT_WINDOW_MS = 2000;
 
 function routesEqual(a: Route, b: Route): boolean {
   if (a.name !== b.name) return false;
+  if (a.name === "browse" && b.name === "browse") return a.url === b.url;
   if (a.name === "manga" && b.name === "manga") return a.id === b.id;
   if (a.name === "reader" && b.name === "reader") {
     return a.mangaId === b.mangaId && a.chapterUrl === b.chapterUrl;
@@ -36,10 +39,13 @@ function routesEqual(a: Route, b: Route): boolean {
 
 class RouterStore {
   current = $state<Route>({ name: "home" });
+  /** Incremented whenever a primary nav button (especially Home) is clicked so active screens can scroll-to-top/reset cleanly. */
+  navPulse = $state(0);
   private stack: Route[] = [];
   private backInterceptors: BackInterceptor[] = [];
   private lastRootBackAt = 0;
   private backBridgeInstalled = false;
+  private historyResumeBusy = false;
 
   installBackBridge() {
     if (this.backBridgeInstalled || typeof window === "undefined") return;
@@ -60,9 +66,17 @@ class RouterStore {
     };
   }
 
+  private dismissOverlays() {
+    if (notificationsStore.drawerOpen) {
+      notificationsStore.closeDrawer();
+    }
+  }
+
   private pushAndSet(next: Route, replace = false) {
+    this.dismissOverlays();
     if (routesEqual(this.current, next)) {
       this.current = next;
+      this.navPulse += 1;
       return;
     }
     if (!replace) {
@@ -72,11 +86,18 @@ class RouterStore {
       }
     }
     this.current = next;
+    this.navPulse += 1;
   }
 
   goHome() {
+    this.dismissOverlays();
     this.stack = [];
     this.current = { name: "home" };
+    this.navPulse += 1;
+  }
+
+  goBrowse(url: string, initialCatalog?: CatalogPageView, replace = false) {
+    this.pushAndSet({ name: "browse", url, initialCatalog }, replace);
   }
 
   goBookmarks() {
@@ -94,9 +115,8 @@ class RouterStore {
     pageIndex?: number,
     replace = false
   ) {
-    // Switching chapters while already inside Reader replaces the top reader entry so Back
-    // always returns to the Manga / History / Bookmarks screen cleanly instead of looping chapters.
-    const shouldReplace = replace || (this.current.name === "reader" && this.current.mangaId === mangaId);
+    const shouldReplace =
+      replace || (this.current.name === "reader" && this.current.mangaId === mangaId);
     this.pushAndSet(
       { name: "reader", mangaId, chapterUrl, scrollRatio, pageIndex },
       shouldReplace
@@ -113,21 +133,25 @@ class RouterStore {
    * - If ALREADY on History -> resume the last persisted reading destination cleanly.
    */
   async goHistoryOrResume() {
+    this.dismissOverlays();
     if (this.current.name !== "history") {
       this.goHistory();
       return;
     }
-
+    if (this.historyResumeBusy) return;
+    this.historyResumeBusy = true;
     try {
       const dest = await api.getLastReadingDestination();
       if (dest) {
         this.goReader(dest.mangaId, dest.chapterUrl, dest.scrollRatio, dest.pageIndex);
         return;
       }
+      toasts.push(settingsStore.t.historyNoResumeTarget, "info", 2200);
     } catch {
-      // Fallback toast below.
+      toasts.push(settingsStore.t.historyNoResumeTarget, "info", 2200);
+    } finally {
+      this.historyResumeBusy = false;
     }
-    toasts.push(settingsStore.t.historyNoResumeTarget, "info", 2200);
   }
 
   updateCurrentReaderPosition(chapterUrl: string, scrollRatio: number, pageIndex: number) {
@@ -153,14 +177,17 @@ class RouterStore {
     if (this.stack.length > 0) {
       const prev = this.stack.pop()!;
       this.current = prev;
+      this.navPulse += 1;
       return true;
     }
     if (this.current.name === "reader") {
       this.current = { name: "manga", id: this.current.mangaId };
+      this.navPulse += 1;
       return true;
     }
     if (this.current.name !== "home") {
       this.current = { name: "home" };
+      this.navPulse += 1;
       return true;
     }
     return false;
@@ -171,7 +198,6 @@ class RouterStore {
    * Returns `true` when consumed in-app; `false` allows Android to exit/background the app.
    */
   handleSystemBackPress(): boolean {
-    // 1. Let top-most modal/drawer/quick-settings consume Back first.
     for (let i = this.backInterceptors.length - 1; i >= 0; i -= 1) {
       try {
         if (this.backInterceptors[i]()) {
@@ -182,13 +208,11 @@ class RouterStore {
       }
     }
 
-    // 2. Navigate back inside the app if not on root Home.
     if (this.goBack()) {
       this.lastRootBackAt = 0;
       return true;
     }
 
-    // 3. Root Home: require double-back within 2 seconds to prevent accidental exit.
     const now = Date.now();
     if (now - this.lastRootBackAt <= DOUBLE_BACK_EXIT_WINDOW_MS) {
       this.lastRootBackAt = 0;

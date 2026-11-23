@@ -62,6 +62,10 @@
     lastToken = currentToken;
   });
 
+  const effectiveShouldLoad = $derived(
+    loadMode === "unload" ? false : shouldLoad || loadMode === "high" || loadMode === "preload"
+  );
+
   // Controlled preload window & memory release when far outside viewport.
   $effect(() => {
     const mode = loadMode;
@@ -236,7 +240,7 @@
         </button>
       </div>
     {/if}
-  {:else if shouldLoad}
+  {:else if effectiveShouldLoad}
     {#if !loaded}
       <div
         class="flex flex-col items-center justify-center gap-2 {horizontal
@@ -255,6 +259,7 @@
     <img
       {src}
       alt={settingsStore.t.pageAlt(index + 1)}
+      draggable="false"
       decoding="async"
       fetchpriority={loadMode === "high" ? "high" : "auto"}
       onload={handleLoad}

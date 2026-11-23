@@ -1,18 +1,19 @@
 <script lang="ts">
   import { BookOpen, CheckCircle2, Clock, Sparkles, Trash2 } from "lucide-svelte";
   import { api, imgProxyUrl } from "../lib/api";
+  import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
   import type { HistoryItemView } from "../lib/types";
 
-  let items = $state<HistoryItemView[]>([]);
-  let loading = $state(true);
+  let loading = $state(!libraryCache.historyLoaded);
   let confirmingClear = $state(false);
   let failedCovers = $state<Record<number, boolean>>({});
   let loadSeq = 0;
 
+  const items = $derived(libraryCache.history);
   const t = $derived(settingsStore.t);
 
   async function load(showSkeleton: boolean) {
@@ -21,11 +22,13 @@
     try {
       const loaded = await api.listHistory();
       if (seq !== loadSeq) return;
-      items = loaded;
+      libraryCache.setHistory(loaded);
       updatesStore.setNewCountFromHistory(loaded.filter((i) => i.hasNew).length);
     } catch {
       if (seq !== loadSeq) return;
-      items = [];
+      if (!libraryCache.historyLoaded) {
+        libraryCache.setHistory([]);
+      }
     } finally {
       if (seq === loadSeq) {
         loading = false;
@@ -35,7 +38,7 @@
 
   $effect(() => {
     void updatesStore.lastFound;
-    void load(items.length === 0);
+    void load(!libraryCache.historyLoaded);
   });
 
   function resumeFromCover(item: HistoryItemView) {
@@ -50,8 +53,8 @@
     e.stopPropagation();
     try {
       await api.removeHistory(mangaId);
-      items = items.filter((i) => i.mangaId !== mangaId);
-      updatesStore.setNewCountFromHistory(items.filter((i) => i.hasNew).length);
+      libraryCache.removeHistoryItem(mangaId);
+      updatesStore.setNewCountFromHistory(libraryCache.history.filter((i) => i.hasNew).length);
       toasts.push(t.toastRemovedHistory, "info");
     } catch {
       toasts.push(t.toastHistoryUpdateFailed, "error");
@@ -61,7 +64,7 @@
   async function clearAll() {
     try {
       await api.clearHistory();
-      items = [];
+      libraryCache.clearHistory();
       confirmingClear = false;
       updatesStore.setNewCountFromHistory(0);
       toasts.push(t.toastClearedHistory, "info");

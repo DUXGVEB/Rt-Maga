@@ -55,7 +55,11 @@ pub(crate) async fn get_chapter(
                         detail: Some(app_err.to_string()),
                         source: src,
                         chapter_url: Some(url.as_str().to_owned()),
-                        stack_trace: None,
+                        failed_url: Some(url.as_str().to_owned()),
+                        resolved_url: Some(url.as_str().to_owned()),
+                        http_status: app_err.http_status().map(i64::from),
+                        parsing_stage: Some("chapter_image_extraction".to_owned()),
+                        ..NewDiagnosticLog::default()
                     })
                     .await;
                 return Err(app_err);

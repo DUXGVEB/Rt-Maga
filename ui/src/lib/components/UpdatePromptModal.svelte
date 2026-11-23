@@ -60,7 +60,7 @@
     aria-labelledby="update-modal-title"
   >
     <div
-      class="flex w-full max-w-md flex-col gap-4 rounded-2xl border p-5 shadow-2xl"
+      class="flex max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
       style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
     >
       <!-- Header -->

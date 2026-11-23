@@ -70,7 +70,7 @@ pub fn extract_chapters(doc: &Html, base: &Url) -> Vec<ChapterRef> {
         groups
             .entry(pattern)
             .or_default()
-            .push((dom_idx, ChapterRef { url, name, number }));
+            .push((dom_idx, ChapterRef::simple(url, name, number)));
     }
 
     let Some(mut best_group) = groups

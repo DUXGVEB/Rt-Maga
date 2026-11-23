@@ -33,9 +33,66 @@ pub enum ScrapeError {
         timeout_secs: u64,
     },
 
-    /// Transport-level HTTP failure (DNS, TLS, connection reset).
+    /// DNS hostname resolution failed.
+    #[error("dns resolution failed for {host} ({url}): {detail}")]
+    DnsFailure {
+        /// Hostname that could not be resolved.
+        host: String,
+        /// Full target URL.
+        url: String,
+        /// Underlying diagnostic detail.
+        detail: String,
+    },
+
+    /// TLS handshake, certificate validation, or SNI connection reset failed.
+    #[error("tls connection failed for {host} ({url}): {detail}")]
+    TlsFailure {
+        /// Hostname whose TLS handshake failed.
+        host: String,
+        /// Full target URL.
+        url: String,
+        /// Underlying diagnostic detail.
+        detail: String,
+    },
+
+    /// Transport-level HTTP failure (other connection/I/O errors).
     #[error("network request failed: {0}")]
     Network(#[from] reqwest::Error),
+
+    /// Remote server returned HTTP 429 Too Many Requests.
+    #[error("rate limited by {url}")]
+    RateLimited {
+        /// Target URL that returned HTTP 429.
+        url: String,
+        /// Optional retry delay parsed from `Retry-After`.
+        retry_after_secs: Option<u64>,
+    },
+
+    /// Remote server explicitly restricted access (HTTP 401/403 without an interactive challenge).
+    #[error("access restricted ({status}) for {host} at {url}: {detail}")]
+    AccessRestricted {
+        /// Hostname denying access.
+        host: String,
+        /// Full target URL.
+        url: String,
+        /// HTTP status code (typically 401 or 403).
+        status: u16,
+        /// Diagnostic detail.
+        detail: String,
+    },
+
+    /// Remote documented API endpoint returned an error status or invalid schema.
+    #[error("{service} api failure at {url}: {detail}")]
+    ApiFailure {
+        /// Name of the upstream API service adapter.
+        service: String,
+        /// Request URL that failed.
+        url: String,
+        /// Optional HTTP status code returned by the API.
+        status: Option<u16>,
+        /// Diagnostic detail.
+        detail: String,
+    },
 
     /// Remote server returned an unexpected HTTP status code.
     #[error("http {status} while fetching {url}")]
@@ -62,6 +119,15 @@ pub enum ScrapeError {
         url: Url,
         /// Short machine-friendly reason describing what was missing.
         reason: &'static str,
+    },
+
+    /// Page matched a manga structure, but required metadata fields were missing or unusable.
+    #[error("missing required metadata at {url}: {detail}")]
+    MissingMetadata {
+        /// Target URL lacking required metadata.
+        url: String,
+        /// Diagnostic description of missing metadata.
+        detail: String,
     },
 
     /// Chapter page was parsed, but contained zero usable page images.

@@ -21,15 +21,20 @@
     ZoomOut,
   } from "lucide-svelte";
   import { tick, untrack } from "svelte";
-  import { api, formatAppError } from "../lib/api";
+  import { api, formatAppError, imgProxyUrl } from "../lib/api";
   import FloatingControls from "../lib/components/FloatingControls.svelte";
   import PageImage from "../lib/components/PageImage.svelte";
   import {
+    clampZoomPan,
+    computeAnchoredZoom,
+    computeNavStepCooldownMs,
     computePageLoadMode,
+    computeVerticalSpeedMultiplier,
     detectWebtoonFromDimensions,
     focusBrightness,
     partitionPages,
     type PageDimensionSample,
+    type RectBox,
   } from "../lib/readerLayout";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { router } from "../lib/stores/router.svelte";
@@ -40,7 +45,6 @@
     FloatingEdge,
     FloatingScreenKey,
     HorizontalDirection,
-    HorizontalSnapMode,
     MangaView,
     OrientationLockMode,
     ReaderBg,
@@ -79,26 +83,49 @@
   let controlsDimmed = $state(false);
   let chapterDetectedWebtoon = $state(false);
 
-  // Double-tap Zoom state (`1` = normal, `1.8` = zoomed).
+  // Double-tap / double-click anchored zoom state (`1` = normal, `2.0` = zoomed).
+  const ZOOM_TARGET_SCALE = 2.0;
   let zoomScale = $state(1);
-  let zoomOriginX = $state(50);
-  let zoomOriginY = $state(50);
+  let zoomTx = $state(0);
+  let zoomTy = $state(0);
+  let zoomPanning = $state(false);
+  let zoomContentRect: RectBox | null = null;
+  let verticalZoomExtraBottomPx = $state(0);
+
+  // Instant horizontal page/group navigation state (ZERO carousel/sliding animation).
+  let activeGroupIdx = $state(0);
+  let horizontalAtEnd = $state(false);
 
   // Viewport focus tracking.
   let focusedKeys = $state<Set<string>>(new Set());
   let focusedPageIdx = $state(0);
 
   let scrollEl = $state<HTMLDivElement | null>(null);
+  let verticalContentEl = $state<HTMLDivElement | null>(null);
+  let horizontalStageEl = $state<HTMLDivElement | null>(null);
   let lastScrollOffset = 0;
   let prefetched = new Map<string, ChapterView>();
+  let preloadedImageTokens = new Set<string>();
   let saveTimer: number | null = null;
   let idleDimTimer: number | null = null;
   let toolbarAutoHideTimer: number | null = null;
   let singleTapTimer: number | null = null;
   let orientationRestoreTimer: number | null = null;
+  let verticalAnimRaf: number | null = null;
+  let verticalAnimTargetTop = 0;
   let lastTapAt = 0;
+  let lastHorizontalStepAt = 0;
+  let wheelDeltaAccum = 0;
+  let wheelResetTimer: number | null = null;
   let pointerDownX = 0;
   let pointerDownY = 0;
+  let pointerDownAt = 0;
+  let activePointerId: number | null = null;
+  let panStartX = 0;
+  let panStartY = 0;
+  let panOriginTx = 0;
+  let panOriginTy = 0;
+  let didPanDrag = false;
   let lastViewportW = typeof window !== "undefined" ? window.innerWidth : 0;
   let lastViewportH = typeof window !== "undefined" ? window.innerHeight : 0;
   let wakeLockSentinel: { release: () => Promise<void> } | null = null;
@@ -155,7 +182,6 @@
   const effectiveVerticalGapPx = $derived(effectiveNoGap ? 0 : vCfg.pageGapPx);
 
   const isHorizontal = $derived(effectiveOrientation === "horizontal");
-  const isContinuousHorizontal = $derived(isHorizontal && hCfg.snapMode === "none");
   const isRtl = $derived(isHorizontal && hCfg.direction === "rtl");
 
   const activeChapter = $derived(
@@ -164,6 +190,14 @@
 
   const lastChapter = $derived(strip[strip.length - 1] ?? null);
   const totalPages = $derived(activeChapter?.images.length ?? 0);
+  const horizontalGroups = $derived(
+    activeChapter ? partitionPages(activeChapter.images, hCfg.pagesPerGroup) : []
+  );
+  const currentHorizontalGroup = $derived(
+    !horizontalAtEnd && horizontalGroups.length > 0
+      ? horizontalGroups[Math.max(0, Math.min(horizontalGroups.length - 1, activeGroupIdx))] ?? null
+      : null
+  );
 
   const filteredJumpChapters = $derived(() => {
     if (!manga) return [];
@@ -185,25 +219,104 @@
     return "var(--bg)";
   });
 
-  const scrollContainerSnapStyle = $derived(() => {
-    if (isHorizontal) {
-      if (hCfg.snapMode === "none") return "scroll-snap-type: none;";
-      return "scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;";
-    }
-    return "scroll-snap-type: none;";
-  });
-
-  const zoomTransformStyle = $derived(
+  const horizontalZoomStyle = $derived(
     zoomScale > 1.01
-      ? `transform: scale(${zoomScale}); transform-origin: ${zoomOriginX}% ${zoomOriginY}%; transition: transform 180ms ease;`
-      : "transform: none; transition: transform 180ms ease;"
+      ? `transform: translate3d(${zoomTx}px, ${zoomTy}px, 0) scale(${zoomScale}); transform-origin: 0 0; transition: ${zoomPanning ? "none" : "transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1)"};`
+      : "transform: none; transform-origin: 0 0; transition: transform 140ms ease;"
   );
 
-  function resetZoom() {
-    zoomScale = 1;
-    zoomOriginX = 50;
-    zoomOriginY = 50;
+  const verticalZoomStyle = $derived(
+    zoomScale > 1.01
+      ? `transform: translate3d(${zoomTx}px, 0px, 0) scale(${zoomScale}); transform-origin: 0 0; transition: ${zoomPanning ? "none" : "transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1)"};`
+      : "transform: none; transform-origin: 0 0; transition: transform 140ms ease;"
+  );
+
+  function cancelVerticalSmoothScroll() {
+    if (verticalAnimRaf !== null) {
+      window.cancelAnimationFrame(verticalAnimRaf);
+      verticalAnimRaf = null;
+    }
   }
+
+  function animateVerticalScrollBy(deltaPx: number) {
+    if (!scrollEl || isHorizontal) return;
+    const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    const startBase = verticalAnimRaf !== null ? verticalAnimTargetTop : scrollEl.scrollTop;
+    verticalAnimTargetTop = Math.max(0, Math.min(maxTop, startBase + deltaPx));
+
+    if (verticalAnimRaf !== null) return;
+
+    const step = () => {
+      if (!scrollEl || isHorizontal) {
+        verticalAnimRaf = null;
+        return;
+      }
+      const speedMult = computeVerticalSpeedMultiplier(behavior.navigationSpeed);
+      const factor = Math.min(0.45, Math.max(0.14, 0.2 * speedMult));
+      const diff = verticalAnimTargetTop - scrollEl.scrollTop;
+      if (Math.abs(diff) <= 1.2) {
+        scrollEl.scrollTop = verticalAnimTargetTop;
+        verticalAnimRaf = null;
+        return;
+      }
+      scrollEl.scrollTop += diff * factor;
+      verticalAnimRaf = window.requestAnimationFrame(step);
+    };
+    verticalAnimRaf = window.requestAnimationFrame(step);
+  }
+
+  function resetZoom(anchorClientY?: number) {
+    const wasZoomed = zoomScale > 1.01;
+    const prevScale = zoomScale;
+    zoomScale = 1;
+    zoomTx = 0;
+    zoomTy = 0;
+    zoomPanning = false;
+    zoomContentRect = null;
+
+    if (wasZoomed && !isHorizontal && scrollEl) {
+      const vpRect = scrollEl.getBoundingClientRect();
+      const vy = anchorClientY !== undefined ? anchorClientY - vpRect.top : vpRect.height * 0.5;
+      const unscaledDocY = (scrollEl.scrollTop + vy) / Math.max(1, prevScale);
+      verticalZoomExtraBottomPx = 0;
+      const targetTop = Math.max(0, Math.round(unscaledDocY - vy));
+      suppressAutoHideUntil = Date.now() + 260;
+      window.requestAnimationFrame(() => {
+        if (scrollEl) {
+          scrollEl.scrollTop = targetTop;
+          lastScrollOffset = targetTop;
+        }
+      });
+    } else {
+      verticalZoomExtraBottomPx = 0;
+    }
+  }
+
+  function preloadHorizontalNearbyImages() {
+    if (!isHorizontal || !activeChapter) return;
+    const windowSize = Math.max(5, Math.min(8, readerSettings.preloadImages || 6));
+    const startIdx = Math.max(0, focusedPageIdx - 1);
+    const endIdx = Math.min(activeChapter.images.length - 1, focusedPageIdx + windowSize);
+    for (let i = startIdx; i <= endIdx; i += 1) {
+      const token = activeChapter.images[i];
+      if (!token || preloadedImageTokens.has(token)) continue;
+      preloadedImageTokens.add(token);
+      if (preloadedImageTokens.size > 80) {
+        const oldest = preloadedImageTokens.values().next().value;
+        if (oldest) preloadedImageTokens.delete(oldest);
+      }
+      const img = new Image();
+      img.decoding = "async";
+      img.src = imgProxyUrl(token, false);
+    }
+  }
+
+  $effect(() => {
+    void isHorizontal;
+    void activeChapter?.url;
+    void focusedPageIdx;
+    preloadHorizontalNearbyImages();
+  });
 
   function scheduleToolbarAutoHide() {
     if (toolbarAutoHideTimer !== null) {
@@ -291,10 +404,6 @@
     return focusedKeys.has(key);
   }
 
-  function groupDimBrightness(groupKey: string, dimEnabled: boolean, dimLevel: number): number {
-    return focusBrightness(isKeyFocused(groupKey), dimEnabled, dimLevel);
-  }
-
   function pageDimBrightness(pageKey: string): number {
     if (isHorizontal) return 1;
     return focusBrightness(isKeyFocused(pageKey), vCfg.dimUnfocused, vCfg.dimLevel);
@@ -331,90 +440,53 @@
   }
 
   function updateFocusNow() {
-    if (!scrollEl || strip.length === 0 || loadingInitial) return;
-    const scrollRect = scrollEl.getBoundingClientRect();
-    const nextFocused = new Set<string>();
+    if (strip.length === 0 || loadingInitial) return;
 
     if (isHorizontal) {
-      const groups = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-group-key]"));
-      const absLeft = Math.abs(scrollEl.scrollLeft);
-      const maxScroll = Math.max(0, scrollEl.scrollWidth - scrollEl.clientWidth);
-      let best: HTMLElement | null = null;
+      const grp = currentHorizontalGroup;
+      if (grp && grp.items.length > 0 && activeChapter) {
+        focusedPageIdx = grp.items[0].pageIdx;
+        focusedKeys = new Set([`${activeChapter.url}:hg:${grp.groupIdx}`]);
+      }
+      return;
+    }
 
-      if (groups.length > 0 && absLeft <= 16) {
-        best = groups[0];
-      } else if (groups.length > 0 && maxScroll > 16 && absLeft >= maxScroll - 16) {
-        best = groups[groups.length - 1];
-      } else {
-        const centerX = scrollRect.left + scrollRect.width / 2;
-        let bestDist = Number.POSITIVE_INFINITY;
-        for (const el of groups) {
-          const r = el.getBoundingClientRect();
-          const elCenter = r.left + r.width / 2;
-          const dist = Math.abs(elCenter - centerX);
-          if (dist < bestDist) {
-            bestDist = dist;
-            best = el;
-          }
-        }
-      }
-      if (best?.dataset.groupKey) {
-        nextFocused.add(best.dataset.groupKey);
-        const pagesInGroup = Array.from(best.querySelectorAll<HTMLElement>("[data-page-idx]"));
-        let pageForIdx: HTMLElement | null = pagesInGroup[0] ?? null;
-        if (pagesInGroup.length > 1 && (hCfg.snapMode === "none" || hCfg.snapMode === "page")) {
-          const centerX = scrollRect.left + scrollRect.width / 2;
-          let bestPageDist = Number.POSITIVE_INFINITY;
-          for (const p of pagesInGroup) {
-            const pr = p.getBoundingClientRect();
-            const d = Math.abs(pr.left + pr.width / 2 - centerX);
-            if (d < bestPageDist) {
-              bestPageDist = d;
-              pageForIdx = p;
-            }
-          }
-        }
-        if (pageForIdx?.dataset.pageIdx) {
-          const rawIdx = Number(pageForIdx.dataset.pageIdx) || 0;
-          focusedPageIdx =
-            totalPages > 0 ? Math.max(0, Math.min(totalPages - 1, rawIdx)) : Math.max(0, rawIdx);
-        }
-      }
-    } else {
-      const centerY = scrollRect.top + scrollRect.height * 0.45;
-      const pages = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-page-key]"));
-      let best: HTMLElement | null = null;
-      let bestDist = Number.POSITIVE_INFINITY;
-      let bestInActive: HTMLElement | null = null;
-      let bestInActiveDist = Number.POSITIVE_INFINITY;
-      const normActive = normUrl(activeUrl);
+    if (!scrollEl) return;
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const nextFocused = new Set<string>();
+    const centerY = scrollRect.top + scrollRect.height * 0.45;
+    const pages = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-page-key]"));
+    let best: HTMLElement | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    let bestInActive: HTMLElement | null = null;
+    let bestInActiveDist = Number.POSITIVE_INFINITY;
+    const normActive = normUrl(activeUrl);
 
-      for (const el of pages) {
-        const r = el.getBoundingClientRect();
-        if (r.top <= centerY && r.bottom >= centerY && el.dataset.pageKey) {
-          nextFocused.add(el.dataset.pageKey);
-        }
-        const elCenter = r.top + r.height / 2;
-        const dist = Math.abs(elCenter - centerY);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = el;
-        }
-        const secUrl = el.closest<HTMLElement>("[data-chapter-url]")?.dataset.chapterUrl;
-        if (secUrl && normUrl(secUrl) === normActive && dist < bestInActiveDist) {
-          bestInActiveDist = dist;
-          bestInActive = el;
-        }
+    for (const el of pages) {
+      const r = el.getBoundingClientRect();
+      if (r.top <= centerY && r.bottom >= centerY && el.dataset.pageKey) {
+        nextFocused.add(el.dataset.pageKey);
       }
-      if (best?.dataset.pageKey) {
-        nextFocused.add(best.dataset.pageKey);
+      const elCenter = r.top + r.height / 2;
+      const dist = Math.abs(elCenter - centerY);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = el;
       }
-      const pageForIdx = bestInActive ?? best;
-      if (pageForIdx?.dataset.pageIdx) {
-        const rawIdx = Number(pageForIdx.dataset.pageIdx) || 0;
-        focusedPageIdx =
-          totalPages > 0 ? Math.max(0, Math.min(totalPages - 1, rawIdx)) : Math.max(0, rawIdx);
+      const secUrl = el.closest<HTMLElement>("[data-chapter-url]")?.dataset.chapterUrl;
+      if (secUrl && normUrl(secUrl) === normActive && dist < bestInActiveDist) {
+        bestInActiveDist = dist;
+        bestInActive = el;
       }
+    }
+    if (best?.dataset.pageKey) {
+      nextFocused.add(best.dataset.pageKey);
+    }
+    const pageForIdx = bestInActive ?? best;
+    if (pageForIdx?.dataset.pageIdx) {
+      const rawIdx = Number(pageForIdx.dataset.pageIdx) || 0;
+      focusedPageIdx =
+        totalPages > 0 ? Math.max(0, Math.min(totalPages - 1, rawIdx)) : Math.max(0, rawIdx);
     }
 
     if (
@@ -455,12 +527,16 @@
   }
 
   function captureCurrentProgressNow(keepSessionActive = !closingReader) {
-    if (!scrollEl || !activeChapter || loadingInitial) return;
+    if (!activeChapter || loadingInitial) return;
     let ratio = 0;
     if (isHorizontal) {
-      const maxScroll = Math.max(1, scrollEl.scrollWidth - scrollEl.clientWidth);
-      ratio = Math.min(1, Math.max(0, Math.abs(scrollEl.scrollLeft) / maxScroll));
-    } else {
+      const totalGroups = Math.max(1, horizontalGroups.length);
+      ratio = horizontalAtEnd
+        ? 1
+        : totalGroups <= 1
+          ? 1
+          : Math.min(1, Math.max(0, activeGroupIdx / (totalGroups - 1)));
+    } else if (scrollEl) {
       const maxScroll = Math.max(1, scrollEl.scrollHeight - scrollEl.clientHeight);
       ratio = Math.min(1, Math.max(0, scrollEl.scrollTop / maxScroll));
     }
@@ -475,6 +551,7 @@
   }
 
   function clearPendingTimers(flush = false, keepSessionActive = !closingReader) {
+    cancelVerticalSmoothScroll();
     if (flush) {
       void flushPendingProgress(keepSessionActive);
     } else {
@@ -490,6 +567,7 @@
       toolbarAutoHideTimer,
       singleTapTimer,
       orientationRestoreTimer,
+      wheelResetTimer,
     ]) {
       if (timer !== null) window.clearTimeout(timer);
     }
@@ -498,6 +576,7 @@
     toolbarAutoHideTimer = null;
     singleTapTimer = null;
     orientationRestoreTimer = null;
+    wheelResetTimer = null;
     if (focusRaf !== null) {
       window.cancelAnimationFrame(focusRaf);
       focusRaf = null;
@@ -516,40 +595,80 @@
   }
 
   function scrollToStartOfContainer(smooth = false) {
+    cancelVerticalSmoothScroll();
+    if (isHorizontal) {
+      resetZoom();
+      horizontalAtEnd = false;
+      activeGroupIdx = 0;
+      focusedPageIdx = 0;
+      showScrollTopBtn = false;
+      lastScrollOffset = 0;
+      captureCurrentProgressNow();
+      return;
+    }
     if (!scrollEl) return;
     const behaviorScroll: ScrollBehavior = smooth ? "smooth" : "instant";
-    if (isHorizontal) {
-      scrollEl.scrollTo({ left: 0, behavior: behaviorScroll });
-      lastScrollOffset = 0;
-    } else {
-      scrollEl.scrollTo({ top: 0, behavior: behaviorScroll });
-      lastScrollOffset = 0;
-    }
+    scrollEl.scrollTo({ top: 0, behavior: behaviorScroll });
+    lastScrollOffset = 0;
     showScrollTopBtn = false;
   }
 
   function seekToPage(pageIndex: number) {
-    if (!scrollEl || !activeChapter) return;
+    if (!activeChapter) return;
     const clamped = Math.max(0, Math.min(Math.max(0, activeChapter.images.length - 1), pageIndex));
     focusedPageIdx = clamped;
     suppressAutoHideUntil = Date.now() + 450;
     resetZoom();
+
+    if (isHorizontal) {
+      horizontalAtEnd = false;
+      const perGroup = Math.max(1, hCfg.pagesPerGroup);
+      activeGroupIdx = Math.max(
+        0,
+        Math.min(Math.max(0, horizontalGroups.length - 1), Math.floor(clamped / perGroup))
+      );
+      showScrollTopBtn = activeGroupIdx > 0;
+      updateFocusNow();
+      captureCurrentProgressNow();
+      return;
+    }
+
+    if (!scrollEl) return;
     const pageEl = scrollEl.querySelector<HTMLElement>(
       `[data-page-key="${CSS.escape(`${activeChapter.url}:${clamped}`)}"]`
     );
     if (pageEl) {
       pageEl.scrollIntoView({
         behavior: "instant",
-        block: isHorizontal ? "nearest" : "start",
+        block: "start",
         inline: "center",
       });
-      lastScrollOffset = isHorizontal ? Math.abs(scrollEl.scrollLeft) : scrollEl.scrollTop;
+      lastScrollOffset = scrollEl.scrollTop;
       updateFocusNow();
       captureCurrentProgressNow();
     }
   }
 
   function applyScrollRestore(ratio: number, pageIdx: number, targetChapUrl: string) {
+    if (isHorizontal) {
+      horizontalAtEnd = false;
+      const totalImgs = activeChapter?.images.length ?? 0;
+      const perGroup = Math.max(1, hCfg.pagesPerGroup);
+      const totalGroups = Math.max(1, horizontalGroups.length);
+      let targetGroup = 0;
+      if (pageIdx > 0 && totalImgs > 0) {
+        const clampedPage = Math.max(0, Math.min(totalImgs - 1, pageIdx));
+        targetGroup = Math.floor(clampedPage / perGroup);
+        focusedPageIdx = clampedPage;
+      } else if (ratio > 0.01 && totalGroups > 1) {
+        targetGroup = Math.round((totalGroups - 1) * Math.max(0, Math.min(1, ratio)));
+        focusedPageIdx = horizontalGroups[targetGroup]?.items[0]?.pageIdx ?? 0;
+      }
+      activeGroupIdx = Math.max(0, Math.min(totalGroups - 1, targetGroup));
+      showScrollTopBtn = activeGroupIdx > 0;
+      return;
+    }
+
     if (!scrollEl) return;
     if (pageIdx > 0) {
       const pageEl = scrollEl.querySelector<HTMLElement>(
@@ -557,22 +676,15 @@
       );
       if (pageEl) {
         pageEl.scrollIntoView({ behavior: "instant", block: "start", inline: "center" });
-        lastScrollOffset = isHorizontal ? Math.abs(scrollEl.scrollLeft) : scrollEl.scrollTop;
+        lastScrollOffset = scrollEl.scrollTop;
         focusedPageIdx = pageIdx;
         return;
       }
     }
-    if (isHorizontal) {
-      const maxX = Math.max(0, scrollEl.scrollWidth - scrollEl.clientWidth);
-      const target = Math.round(maxX * ratio);
-      scrollEl.scrollLeft = isRtl ? -target : target;
-      lastScrollOffset = Math.abs(scrollEl.scrollLeft);
-    } else {
-      const maxY = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
-      const target = Math.round(maxY * ratio);
-      scrollEl.scrollTop = target;
-      lastScrollOffset = target;
-    }
+    const maxY = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    const target = Math.round(maxY * ratio);
+    scrollEl.scrollTop = target;
+    lastScrollOffset = target;
   }
 
   async function loadInitial(targetUrl: string, scrollRatio: number, pageIndex: number) {
@@ -586,6 +698,9 @@
     strip = [];
     focusedKeys = new Set();
     focusedPageIdx = Math.max(0, pageIndex);
+    activeGroupIdx = 0;
+    horizontalAtEnd = false;
+    preloadedImageTokens.clear();
     prefetched.clear();
     markedReadSet.clear();
     dimensionSamples.clear();
@@ -667,6 +782,15 @@
   }
 
   $effect(() => {
+    if (!deviceEnv.isAndroid) {
+      void getCurrentWindow()
+        .isFullscreen()
+        .then((fs) => {
+          isFullscreen = fs;
+        })
+        .catch(() => {});
+    }
+
     const unregisterBack = router.registerBackInterceptor(() => {
       if (chapterJumpOpen) {
         chapterJumpOpen = false;
@@ -832,13 +956,23 @@
         }
       }
       await tick();
+      if (isHorizontal) {
+        horizontalAtEnd = false;
+        const perGroup = Math.max(1, hCfg.pagesPerGroup);
+        activeGroupIdx = Math.max(
+          0,
+          Math.min(Math.max(0, horizontalGroups.length - 1), Math.floor(anchorPage / perGroup))
+        );
+        updateFocusNow();
+        return;
+      }
       if (!scrollEl) return;
       const pageEl = scrollEl.querySelector<HTMLElement>(
         `[data-page-key="${CSS.escape(`${anchorChap}:${anchorPage}`)}"]`
       );
       if (pageEl) {
         pageEl.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-        lastScrollOffset = isHorizontal ? Math.abs(scrollEl.scrollLeft) : scrollEl.scrollTop;
+        lastScrollOffset = scrollEl.scrollTop;
       }
       updateFocusNow();
     })();
@@ -946,60 +1080,226 @@
     }
   }
 
-  function stepHorizontalGroup(deltaStep: 1 | -1) {
-    if (!scrollEl || !isHorizontal) return;
+  function stepHorizontalGroup(deltaStep: 1 | -1, enforceCooldown = false) {
+    if (!isHorizontal || !activeChapter) return;
+    if (enforceCooldown) {
+      const now = Date.now();
+      const cooldown = computeNavStepCooldownMs(behavior.navigationSpeed);
+      if (now - lastHorizontalStepAt < cooldown) return;
+      lastHorizontalStepAt = now;
+    }
+
     resetZoom();
-    const groups = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-group-key]"));
+    const groups = horizontalGroups;
     if (groups.length === 0) return;
 
-    const currentIdx = groups.findIndex(
-      (g) => g.dataset.groupKey && focusedKeys.has(g.dataset.groupKey)
-    );
-    const baseIdx = currentIdx >= 0 ? currentIdx : 0;
-    const nextIdx = baseIdx + deltaStep;
-
-    if (nextIdx >= 0 && nextIdx < groups.length) {
-      const targetGroup = groups[nextIdx];
-      if (targetGroup.dataset.groupKey) {
-        focusedKeys = new Set([targetGroup.dataset.groupKey]);
-        const firstPage = targetGroup.querySelector<HTMLElement>("[data-page-idx]");
-        if (firstPage?.dataset.pageIdx) {
-          focusedPageIdx = Number(firstPage.dataset.pageIdx) || 0;
-        }
+    if (horizontalAtEnd) {
+      if (deltaStep < 0) {
+        horizontalAtEnd = false;
+        activeGroupIdx = groups.length - 1;
+        focusedPageIdx = groups[activeGroupIdx]?.items[0]?.pageIdx ?? 0;
+        showScrollTopBtn = activeGroupIdx > 0;
+        updateFocusNow();
+        captureCurrentProgressNow();
+      } else if (activeChapter.next) {
+        jumpToChapter(activeChapter.next);
       }
-      targetGroup.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
       return;
     }
-    if (deltaStep > 0 && activeChapter?.next) {
-      jumpToChapter(activeChapter.next);
-    } else if (deltaStep < 0 && activeChapter?.prev) {
+
+    const nextIdx = activeGroupIdx + deltaStep;
+    if (nextIdx >= 0 && nextIdx < groups.length) {
+      activeGroupIdx = nextIdx;
+      focusedPageIdx = groups[nextIdx]?.items[0]?.pageIdx ?? 0;
+      showScrollTopBtn = activeGroupIdx > 0;
+      if (deltaStep > 0) {
+        // Advancing forward hides reader overlays quietly like scrolling downward.
+        toolbarVisible = false;
+        quickSettingsOpen = false;
+        openQuickCat = null;
+        quickFloatConfig = null;
+        chapterJumpOpen = false;
+      }
+      const ratio = groups.length <= 1 ? 1 : activeGroupIdx / (groups.length - 1);
+      scheduleSaveProgress(activeChapter.url, activeChapter.name, ratio, focusedPageIdx);
+      if (ratio >= 0.85) {
+        markChapterReadLocalAndRemote(activeChapter.url);
+      }
+      if (ratio >= 0.7 && activeChapter.next) {
+        void prefetchNext(activeChapter.next);
+      }
+      updateFocusNow();
+      return;
+    }
+
+    if (deltaStep > 0) {
+      markChapterReadLocalAndRemote(activeChapter.url);
+      if (activeChapter.next) {
+        horizontalAtEnd = true;
+        toolbarVisible = true;
+      } else {
+        horizontalAtEnd = true;
+        toolbarVisible = true;
+      }
+    } else if (deltaStep < 0 && activeChapter.prev) {
       jumpToChapter(activeChapter.prev);
     }
   }
 
+  function measureZoomTargetRect(target: EventTarget | null): RectBox {
+    if (!scrollEl) {
+      return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    }
+    const vpRect = scrollEl.getBoundingClientRect();
+    if (isHorizontal) {
+      const targetEl = target instanceof HTMLElement ? target.closest("img") : null;
+      const imgs = targetEl
+        ? [targetEl]
+        : Array.from(horizontalStageEl?.querySelectorAll<HTMLImageElement>("img") ?? []);
+      if (imgs.length > 0) {
+        let minL = Number.POSITIVE_INFINITY;
+        let minT = Number.POSITIVE_INFINITY;
+        let maxR = Number.NEGATIVE_INFINITY;
+        let maxB = Number.NEGATIVE_INFINITY;
+        for (const img of imgs) {
+          const r = img.getBoundingClientRect();
+          if (r.width > 10 && r.height > 10) {
+            minL = Math.min(minL, r.left - vpRect.left);
+            minT = Math.min(minT, r.top - vpRect.top);
+            maxR = Math.max(maxR, r.right - vpRect.left);
+            maxB = Math.max(maxB, r.bottom - vpRect.top);
+          }
+        }
+        if (Number.isFinite(minL) && maxR > minL && maxB > minT) {
+          return {
+            left: (minL - zoomTx) / Math.max(1, zoomScale),
+            top: (minT - zoomTy) / Math.max(1, zoomScale),
+            width: (maxR - minL) / Math.max(1, zoomScale),
+            height: (maxB - minT) / Math.max(1, zoomScale),
+          };
+        }
+      }
+      return { left: 0, top: 0, width: vpRect.width, height: vpRect.height };
+    }
+
+    if (verticalContentEl) {
+      const cRect = verticalContentEl.getBoundingClientRect();
+      return {
+        left: (cRect.left - vpRect.left - zoomTx) / Math.max(1, zoomScale),
+        top: 0,
+        width: cRect.width / Math.max(1, zoomScale),
+        height: vpRect.height,
+      };
+    }
+    return { left: 0, top: 0, width: vpRect.width, height: vpRect.height };
+  }
+
   function handlePointerDown(e: PointerEvent) {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
+      return;
+    }
     pointerDownX = e.clientX;
     pointerDownY = e.clientY;
+    pointerDownAt = Date.now();
+    didPanDrag = false;
+    activePointerId = e.pointerId;
     wakeFloatingControls();
+
+    if (zoomScale > 1.01) {
+      zoomPanning = true;
+      panStartX = e.clientX;
+      panStartY = e.clientY;
+      panOriginTx = zoomTx;
+      panOriginTy = zoomTy;
+      if (isHorizontal && scrollEl) {
+        try {
+          scrollEl.setPointerCapture(e.pointerId);
+        } catch {
+          // Ignore capture errors on synthetic events.
+        }
+      }
+    }
+  }
+
+  function handlePointerMove(e: PointerEvent) {
+    if (!zoomPanning || activePointerId !== e.pointerId || !scrollEl || zoomScale <= 1.01) return;
+    const dx = e.clientX - panStartX;
+    const dy = e.clientY - panStartY;
+    if (Math.hypot(dx, dy) > 4) {
+      didPanDrag = true;
+    }
+    const vpRect = scrollEl.getBoundingClientRect();
+    const rect = zoomContentRect ?? {
+      left: 0,
+      top: 0,
+      width: vpRect.width,
+      height: vpRect.height,
+    };
+    const clamped = clampZoomPan(
+      panOriginTx + dx,
+      isHorizontal ? panOriginTy + dy : 0,
+      zoomScale,
+      vpRect.width,
+      vpRect.height,
+      rect
+    );
+    zoomTx = clamped.tx;
+    if (isHorizontal) {
+      zoomTy = clamped.ty;
+    }
+  }
+
+  function handlePointerUp(e: PointerEvent) {
+    if (activePointerId !== e.pointerId) return;
+    const dx = e.clientX - pointerDownX;
+    const dy = e.clientY - pointerDownY;
+    const elapsed = Date.now() - pointerDownAt;
+
+    if (zoomPanning) {
+      zoomPanning = false;
+      if (scrollEl) {
+        try {
+          scrollEl.releasePointerCapture(e.pointerId);
+        } catch {
+          // Ignore if capture was not set.
+        }
+      }
+    }
+    activePointerId = null;
+
+    // Horizontal mode intentional horizontal swipe -> instant page replacement (NO slide animation).
+    if (
+      isHorizontal &&
+      zoomScale <= 1.01 &&
+      !didPanDrag &&
+      elapsed < 650 &&
+      Math.abs(dx) >= 56 &&
+      Math.abs(dx) > Math.abs(dy) * 1.45
+    ) {
+      const swipedLeft = dx < 0;
+      const step: 1 | -1 = swipedLeft ? (isRtl ? -1 : 1) : isRtl ? 1 : -1;
+      stepHorizontalGroup(step, false);
+    }
   }
 
   function executeSingleTap(clientX: number) {
     if (isHorizontal && readerSettings.tapZonesEnabled && scrollEl && zoomScale <= 1.01) {
       const rect = scrollEl.getBoundingClientRect();
       const relX = (clientX - rect.left) / Math.max(1, rect.width);
-      if (relX <= 0.26) {
-        stepHorizontalGroup(isRtl ? 1 : -1);
+      if (relX <= 0.25) {
+        stepHorizontalGroup(isRtl ? 1 : -1, false);
         return;
       }
-      if (relX >= 0.74) {
-        stepHorizontalGroup(isRtl ? -1 : 1);
+      if (relX >= 0.75) {
+        stepHorizontalGroup(isRtl ? -1 : 1, false);
         return;
       }
     }
     toolbarVisible = !toolbarVisible;
   }
 
-  function executeDoubleTap(clientX: number, clientY: number) {
+  function executeDoubleTap(clientX: number, clientY: number, target: EventTarget | null) {
     const action = behavior.doubleTapAction;
     if (action === "disabled") return;
     if (action === "toggle_toolbar") {
@@ -1008,25 +1308,65 @@
     }
     if (action === "next_page") {
       if (isHorizontal) {
-        stepHorizontalGroup(1);
+        stepHorizontalGroup(1, false);
       } else if (scrollEl) {
-        scrollEl.scrollBy({ top: scrollEl.clientHeight * 0.85, behavior: "smooth" });
+        const mult = computeVerticalSpeedMultiplier(behavior.navigationSpeed);
+        animateVerticalScrollBy(Math.round(scrollEl.clientHeight * 0.78 * mult));
       }
       return;
     }
-    // Default: Zoom toggle 1x <-> 1.8x anchored cleanly at tap coordinates.
+
+    // Anchored zoom toggle (`1x <-> 2.0x`) centered precisely on tapped/clicked coordinates.
     if (zoomScale > 1.01) {
-      resetZoom();
-    } else if (scrollEl) {
-      const rect = scrollEl.getBoundingClientRect();
-      zoomOriginX = Math.max(10, Math.min(90, Math.round(((clientX - rect.left) / Math.max(1, rect.width)) * 100)));
-      zoomOriginY = Math.max(10, Math.min(90, Math.round(((clientY - rect.top) / Math.max(1, rect.height)) * 100)));
-      zoomScale = 1.8;
+      resetZoom(clientY);
+      return;
+    }
+    if (!scrollEl) return;
+
+    const vpRect = scrollEl.getBoundingClientRect();
+    const pointerX = clientX - vpRect.left;
+    const pointerY = clientY - vpRect.top;
+    const contentRect = measureZoomTargetRect(target);
+    zoomContentRect = contentRect;
+
+    const next = computeAnchoredZoom(
+      pointerX,
+      pointerY,
+      { scale: zoomScale, tx: zoomTx, ty: zoomTy },
+      ZOOM_TARGET_SCALE,
+      vpRect.width,
+      vpRect.height,
+      contentRect
+    );
+
+    if (isHorizontal) {
+      zoomScale = next.scale;
+      zoomTx = next.tx;
+      zoomTy = next.ty;
+    } else {
+      const docYBefore = scrollEl.scrollTop + pointerY;
+      const baseHeight = verticalContentEl?.offsetHeight ?? scrollEl.scrollHeight;
+      verticalZoomExtraBottomPx = Math.max(0, Math.round(baseHeight * (next.scale - 1)));
+      zoomScale = next.scale;
+      zoomTx = next.tx;
+      zoomTy = 0;
+      const targetScrollTop = Math.max(0, Math.round(docYBefore * next.scale - pointerY));
+      suppressAutoHideUntil = Date.now() + 300;
+      window.requestAnimationFrame(() => {
+        if (scrollEl) {
+          scrollEl.scrollTop = targetScrollTop;
+          lastScrollOffset = targetScrollTop;
+        }
+      });
     }
   }
 
   function handleViewportClick(e: MouseEvent) {
     wakeFloatingControls();
+    if (didPanDrag) {
+      didPanDrag = false;
+      return;
+    }
     if (quickFloatConfig !== null) {
       quickFloatConfig = null;
       return;
@@ -1051,13 +1391,13 @@
     const now = Date.now();
     const doubleTapEnabled = behavior.doubleTapAction !== "disabled";
 
-    if (doubleTapEnabled && now - lastTapAt <= 240) {
+    if (doubleTapEnabled && now - lastTapAt <= 260) {
       lastTapAt = 0;
       if (singleTapTimer !== null) {
         window.clearTimeout(singleTapTimer);
         singleTapTimer = null;
       }
-      executeDoubleTap(e.clientX, e.clientY);
+      executeDoubleTap(e.clientX, e.clientY, e.target);
       return;
     }
 
@@ -1069,7 +1409,7 @@
       singleTapTimer = window.setTimeout(() => {
         singleTapTimer = null;
         executeSingleTap(tapX);
-      }, 240);
+      }, 260);
     }
   }
 
@@ -1089,63 +1429,68 @@
   }
 
   function handleWheel(e: WheelEvent) {
-    if (!isHorizontal || !scrollEl || e.ctrlKey) return;
-    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+    if (!scrollEl || e.ctrlKey) return;
+
+    if (isHorizontal) {
       e.preventDefault();
-      if (hCfg.snapMode !== "none" && Math.abs(e.deltaY) >= 40) {
-        stepHorizontalGroup(e.deltaY > 0 ? 1 : -1);
-      } else {
-        scrollEl.scrollLeft += e.deltaY * (isRtl ? -1 : 1);
+      // If zoomed in horizontally, pan vertically/horizontally with wheel instead of flipping page.
+      if (zoomScale > 1.01) {
+        const vpRect = scrollEl.getBoundingClientRect();
+        const rect = zoomContentRect ?? {
+          left: 0,
+          top: 0,
+          width: vpRect.width,
+          height: vpRect.height,
+        };
+        const clamped = clampZoomPan(
+          zoomTx - e.deltaX,
+          zoomTy - e.deltaY,
+          zoomScale,
+          vpRect.width,
+          vpRect.height,
+          rect
+        );
+        zoomTx = clamped.tx;
+        zoomTy = clamped.ty;
+        return;
       }
+
+      const dominant = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      if (Math.abs(dominant) < 2) return;
+      wheelDeltaAccum += dominant;
+      if (wheelResetTimer !== null) window.clearTimeout(wheelResetTimer);
+      wheelResetTimer = window.setTimeout(() => {
+        wheelDeltaAccum = 0;
+        wheelResetTimer = null;
+      }, 180);
+
+      if (Math.abs(wheelDeltaAccum) >= 36) {
+        const step: 1 | -1 = wheelDeltaAccum > 0 ? 1 : -1;
+        wheelDeltaAccum = 0;
+        stepHorizontalGroup(step, true);
+      }
+      return;
+    }
+
+    // Vertical mode: smooth speed-adjustable wheel movement for discrete desktop wheel ticks.
+    if (e.deltaMode === 0 && Math.abs(e.deltaY) >= 40) {
+      e.preventDefault();
+      const mult = computeVerticalSpeedMultiplier(behavior.navigationSpeed);
+      animateVerticalScrollBy(e.deltaY * mult);
+    } else if (e.deltaMode === 1) {
+      e.preventDefault();
+      const mult = computeVerticalSpeedMultiplier(behavior.navigationSpeed);
+      animateVerticalScrollBy(e.deltaY * 42 * mult);
     }
   }
 
   function handleScroll() {
-    if (!scrollEl || strip.length === 0 || loadingInitial) return;
+    if (isHorizontal || !scrollEl || strip.length === 0 || loadingInitial) return;
 
     wakeFloatingControls();
     scheduleFocusUpdate();
 
     const suppressHide = scrubbing || Date.now() < suppressAutoHideUntil;
-
-    if (isHorizontal) {
-      const absLeft = Math.abs(scrollEl.scrollLeft);
-      const delta = absLeft - lastScrollOffset;
-      showScrollTopBtn = absLeft > scrollEl.clientWidth * 0.8;
-
-      if (!restoredInitialScroll && restoreTimer !== null && Math.abs(delta) > 15) {
-        isUserScrollingBeforeRestore = true;
-        window.clearTimeout(restoreTimer);
-        restoreTimer = null;
-        restoredInitialScroll = true;
-      }
-
-      if (!suppressHide) {
-        if (delta > 20 && absLeft > 80) {
-          toolbarVisible = false;
-          quickSettingsOpen = false;
-          openQuickCat = null;
-          quickFloatConfig = null;
-          chapterJumpOpen = false;
-        } else if (delta < -20 || absLeft < 40) {
-          toolbarVisible = true;
-        }
-      }
-      lastScrollOffset = absLeft;
-
-      if (restoredInitialScroll && activeChapter) {
-        const maxScroll = Math.max(1, scrollEl.scrollWidth - scrollEl.clientWidth);
-        const ratio = Math.min(1, Math.max(0, absLeft / maxScroll));
-        scheduleSaveProgress(activeChapter.url, activeChapter.name, ratio, focusedPageIdx);
-        if (ratio >= 0.85) {
-          markChapterReadLocalAndRemote(activeChapter.url);
-        }
-        if (ratio >= 0.7 && activeChapter.next) {
-          void prefetchNext(activeChapter.next);
-        }
-      }
-      return;
-    }
 
     const top = scrollEl.scrollTop;
     const delta = top - lastScrollOffset;
@@ -1158,16 +1503,14 @@
       restoredInitialScroll = true;
     }
 
-    if (!suppressHide) {
-      if (delta > 16 && top > 80) {
-        toolbarVisible = false;
-        quickSettingsOpen = false;
-        openQuickCat = null;
-        quickFloatConfig = null;
-        chapterJumpOpen = false;
-      } else if (delta < -16 || top < 60) {
-        toolbarVisible = true;
-      }
+    // Part 2.4: Scrolling downward automatically fades out reader toolbars & popovers;
+    // scrolling/swiping upward does NOT open the reader controls (single-tap toggles them).
+    if (!suppressHide && delta > 14 && top > 64) {
+      toolbarVisible = false;
+      quickSettingsOpen = false;
+      openQuickCat = null;
+      quickFloatConfig = null;
+      chapterJumpOpen = false;
     }
     lastScrollOffset = top;
 
@@ -1236,14 +1579,7 @@
   }
 
   async function toggleFullscreen() {
-    try {
-      const win = getCurrentWindow();
-      const next = !(await win.isFullscreen());
-      await win.setFullscreen(next);
-      isFullscreen = next;
-    } catch {
-      // Browser preview fallback.
-    }
+    isFullscreen = await deviceEnv.toggleDesktopFullscreen();
   }
 
   async function toggleBookmark() {
@@ -1294,12 +1630,13 @@
     openQuickCat = null;
     quickFloatConfig = null;
     chapterJumpOpen = false;
-    if (scrollEl && activeChapter && !loadingInitial) {
+    if (activeChapter && !loadingInitial) {
       let ratio = 0;
       if (isHorizontal) {
-        const maxScroll = Math.max(1, scrollEl.scrollWidth - scrollEl.clientWidth);
-        ratio = Math.min(1, Math.max(0, Math.abs(scrollEl.scrollLeft) / maxScroll));
-      } else {
+        const totalGroups = Math.max(1, horizontalGroups.length);
+        ratio =
+          totalGroups <= 1 ? 1 : Math.min(1, Math.max(0, activeGroupIdx / (totalGroups - 1)));
+      } else if (scrollEl) {
         const maxScroll = Math.max(1, scrollEl.scrollHeight - scrollEl.clientHeight);
         ratio = Math.min(1, Math.max(0, scrollEl.scrollTop / maxScroll));
       }
@@ -1311,6 +1648,7 @@
 
   const allFloatingScreens: FloatingScreenKey[] = [
     "home",
+    "browse",
     "bookmarks",
     "history",
     "manga",
@@ -1322,6 +1660,8 @@
     switch (key) {
       case "home":
         return t.navHome;
+      case "browse":
+        return t.floatingScreenBrowse;
       case "bookmarks":
         return t.navBookmarks;
       case "history":
@@ -1352,15 +1692,7 @@
     await flushPendingProgress(false);
     await api.clearReaderSession().catch(() => {});
     await applyKeepScreenOn(false);
-    try {
-      const win = getCurrentWindow();
-      if (await win.isFullscreen()) {
-        await win.setFullscreen(false);
-        isFullscreen = false;
-      }
-    } catch {
-      // Ignore outside Tauri.
-    }
+    // Preserve desktop fullscreen state (Part 8) so exiting a chapter does not unexpectedly leave fullscreen.
     if (!router.goBack()) {
       router.goManga(mangaId);
     }
@@ -1375,35 +1707,62 @@
       return;
     }
 
+    if (e.key === "F11" || e.key === "f" || e.key === "F") {
+      e.preventDefault();
+      void toggleFullscreen();
+      return;
+    }
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (chapterJumpOpen) chapterJumpOpen = false;
+      else if (quickFloatConfig !== null) quickFloatConfig = null;
+      else if (quickSettingsOpen) {
+        quickSettingsOpen = false;
+        openQuickCat = null;
+      } else if (zoomScale > 1.01) resetZoom();
+      else if (!toolbarVisible) toolbarVisible = true;
+      else void exitReader();
+      return;
+    }
+
     if (isHorizontal) {
       if (e.key === "ArrowRight") {
         e.preventDefault();
-        stepHorizontalGroup(isRtl ? -1 : 1);
+        stepHorizontalGroup(isRtl ? -1 : 1, e.repeat);
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
-        stepHorizontalGroup(isRtl ? 1 : -1);
-      } else if (e.key === " ") {
+        stepHorizontalGroup(isRtl ? 1 : -1, e.repeat);
+      } else if (e.key === "PageDown" || e.key === " ") {
         e.preventDefault();
-        stepHorizontalGroup(e.shiftKey ? -1 : 1);
-      } else if (e.key === "f" || e.key === "F") {
+        stepHorizontalGroup(e.shiftKey ? -1 : 1, e.repeat);
+      } else if (e.key === "PageUp") {
         e.preventDefault();
-        void toggleFullscreen();
-      } else if (e.key === "Escape") {
+        stepHorizontalGroup(-1, e.repeat);
+      } else if (e.key === "Home") {
         e.preventDefault();
-        if (chapterJumpOpen) chapterJumpOpen = false;
-        else if (quickFloatConfig !== null) quickFloatConfig = null;
-        else if (quickSettingsOpen) {
-          quickSettingsOpen = false;
-          openQuickCat = null;
-        }
-        else if (zoomScale > 1.01) resetZoom();
-        else if (isFullscreen) void toggleFullscreen();
-        else void exitReader();
+        seekToPage(0);
+      } else if (e.key === "End" && totalPages > 0) {
+        e.preventDefault();
+        seekToPage(totalPages - 1);
       }
       return;
     }
 
-    if (e.key === "ArrowLeft" && activeChapter?.prev) {
+    const mult = computeVerticalSpeedMultiplier(behavior.navigationSpeed);
+    if (e.key === "ArrowDown" && scrollEl) {
+      e.preventDefault();
+      animateVerticalScrollBy(Math.round(180 * mult));
+    } else if (e.key === "ArrowUp" && scrollEl) {
+      e.preventDefault();
+      animateVerticalScrollBy(-Math.round(180 * mult));
+    } else if (e.key === "PageDown" && scrollEl) {
+      e.preventDefault();
+      animateVerticalScrollBy(Math.round(scrollEl.clientHeight * 0.85 * mult));
+    } else if (e.key === "PageUp" && scrollEl) {
+      e.preventDefault();
+      animateVerticalScrollBy(-Math.round(scrollEl.clientHeight * 0.85 * mult));
+    } else if (e.key === "ArrowLeft" && activeChapter?.prev) {
       e.preventDefault();
       jumpToChapter(activeChapter.prev);
     } else if (e.key === "ArrowRight" && activeChapter?.next) {
@@ -1411,22 +1770,8 @@
       jumpToChapter(activeChapter.next);
     } else if (e.key === " " && scrollEl) {
       e.preventDefault();
-      const amount = scrollEl.clientHeight * 0.85;
-      scrollEl.scrollBy({ top: e.shiftKey ? -amount : amount, behavior: "smooth" });
-    } else if (e.key === "f" || e.key === "F") {
-      e.preventDefault();
-      void toggleFullscreen();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      if (chapterJumpOpen) chapterJumpOpen = false;
-      else if (quickFloatConfig !== null) quickFloatConfig = null;
-      else if (quickSettingsOpen) {
-        quickSettingsOpen = false;
-        openQuickCat = null;
-      }
-      else if (zoomScale > 1.01) resetZoom();
-      else if (isFullscreen) void toggleFullscreen();
-      else void exitReader();
+      const amount = Math.round(scrollEl.clientHeight * 0.8 * mult);
+      animateVerticalScrollBy(e.shiftKey ? -amount : amount);
     }
   }
 
@@ -1467,10 +1812,11 @@
     });
   }
 
-  function setHorizontalSnap(mode: HorizontalSnapMode) {
+  function setNavigationSpeed(speed: number) {
+    const clamped = Math.max(1, Math.min(10, Math.round(speed)));
     settingsStore.update((d) => {
-      d.reader.horizontal.snapMode = mode;
-    });
+      d.reader.behavior.navigationSpeed = clamped;
+    }, 80);
   }
 
   function toggleDim() {
@@ -1538,25 +1884,20 @@
   }
 </script>
 
-<svelte:window
-  onkeydown={handleKeydown}
-  onmousemove={(e) => {
-    if (e.clientY < 52 || e.clientY > window.innerHeight - 52) {
-      toolbarVisible = true;
-    }
-  }}
-/>
+<svelte:window onkeydown={handleKeydown} />
 
 <div
   class="relative flex h-full w-full flex-col overflow-hidden"
   style="background-color: {readerBackdrop()};"
 >
-  <!-- Top Auto-Hide Toolbar -->
+  <!-- Top Auto-Hide Toolbar (smooth fade, never auto-opened by upward scroll) -->
   <header
-    class="fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 backdrop-blur-md transition-transform duration-200 sm:px-4"
-    style="padding-top: calc(0.5rem + var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 88%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
-      ? '0%'
-      : '-115%'});"
+    class="fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 backdrop-blur-md transition-[opacity,transform] duration-200 sm:px-4"
+    style="padding-top: calc(0.5rem + var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 88%, transparent); border-color: var(--border); opacity: {toolbarVisible
+      ? 1
+      : 0}; pointer-events: {toolbarVisible ? 'auto' : 'none'}; transform: translateY({toolbarVisible
+      ? '0px'
+      : '-6px'});"
   >
     <div class="flex min-w-0 items-center gap-2">
       <button
@@ -1596,7 +1937,7 @@
       {#if zoomScale > 1.01}
         <button
           type="button"
-          onclick={resetZoom}
+          onclick={() => resetZoom()}
           class="inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium"
           style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
           title={t.readerResetZoom}
@@ -1676,15 +2017,15 @@
   <!-- Quick Chapter Jump Popover (with dimmed read chapters) -->
   {#if chapterJumpOpen && manga}
     <div
-      class="fixed right-4 z-40 flex max-h-[72dvh] w-80 max-w-[calc(100vw-2rem)] flex-col gap-2.5 rounded-2xl border p-3.5 text-xs shadow-xl"
-      style="top: calc(3.5rem + var(--safe-top)); background-color: var(--surface); border-color: var(--border);"
+      class="fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overscroll-contain rounded-2xl border p-3.5 text-xs shadow-xl"
+      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border);"
     >
       <div class="flex items-center justify-between font-semibold">
         <span>{t.quickChapterJump}</span>
         <span style="color: var(--text-muted);">{t.chapterCount(manga.chapters.length)}</span>
       </div>
       <div
-        class="flex items-center gap-2 rounded-xl border px-2.5 py-1.5"
+        class="flex shrink-0 items-center gap-2 rounded-xl border px-2.5 py-1.5"
         style="background-color: var(--surface-subtle); border-color: var(--border);"
       >
         <Search size={13} style="color: var(--text-muted);" />
@@ -1695,7 +2036,7 @@
           class="w-full bg-transparent text-xs outline-none"
         />
       </div>
-      <div class="flex max-h-80 flex-col gap-1 overflow-y-auto pr-0.5">
+      <div class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-0.5">
         {#each filteredJumpChapters() as ch (ch.url)}
           {@const isCurrent = normUrl(ch.url) === normUrl(activeUrl)}
           <button
@@ -1723,8 +2064,8 @@
   <!-- Quick Reader Settings Popover (Collapsible Categories, Collapsed by Default) -->
   {#if quickSettingsOpen}
     <div
-      class="fixed right-4 z-40 flex max-h-[78dvh] w-80 max-w-[calc(100vw-2rem)] flex-col gap-2.5 overflow-y-auto rounded-2xl border p-3.5 text-xs shadow-xl"
-      style="top: calc(3.5rem + var(--safe-top)); background-color: var(--surface); border-color: var(--border);"
+      class="fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overflow-y-auto overscroll-contain rounded-2xl border p-3.5 text-xs shadow-xl"
+      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border);"
     >
       <div class="flex items-center justify-between gap-2 pb-0.5">
         <span class="font-semibold">{t.readerSection}</span>
@@ -1865,28 +2206,6 @@
                     class="rounded-lg border px-2 py-1 text-center text-xs outline-none"
                     style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
                   />
-                </div>
-              </div>
-
-              <div class="flex flex-col gap-1.5">
-                <span class="font-medium">{t.snapModeLabel}</span>
-                <div class="grid grid-cols-3 gap-1.5">
-                  {#each [["none", t.snapNone], ["page", t.snapPage], ["group", t.snapGroup]] as [val, label] (val)}
-                    <button
-                      type="button"
-                      onclick={() => setHorizontalSnap(val as HorizontalSnapMode)}
-                      class="rounded-lg border py-1 font-medium"
-                      style="border-color: {hCfg.snapMode === val
-                        ? 'var(--accent)'
-                        : 'var(--border)'}; background-color: {hCfg.snapMode === val
-                        ? 'var(--accent-soft)'
-                        : 'var(--surface-subtle)'}; color: {hCfg.snapMode === val
-                        ? 'var(--accent)'
-                        : 'var(--text)'};"
-                    >
-                      {label}
-                    </button>
-                  {/each}
                 </div>
               </div>
             {:else}
@@ -2074,6 +2393,21 @@
                 class="h-4 w-4 accent-rose-500"
               />
             </div>
+
+            <div class="flex flex-col gap-1">
+              <div class="flex items-center justify-between">
+                <span class="font-medium">{t.navigationSpeedLabel(behavior.navigationSpeed)}</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="10"
+                step="1"
+                value={behavior.navigationSpeed}
+                oninput={(e) => setNavigationSpeed(Number(e.currentTarget.value))}
+                class="w-full accent-rose-500"
+              />
+            </div>
           </div>
         {/if}
       </div>
@@ -2083,8 +2417,8 @@
   <!-- Long-Press Contextual Configuration Panel (Scroll-to-Top / Screen Rotation) -->
   {#if quickFloatConfig !== null}
     <div
-      class="fixed right-4 z-40 flex max-h-[78dvh] w-80 max-w-[calc(100vw-2rem)] flex-col gap-3 overflow-y-auto rounded-2xl border p-4 text-xs shadow-xl"
-      style="top: calc(3.5rem + var(--safe-top)); background-color: var(--surface); border-color: var(--border);"
+      class="fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-3 overflow-y-auto overscroll-contain rounded-2xl border p-4 text-xs shadow-xl"
+      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border);"
     >
       <div class="flex items-center justify-between gap-2">
         <span class="font-semibold">
@@ -2269,13 +2603,25 @@
     onscroll={handleScroll}
     onwheel={handleWheel}
     onpointerdown={handlePointerDown}
+    onpointermove={handlePointerMove}
+    onpointerup={handlePointerUp}
+    onpointercancel={handlePointerUp}
     onclick={handleViewportClick}
     ontouchstart={wakeFloatingControls}
-    dir={isRtl ? "rtl" : "ltr"}
     class={isHorizontal
-      ? "relative flex h-full w-full overflow-x-auto overflow-y-hidden"
-      : "relative h-full w-full overflow-y-auto"}
-    style={scrollContainerSnapStyle()}
+      ? "relative flex h-full w-full select-none overflow-hidden"
+      : "relative h-full w-full select-none overflow-y-auto"}
+    style={isHorizontal
+      ? zoomScale > 1.01
+        ? zoomPanning
+          ? "touch-action: none; cursor: grabbing;"
+          : "touch-action: none; cursor: grab;"
+        : "touch-action: pan-y;"
+      : zoomScale > 1.01
+        ? zoomPanning
+          ? "touch-action: pan-y; cursor: grabbing;"
+          : "touch-action: pan-y; cursor: grab;"
+        : "touch-action: pan-y;"}
   >
     {#if loadingInitial}
       <div
@@ -2325,91 +2671,81 @@
         </div>
       </div>
     {:else if isHorizontal && activeChapter}
-      {@const groups = partitionPages(activeChapter.images, hCfg.pagesPerGroup)}
+      <!-- HORIZONTAL READING MODE (Instant In-Place Replacement, ZERO Sliding / Carousel Animation) -->
       <div
-        class="flex h-full w-max items-center"
-        style="gap: {isContinuousHorizontal
-          ? hCfg.pagesPerGroup === 1
-            ? hCfg.pageGapPx
-            : hCfg.groupGapPx
-          : hCfg.pagesPerGroup === 1
-            ? 0
-            : hCfg.groupGapPx}px; {isContinuousHorizontal
-          ? 'padding-left: var(--safe-left); padding-right: var(--safe-right);'
-          : ''} {zoomTransformStyle}"
+        bind:this={horizontalStageEl}
+        class="relative flex h-full w-full items-center justify-center overflow-hidden"
+        style={horizontalZoomStyle}
       >
-        {#each groups as group (`${activeChapter.url}:hg:${group.groupIdx}`)}
-          {@const gKey = `${activeChapter.url}:hg:${group.groupIdx}`}
-          {@const gBright = groupDimBrightness(gKey, hCfg.dimUnfocused, hCfg.dimLevel)}
+        {#if horizontalAtEnd}
+          <div class="flex h-full w-full flex-col items-center justify-center gap-3 px-8 text-center">
+            {#if activeChapter.next}
+              <button
+                type="button"
+                onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
+                class="inline-flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
+                style="background-color: var(--accent);"
+              >
+                <span>{t.nextChapter}</span>
+                <ChevronRight size={17} />
+              </button>
+            {:else}
+              <div
+                class="rounded-xl border px-5 py-3 text-xs font-medium"
+                style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
+              >
+                {t.reachedLatest}
+              </div>
+            {/if}
+            {#if horizontalGroups.length > 0}
+              <button
+                type="button"
+                onclick={() => {
+                  horizontalAtEnd = false;
+                  activeGroupIdx = horizontalGroups.length - 1;
+                }}
+                class="inline-flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-medium"
+                style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+              >
+                <ChevronLeft size={14} />
+                <span>{t.back}</span>
+              </button>
+            {/if}
+          </div>
+        {:else if currentHorizontalGroup}
           <div
-            data-group-key={gKey}
-            class="box-border flex h-full shrink-0 items-center {isContinuousHorizontal
-              ? 'w-max'
-              : `w-screen ${hCfg.centerGroups ? 'justify-center' : 'justify-start'}`}"
-            style="{isContinuousHorizontal
-              ? ''
-              : 'padding-left: max(0.5rem, var(--safe-left)); padding-right: max(0.5rem, var(--safe-right));'} gap: {hCfg.pageGapPx}px; {hCfg.snapMode !== 'none'
-              ? 'scroll-snap-align: center; scroll-snap-stop: always;'
-              : ''} {gBright < 0.999
-              ? `filter: brightness(${gBright}); transition: filter 160ms ease;`
-              : 'transition: filter 160ms ease;'}"
+            dir={isRtl ? "rtl" : "ltr"}
+            data-group-key={`${activeChapter.url}:hg:${currentHorizontalGroup.groupIdx}`}
+            class="box-border flex h-full w-full items-center {hCfg.centerGroups
+              ? 'justify-center'
+              : 'justify-start'}"
+            style="padding-left: max(0.5rem, var(--safe-left)); padding-right: max(0.5rem, var(--safe-right)); gap: {hCfg.pageGapPx}px;"
           >
-            {#each group.items as entry (`${activeChapter.url}:${entry.pageIdx}`)}
+            {#each currentHorizontalGroup.items as entry (`${activeChapter.url}:${entry.pageIdx}`)}
               <PageImage
                 token={entry.token}
                 index={entry.pageIdx}
                 pageKey={`${activeChapter.url}:${entry.pageIdx}`}
-                loadMode={computePageLoadMode(
-                  entry.pageIdx,
-                  focusedPageIdx,
-                  readerSettings.preloadImages,
-                  true
-                )}
+                loadMode="high"
                 horizontal={true}
-                continuousHorizontal={isContinuousHorizontal}
+                continuousHorizontal={false}
                 pageGapPx={hCfg.pageGapPx}
-                snapPage={hCfg.snapMode === "page"}
-                snapStopAlways={hCfg.snapMode !== "none"}
-                groupPageCount={group.items.length}
+                snapPage={false}
+                snapStopAlways={false}
+                groupPageCount={currentHorizontalGroup.items.length}
                 skipBroken={behavior.skipBrokenImages}
                 onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
               />
             {/each}
           </div>
-        {/each}
-
-        <div
-          dir="ltr"
-          class="flex h-full w-screen shrink-0 flex-col items-center justify-center px-8"
-          style={hCfg.snapMode !== "none"
-            ? "scroll-snap-align: center; scroll-snap-stop: always;"
-            : ""}
-        >
-          {#if activeChapter.next}
-            <button
-              type="button"
-              onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
-              class="inline-flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-              style="background-color: var(--accent);"
-            >
-              <span>{t.nextChapter}</span>
-              <ChevronRight size={17} />
-            </button>
-          {:else}
-            <div
-              class="rounded-xl border px-5 py-3 text-xs font-medium"
-              style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
-            >
-              {t.reachedLatest}
-            </div>
-          {/if}
-        </div>
+        {/if}
       </div>
     {:else}
       <!-- VERTICAL READING MODE (Continuous Vertical Scroll + Chapter Dividers) -->
       <div
-        class="mx-auto flex w-full max-w-[900px] flex-col items-center pt-14 pb-28"
-        style="padding-left: max({behavior.verticalMarginPx}px, var(--safe-left)); padding-right: max({behavior.verticalMarginPx}px, var(--safe-right)); {zoomTransformStyle}"
+        bind:this={verticalContentEl}
+        class="mx-auto flex w-full max-w-[900px] flex-col items-center pt-14"
+        style="padding-left: max({behavior.verticalMarginPx}px, var(--safe-left)); padding-right: max({behavior.verticalMarginPx}px, var(--safe-right)); padding-bottom: calc(7rem + {verticalZoomExtraBottomPx}px); {verticalZoomStyle}"
       >
         {#each strip as chap, chapIdx (chap.url)}
           {@const isActiveChap = normUrl(chap.url) === normUrl(activeUrl)}
@@ -2489,13 +2825,15 @@
     {/if}
   </div>
 
-  <!-- Bottom Reading Progress Bar with Seek Support -->
+  <!-- Bottom Reading Progress Bar with Seek Support (smooth fade) -->
   {#if !loadingInitial && !errorState && activeChapter && totalPages > 0}
     <footer
-      class="fixed right-0 bottom-0 left-0 z-30 flex items-center gap-3 border-t px-3 py-2.5 backdrop-blur-md transition-transform duration-200 sm:px-5"
-      style="padding-bottom: calc(0.625rem + var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 90%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
-        ? '0%'
-        : '115%'});"
+      class="fixed right-0 bottom-0 left-0 z-30 flex items-center gap-3 border-t px-3 py-2.5 backdrop-blur-md transition-[opacity,transform] duration-200 sm:px-5"
+      style="padding-bottom: calc(0.625rem + var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 90%, transparent); border-color: var(--border); opacity: {toolbarVisible
+        ? 1
+        : 0}; pointer-events: {toolbarVisible ? 'auto' : 'none'}; transform: translateY({toolbarVisible
+        ? '0px'
+        : '6px'});"
     >
       <button
         type="button"
@@ -2582,5 +2920,6 @@
     }}
     orientationLock={readerSettings.orientationLock}
     dimmed={controlsDimmed}
+    fadedOut={!toolbarVisible && !quickSettingsOpen && quickFloatConfig === null && !chapterJumpOpen}
   />
 </div>

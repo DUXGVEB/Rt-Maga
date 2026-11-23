@@ -3285,7 +3285,188 @@ const V4_DICTIONARIES: Record<Language, V4Dictionary> = {
   th: V4_TH,
 };
 
-export type FullDictionary = Dictionary & V3Dictionary & V4Dictionary;
+export interface V5Dictionary {
+  // URL input controls (Part 5)
+  clearUrlBtn: string;
+  pasteUrlBtn: string;
+  clipboardEmptyError: string;
+  clipboardPermissionError: string;
+  clipboardUnsupportedError: string;
+
+  // Granular recognition & network error titles (Part 1)
+  errDnsFailureTitle: (host: string) => string;
+  errTlsFailureTitle: (host: string) => string;
+  errRateLimitedTitle: string;
+  errAccessRestrictedTitle: (host: string, status: number) => string;
+  errApiFailureTitle: (service: string) => string;
+  errMissingMetadataTitle: string;
+
+  // Browse / Catalog page (Part 1.4 & 1.5)
+  browseTitle: string;
+  browseSearchPlaceholder: string;
+  browseSearchBtn: string;
+  browseCategoriesLabel: string;
+  browseResultsCount: (n: number) => string;
+  browseEmptyTitle: string;
+  browseEmptyDesc: string;
+  browsePrevPage: string;
+  browseNextPage: string;
+  browsePageIndicator: (cur: number, total: number | null) => string;
+  browseOpeningManga: string;
+  floatingScreenBrowse: string;
+
+  // Enriched Manga Detail metadata & chapter language filter
+  mangaAltTitlesLabel: string;
+  mangaAuthorsLabel: string;
+  mangaArtistsLabel: string;
+  mangaStatusLabel: string;
+  mangaGenresLabel: string;
+  mangaSynopsisLabel: string;
+  mangaLangFilterLabel: string;
+  mangaLangAll: string;
+
+  // Reader navigation speed (Part 2.2)
+  navigationSpeedLabel: (speed: number) => string;
+  navigationSpeedDesc: string;
+
+  // Diagnostics file export path display (Part 6)
+  diagnosticsSavedTitle: string;
+  diagnosticsCopyPathBtn: string;
+  diagnosticsPathCopied: string;
+  diagnosticsSaveFailed: (reason: string) => string;
+
+  // Update checking explicit status (Part 7)
+  releaseStatusUpToDate: (version: string) => string;
+  releaseStatusChecking: string;
+  releaseStatusServerUnavailable: string;
+  releaseStatusInvalidMetadata: string;
+  releaseStatusRateLimited: string;
+  releaseStatusNetworkError: string;
+  appFullscreenEnter: string;
+  appFullscreenExit: string;
+}
+
+const V5_EN: V5Dictionary = {
+  clearUrlBtn: "Clear URL",
+  pasteUrlBtn: "Paste",
+  clipboardEmptyError: "Clipboard is empty.",
+  clipboardPermissionError: "Clipboard access was denied. Paste directly into the input box.",
+  clipboardUnsupportedError: "Clipboard paste is not supported in this environment.",
+
+  errDnsFailureTitle: (host) => `DNS lookup failed (${host})`,
+  errTlsFailureTitle: (host) => `TLS/SSL connection failed (${host})`,
+  errRateLimitedTitle: "Rate limited by website (HTTP 429)",
+  errAccessRestrictedTitle: (host, status) => `Access restricted on ${host} (HTTP ${status})`,
+  errApiFailureTitle: (service) => `${service} API error`,
+  errMissingMetadataTitle: "Missing required manga metadata",
+
+  browseTitle: "Catalog Browser",
+  browseSearchPlaceholder: "Search manga on this website...",
+  browseSearchBtn: "Search",
+  browseCategoriesLabel: "Categories",
+  browseResultsCount: (n) => `${n} ${n === 1 ? "title" : "titles"}`,
+  browseEmptyTitle: "No manga entries found",
+  browseEmptyDesc: "Try another search query, category, or page.",
+  browsePrevPage: "Previous",
+  browseNextPage: "Next",
+  browsePageIndicator: (cur, total) => (total ? `Page ${cur} / ${total}` : `Page ${cur}`),
+  browseOpeningManga: "Opening manga...",
+  floatingScreenBrowse: "Catalog",
+
+  mangaAltTitlesLabel: "Alternative titles",
+  mangaAuthorsLabel: "Author",
+  mangaArtistsLabel: "Artist",
+  mangaStatusLabel: "Status",
+  mangaGenresLabel: "Genres",
+  mangaSynopsisLabel: "Synopsis",
+  mangaLangFilterLabel: "Language",
+  mangaLangAll: "All",
+
+  navigationSpeedLabel: (speed) => `Scroll & Navigation Speed (${speed}/10)`,
+  navigationSpeedDesc:
+    "Controls smooth vertical scrolling speed and horizontal mouse-wheel/keyboard stepping responsiveness (without adding horizontal slide animations).",
+
+  diagnosticsSavedTitle: "Diagnostic log exported to:",
+  diagnosticsCopyPathBtn: "Copy Path",
+  diagnosticsPathCopied: "Log file path copied to clipboard.",
+  diagnosticsSaveFailed: (reason) => `Failed to export diagnostic log file: ${reason}`,
+
+  releaseStatusUpToDate: (version) => `Up to date — you are running the latest version (v${version}).`,
+  releaseStatusChecking: "Checking for application updates...",
+  releaseStatusServerUnavailable: "Update server is currently unavailable. Please try again later.",
+  releaseStatusInvalidMetadata: "Update server returned invalid release metadata.",
+  releaseStatusRateLimited: "Update check rate-limited by GitHub. Please try again later.",
+  releaseStatusNetworkError: "Network failure while checking for updates.",
+  appFullscreenEnter: "Enter Fullscreen (F11)",
+  appFullscreenExit: "Windowed Mode (F11)",
+};
+
+const V5_VI: V5Dictionary = {
+  clearUrlBtn: "Xóa URL",
+  pasteUrlBtn: "Dán",
+  clipboardEmptyError: "Bộ nhớ tạm đang trống.",
+  clipboardPermissionError: "Không có quyền đọc bộ nhớ tạm. Hãy dán trực tiếp vào ô nhập.",
+  clipboardUnsupportedError: "Môi trường này không hỗ trợ nút dán tự động.",
+
+  errDnsFailureTitle: (host) => `Lỗi phân giải DNS (${host})`,
+  errTlsFailureTitle: (host) => `Lỗi kết nối TLS/SSL (${host})`,
+  errRateLimitedTitle: "Trang web giới hạn tần suất (HTTP 429)",
+  errAccessRestrictedTitle: (host, status) => `Trang ${host} từ chối truy cập (HTTP ${status})`,
+  errApiFailureTitle: (service) => `Lỗi API ${service}`,
+  errMissingMetadataTitle: "Thiếu thông tin truyện bắt buộc",
+
+  browseTitle: "Duyệt danh mục",
+  browseSearchPlaceholder: "Tìm truyện trên trang này...",
+  browseSearchBtn: "Tìm",
+  browseCategoriesLabel: "Danh mục",
+  browseResultsCount: (n) => `${n} truyện`,
+  browseEmptyTitle: "Không tìm thấy truyện nào",
+  browseEmptyDesc: "Hãy thử từ khóa, thể loại hoặc trang khác.",
+  browsePrevPage: "Trang trước",
+  browseNextPage: "Trang sau",
+  browsePageIndicator: (cur, total) => (total ? `Trang ${cur} / ${total}` : `Trang ${cur}`),
+  browseOpeningManga: "Đang mở truyện...",
+  floatingScreenBrowse: "Danh mục",
+
+  mangaAltTitlesLabel: "Tên khác",
+  mangaAuthorsLabel: "Tác giả",
+  mangaArtistsLabel: "Họa sĩ",
+  mangaStatusLabel: "Trạng thái",
+  mangaGenresLabel: "Thể loại",
+  mangaSynopsisLabel: "Giới thiệu",
+  mangaLangFilterLabel: "Ngôn ngữ",
+  mangaLangAll: "Tất cả",
+
+  navigationSpeedLabel: (speed) => `Tốc độ cuộn & điều hướng (${speed}/10)`,
+  navigationSpeedDesc:
+    "Điều chỉnh tốc độ cuộn mượt ở chế độ dọc và độ nhạy con lăn/phím ở chế độ ngang (không tạo hiệu ứng trượt trang ngang).",
+
+  diagnosticsSavedTitle: "Đã lưu tệp nhật ký lỗi tại:",
+  diagnosticsCopyPathBtn: "Sao chép đường dẫn",
+  diagnosticsPathCopied: "Đã sao chép đường dẫn tệp nhật ký.",
+  diagnosticsSaveFailed: (reason) => `Xuất tệp nhật ký lỗi thất bại: ${reason}`,
+
+  releaseStatusUpToDate: (version) => `Đã là bản mới nhất — bạn đang dùng RtMaga v${version}.`,
+  releaseStatusChecking: "Đang kiểm tra bản cập nhật ứng dụng...",
+  releaseStatusServerUnavailable: "Máy chủ cập nhật hiện không khả dụng. Hãy thử lại sau.",
+  releaseStatusInvalidMetadata: "Dữ liệu phát hành từ máy chủ không hợp lệ.",
+  releaseStatusRateLimited: "Đã chạm giới hạn kiểm tra của GitHub. Hãy thử lại sau.",
+  releaseStatusNetworkError: "Lỗi mạng khi kiểm tra bản cập nhật.",
+  appFullscreenEnter: "Toàn màn hình (F11)",
+  appFullscreenExit: "Chế độ cửa sổ (F11)",
+};
+
+const V5_DICTIONARIES: Record<Language, V5Dictionary> = {
+  en: V5_EN,
+  vi: V5_VI,
+  zh: V5_EN,
+  ja: V5_EN,
+  ru: V5_EN,
+  ko: V5_EN,
+  th: V5_EN,
+};
+
+export type FullDictionary = Dictionary & V3Dictionary & V4Dictionary & V5Dictionary;
 
 const DICTIONARIES: Record<Language, Dictionary> = { en, vi, zh, ja, ru, ko, th };
 
@@ -3294,6 +3475,7 @@ export function getDict(lang: Language): FullDictionary {
     ...(DICTIONARIES[lang] ?? en),
     ...(V3_DICTIONARIES[lang] ?? V3_EN),
     ...(V4_DICTIONARIES[lang] ?? V4_EN),
+    ...(V5_DICTIONARIES[lang] ?? V5_EN),
   };
 }
 
