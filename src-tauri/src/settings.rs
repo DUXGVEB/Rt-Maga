@@ -1,6 +1,7 @@
-//! Persisted user settings for appearance, reader modes, update checks, proxy routing, sources, and cache.
+//! Persisted user settings for appearance, device identity, reader modes, floating controls,
+//! update checks, DNS-over-HTTPS protection, proxy routing, sources, and cache.
 
-use mangacore::{HeadlessPolicy, ProxyConfig};
+use mangacore::{DohConfig, HeadlessPolicy, ProxyConfig};
 use serde::{Deserialize, Serialize};
 
 /// Supported UI display languages.
@@ -208,7 +209,122 @@ impl Default for HorizontalModeSettings {
     }
 }
 
-/// Reader display, orientation, and continuous-scroll preferences.
+/// Mobile screen orientation lock mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum OrientationLockMode {
+    /// Follow device rotation sensor automatically.
+    #[default]
+    Auto,
+    /// Lock screen to portrait orientation.
+    Portrait,
+    /// Lock screen to landscape orientation.
+    Landscape,
+}
+
+/// Edge anchoring for customizable floating controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum FloatingEdge {
+    /// Anchor control near the left viewport edge.
+    Left,
+    /// Anchor control near the right viewport edge.
+    #[default]
+    Right,
+}
+
+/// Customizable position of a floating action button (auto-clamped against safe areas & collisions).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct FloatingButtonPosition {
+    /// Horizontal viewport edge anchor (`left` or `right`).
+    pub edge: FloatingEdge,
+    /// Vertical position along viewport height (`10..=90%`).
+    pub vertical_percent: u8,
+    /// Horizontal inset from the anchored edge in CSS pixels (`8..=48 px`).
+    pub horizontal_offset_px: u8,
+}
+
+impl Default for FloatingButtonPosition {
+    fn default() -> Self {
+        Self {
+            edge: FloatingEdge::Right,
+            vertical_percent: 82,
+            horizontal_offset_px: 16,
+        }
+    }
+}
+
+/// Persisted customization for floating Scroll-to-Top, Reader Settings, and Orientation Lock buttons.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct FloatingButtonsSettings {
+    /// Screen keys where the floating Scroll-to-Top button is enabled
+    /// (`"home"`, `"bookmarks"`, `"history"`, `"manga"`, `"reader"`, `"settings"`).
+    pub scroll_to_top_screens: Vec<String>,
+    /// Position preference for the Scroll-to-Top button.
+    pub scroll_to_top: FloatingButtonPosition,
+    /// Show the floating Reader Settings button inside the reader.
+    pub show_reader_settings: bool,
+    /// Position preference for the floating Reader Settings button.
+    pub reader_settings: FloatingButtonPosition,
+    /// Show the floating Orientation Lock button inside the mobile reader.
+    pub show_orientation_lock: bool,
+    /// Position preference for the floating Orientation Lock button.
+    pub orientation_lock: FloatingButtonPosition,
+    /// Subtly dim floating controls in the reader when idle and restore opacity on interaction.
+    pub auto_dim_in_reader: bool,
+}
+
+const VALID_FLOATING_SCREENS: [&str; 6] = [
+    "home",
+    "bookmarks",
+    "history",
+    "manga",
+    "reader",
+    "settings",
+];
+
+impl Default for FloatingButtonsSettings {
+    fn default() -> Self {
+        Self {
+            scroll_to_top_screens: VALID_FLOATING_SCREENS
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+            scroll_to_top: FloatingButtonPosition {
+                edge: FloatingEdge::Right,
+                vertical_percent: 82,
+                horizontal_offset_px: 16,
+            },
+            show_reader_settings: true,
+            reader_settings: FloatingButtonPosition {
+                edge: FloatingEdge::Right,
+                vertical_percent: 68,
+                horizontal_offset_px: 16,
+            },
+            show_orientation_lock: true,
+            orientation_lock: FloatingButtonPosition {
+                edge: FloatingEdge::Right,
+                vertical_percent: 54,
+                horizontal_offset_px: 16,
+            },
+            auto_dim_in_reader: true,
+        }
+    }
+}
+
+/// Customizable device identity persisted in Settings and used for LAN Sync.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct DeviceSettings {
+    /// Optional user-chosen device display name (`None` = auto-detected OS/hardware device name).
+    pub custom_name: Option<String>,
+}
+
+/// Reader display, orientation, auto-webtoon, preloading, and continuous-scroll preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct ReaderSettings {
@@ -218,10 +334,16 @@ pub(crate) struct ReaderSettings {
     pub width: ImageWidth,
     /// Legacy vertical gap between pages in pixels (kept synchronized with `vertical.page_gap_px`).
     pub gap_px: u8,
-    /// Number of upcoming images to preload ahead of the viewport.
+    /// Controlled nearby image preload window (`5..=8`, default `6`).
     pub preload_images: u8,
     /// Automatically append the next chapter when approaching the end in Vertical mode.
     pub auto_next_chapter: bool,
+    /// Passively detect Webtoon / Long-Strip chapters from aspect ratios and switch to seamless vertical strip.
+    pub auto_webtoon_detect: bool,
+    /// Enable edge tap zones (left/right page navigation, center toolbar toggle) in horizontal reading mode.
+    pub tap_zones_enabled: bool,
+    /// Preferred screen orientation lock inside the mobile reader.
+    pub orientation_lock: OrientationLockMode,
     /// Reader backdrop preference.
     pub reader_bg: ReaderBg,
     /// Independent Vertical Reading Mode configuration.
@@ -236,8 +358,11 @@ impl Default for ReaderSettings {
             orientation: ReadingOrientation::Vertical,
             width: ImageWidth::default(),
             gap_px: 0,
-            preload_images: 4,
+            preload_images: 6,
             auto_next_chapter: true,
+            auto_webtoon_detect: true,
+            tap_zones_enabled: true,
+            orientation_lock: OrientationLockMode::Auto,
             reader_bg: ReaderBg::Dark,
             vertical: VerticalModeSettings::default(),
             horizontal: HorizontalModeSettings::default(),
@@ -311,21 +436,41 @@ pub(crate) struct Settings {
     pub language: Language,
     /// UI color theme.
     pub theme: Theme,
+    /// Device identity settings (real + custom display name).
+    pub device: DeviceSettings,
     /// Vertical & Horizontal reader settings.
     pub reader: ReaderSettings,
+    /// Floating action buttons visibility & placement settings.
+    pub floating: FloatingButtonsSettings,
     /// Background chapter and app update check settings.
     pub updates: UpdateSettings,
     /// Scraper source settings.
     pub sources: SourceSettings,
+    /// In-app provider-based DNS-over-HTTPS (`DoH`) protection configuration.
+    pub doh: DohConfig,
     /// Application-internal proxy routing configuration (defaults to Direct Mode).
     pub proxy: ProxyConfig,
     /// Disk image cache settings.
     pub cache: CacheSettings,
 }
 
+fn sanitize_floating_pos(pos: &mut FloatingButtonPosition) {
+    pos.vertical_percent = pos.vertical_percent.clamp(10, 90);
+    pos.horizontal_offset_px = pos.horizontal_offset_px.clamp(8, 48);
+}
+
 impl Settings {
     /// Clamps numeric fields into safe operational bounds and reconciles legacy fields.
     pub(crate) fn sanitized(mut self) -> Self {
+        self.device.custom_name = self.device.custom_name.and_then(|raw| {
+            let trimmed: String = raw.trim().chars().take(48).collect();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
         self.reader.width = match self.reader.width {
             ImageWidth::FitWindow => ImageWidth::FitWindow,
             ImageWidth::Percent(p) => ImageWidth::Percent(p.clamp(30, 100)),
@@ -336,6 +481,8 @@ impl Settings {
         if self.reader.vertical.page_gap_px == 0 && self.reader.gap_px > 0 {
             self.reader.vertical.page_gap_px = self.reader.gap_px;
         }
+        // Vertical reading always uses continuous vertical scroll (legacy `vertical_grouped` normalizes safely).
+        self.reader.vertical.layout_mode = VerticalLayoutMode::ContinuousStrip;
         self.reader.vertical.pages_per_group = self.reader.vertical.pages_per_group.clamp(1, 8);
         self.reader.vertical.page_gap_px = self.reader.vertical.page_gap_px.min(48);
         self.reader.vertical.group_gap_px = self.reader.vertical.group_gap_px.clamp(8, 96);
@@ -347,9 +494,25 @@ impl Settings {
         self.reader.horizontal.group_gap_px = self.reader.horizontal.group_gap_px.clamp(8, 96);
         self.reader.horizontal.dim_level = self.reader.horizontal.dim_level.min(100);
 
-        self.reader.preload_images = self.reader.preload_images.clamp(1, 16);
+        // Enforce controlled 5-8 image preload window to balance smoothness and low RAM usage.
+        self.reader.preload_images = self.reader.preload_images.clamp(5, 8);
+
+        // Sanitize floating controls screens & bounds.
+        let mut clean_screens: Vec<String> = Vec::with_capacity(VALID_FLOATING_SCREENS.len());
+        for screen in &self.floating.scroll_to_top_screens {
+            let lower = screen.trim().to_ascii_lowercase();
+            if VALID_FLOATING_SCREENS.contains(&lower.as_str()) && !clean_screens.contains(&lower) {
+                clean_screens.push(lower);
+            }
+        }
+        self.floating.scroll_to_top_screens = clean_screens;
+        sanitize_floating_pos(&mut self.floating.scroll_to_top);
+        sanitize_floating_pos(&mut self.floating.reader_settings);
+        sanitize_floating_pos(&mut self.floating.orientation_lock);
+
         self.updates.interval_hours = self.updates.interval_hours.clamp(1, 48);
         self.sources.max_conn_per_host = self.sources.max_conn_per_host.clamp(1, 8);
+        self.doh = self.doh.sanitized();
         self.proxy = self.proxy.sanitized();
         self.cache.max_mb = self.cache.max_mb.clamp(64, 10_240);
         self

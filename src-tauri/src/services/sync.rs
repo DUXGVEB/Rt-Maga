@@ -299,7 +299,7 @@ pub(crate) async fn start_sender(
     state: &Arc<AppState>,
     mode: SyncSenderMode,
 ) -> Result<SyncStatusView, AppError> {
-    let device_name = local_device_name();
+    let device_name = resolve_local_device_name(app, state).await;
     let bundle = state.db.export_sync_bundle(&device_name).await?;
     let manga_count = bundle.manga.len();
 
@@ -767,13 +767,14 @@ async fn pair_as_receiver(
     pin: String,
     token: Option<String>,
 ) -> Result<SyncStatusView, AppError> {
+    let local_name = resolve_local_device_name(app, state).await;
     let client = build_lan_http_client(Duration::from_secs(10))?;
     let resp = client
         .post(format!("{base_url}/sync/pair"))
         .json(&serde_json::json!({
             "pin": pin,
             "token": token,
-            "device_name": local_device_name(),
+            "device_name": local_name,
         }))
         .send()
         .await
@@ -1459,22 +1460,13 @@ fn format_http_origin(ip: IpAddr, port: u16) -> String {
     }
 }
 
-fn local_device_name() -> String {
-    let from_env = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
+async fn resolve_local_device_name(app: &AppHandle, state: &AppState) -> String {
+    let custom = state.current_settings().await.device.custom_name;
+    crate::android_env::resolve_display_device_name(Some(app), custom.as_deref())
+}
 
-    from_env.unwrap_or_else(|| {
-        if cfg!(target_os = "android") {
-            "Android Phone".to_owned()
-        } else if cfg!(target_os = "windows") {
-            "Windows PC".to_owned()
-        } else {
-            "RtMaga Device".to_owned()
-        }
-    })
+fn local_device_name() -> String {
+    crate::android_env::detect_os_device_name()
 }
 
 fn generate_six_digit_pin() -> String {

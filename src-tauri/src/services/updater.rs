@@ -118,7 +118,7 @@ pub(crate) async fn run_update_check(
     let policy = settings.headless_policy();
     let now = now_unix_secs();
 
-    let candidates = state.db.list_history_manga_for_updates().await?;
+    let candidates = state.db.list_targets_for_updates().await?;
     let targets: Vec<_> = candidates
         .into_iter()
         .filter(|m| {
@@ -130,6 +130,7 @@ pub(crate) async fn run_update_check(
 
     let total = targets.len();
     let mut found = Vec::new();
+    let mut created_notifications = 0usize;
 
     for (idx, manga_row) in targets.into_iter().enumerate() {
         if idx > 0 {
@@ -141,16 +142,37 @@ pub(crate) async fn run_update_check(
 
         match state.registry.resolve(&manga_row.url, policy).await {
             Ok(resolved) => {
-                if let Ok(Some(latest_name)) = state
+                if let Ok(discovered) = state
                     .db
                     .record_update_check(manga_row.id, resolved.manga())
                     .await
+                    && !discovered.is_empty()
                 {
-                    info!(title = %manga_row.title, %latest_name, "discovered new chapter");
+                    let notif = state
+                        .db
+                        .record_chapter_notification(&manga_row, &discovered)
+                        .await
+                        .ok()
+                        .flatten();
+
+                    let range_label = notif.as_ref().map_or_else(
+                        || crate::repo::notification::format_chapter_range(&discovered),
+                        |n| n.chapter_range.clone(),
+                    );
+                    if notif.is_some() {
+                        created_notifications += 1;
+                    }
+
+                    info!(
+                        title = %manga_row.title,
+                        chapters = %range_label,
+                        count = discovered.len(),
+                        "discovered new chapter(s)"
+                    );
                     found.push(FoundUpdate {
                         manga_id: manga_row.id,
                         title: manga_row.title,
-                        latest: latest_name,
+                        latest: range_label,
                     });
                 }
             }
@@ -162,11 +184,15 @@ pub(crate) async fn run_update_check(
 
     let _ = app.emit("updates://progress", UpdateProgress { done: total, total });
 
+    if created_notifications > 0 {
+        let _ = app.emit("notifications://updated", created_notifications);
+    }
+
     if !found.is_empty() {
         let _ = app.emit("updates://found", &found);
 
         if settings.updates.notify_windows {
-            send_windows_notification(app, &found, settings.language);
+            send_os_notification(app, &found, settings.language);
         }
     }
 
@@ -176,7 +202,7 @@ pub(crate) async fn run_update_check(
     })
 }
 
-fn send_windows_notification(app: &AppHandle, found: &[FoundUpdate], language: Language) {
+fn send_os_notification(app: &AppHandle, found: &[FoundUpdate], language: Language) {
     let title = match language {
         Language::En => "RtMaga - New Chapters",
         Language::Vi => "RtMaga - Chương mới",
@@ -202,7 +228,15 @@ fn send_windows_notification(app: &AppHandle, found: &[FoundUpdate], language: L
         }
     };
 
+    #[cfg(target_os = "android")]
+    {
+        let notif_id = i32::try_from(found[0].manga_id.rem_euclid(100_000) + 1000).unwrap_or(1001);
+        if crate::android_env::send_android_notification(app, title, &body, notif_id) {
+            return;
+        }
+    }
+
     if let Err(err) = app.notification().builder().title(title).body(body).show() {
-        warn!(%err, "failed to display desktop notification");
+        warn!(%err, "failed to display OS notification");
     }
 }

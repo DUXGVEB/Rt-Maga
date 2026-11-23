@@ -2,17 +2,28 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import {
     ArrowLeft,
+    Bookmark,
     ChevronLeft,
     ChevronRight,
     Loader2,
     Maximize,
     Minimize,
+    RotateCcw,
     SlidersHorizontal,
+    Sparkles,
   } from "lucide-svelte";
   import { tick, untrack } from "svelte";
   import { api, formatAppError } from "../lib/api";
+  import FloatingControls from "../lib/components/FloatingControls.svelte";
   import PageImage from "../lib/components/PageImage.svelte";
-  import { focusBrightness, partitionPages } from "../lib/readerLayout";
+  import {
+    computePageLoadMode,
+    detectWebtoonFromDimensions,
+    focusBrightness,
+    partitionPages,
+    type PageDimensionSample,
+  } from "../lib/readerLayout";
+  import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
@@ -20,21 +31,23 @@
     ChapterView,
     HorizontalDirection,
     HorizontalSnapMode,
-    ImageWidth,
     MangaView,
+    OrientationLockMode,
     ReaderBg,
+    ReaderModeOverride,
     ReadingOrientation,
-    VerticalLayoutMode,
   } from "../lib/types";
 
   let {
     mangaId,
     chapterUrl,
     initialScrollRatio = 0,
+    initialPageIndex = 0,
   }: {
     mangaId: number;
     chapterUrl: string;
     initialScrollRatio?: number;
+    initialPageIndex?: number;
   } = $props();
 
   let manga = $state<MangaView | null>(null);
@@ -47,8 +60,11 @@
   let toolbarVisible = $state(true);
   let quickSettingsOpen = $state(false);
   let isFullscreen = $state(false);
+  let showScrollTopBtn = $state(false);
+  let controlsDimmed = $state(false);
+  let chapterDetectedWebtoon = $state(false);
 
-  // Viewport focus tracking (key of focused group or page, plus focused page index for live setting changes).
+  // Viewport focus tracking (key of focused group or page, plus exact focused page index).
   let focusedKeys = $state<Set<string>>(new Set());
   let focusedPageIdx = $state(0);
 
@@ -56,12 +72,22 @@
   let lastScrollOffset = 0;
   let prefetched = new Map<string, ChapterView>();
   let saveTimer: number | null = null;
-  let pendingProgress: { mangaId: number; url: string; name: string; ratio: number } | null = null;
+  let idleDimTimer: number | null = null;
+  let pendingProgress: {
+    mangaId: number;
+    url: string;
+    name: string;
+    ratio: number;
+    pageIndex: number;
+  } | null = null;
   let restoreTimer: number | null = null;
   let focusRaf: number | null = null;
   let markedReadSet = new Set<string>();
+  let dimensionSamples = new Map<number, PageDimensionSample>();
+  let webtoonDecidedForChapter = false;
   let restoredInitialScroll = false;
   let isUserScrollingBeforeRestore = false;
+  let suppressAutoHideUntil = 0;
   let loadSeq = 0;
 
   function normUrl(u: string): string {
@@ -71,10 +97,34 @@
   const readerSettings = $derived(settingsStore.value.reader);
   const vCfg = $derived(readerSettings.vertical);
   const hCfg = $derived(readerSettings.horizontal);
-  const isHorizontal = $derived(readerSettings.orientation === "horizontal");
-  const isRtl = $derived(isHorizontal && hCfg.direction === "rtl");
-  const isVerticalGrouped = $derived(!isHorizontal && vCfg.layoutMode === "vertical_grouped");
   const t = $derived(settingsStore.t);
+
+  // Strict reader mode precedence:
+  // 1. Per-manga manual override
+  // 2. Auto-detected Webtoon / Long-Strip (when enabled in Settings)
+  // 3. Global reader mode settings
+  const effectiveOverride = $derived<ReaderModeOverride>(manga?.readerModeOverride ?? null);
+
+  const isAutoWebtoonActive = $derived(
+    effectiveOverride === null &&
+      readerSettings.autoWebtoonDetect &&
+      Boolean(manga?.detectedWebtoon || chapterDetectedWebtoon)
+  );
+
+  const effectiveOrientation = $derived<ReadingOrientation>(
+    effectiveOverride === "horizontal"
+      ? "horizontal"
+      : effectiveOverride === "vertical_strip" || effectiveOverride === "vertical_grouped"
+        ? "vertical"
+        : isAutoWebtoonActive
+          ? "vertical"
+          : readerSettings.orientation
+  );
+
+  const effectiveVerticalGapPx = $derived(isAutoWebtoonActive ? 0 : vCfg.pageGapPx);
+
+  const isHorizontal = $derived(effectiveOrientation === "horizontal");
+  const isRtl = $derived(isHorizontal && hCfg.direction === "rtl");
 
   const activeChapter = $derived(
     strip.find((c) => normUrl(c.url) === normUrl(activeUrl)) ?? strip[strip.length - 1] ?? null
@@ -95,25 +145,29 @@
     return "var(--bg)";
   });
 
-  const contentWidthStyle = $derived(() => {
-    const w: ImageWidth = readerSettings.width;
-    if (w.mode === "fit_window") return "width: 100%; max-width: 100%;";
-    if (w.mode === "percent") return `width: ${w.value}%; max-width: 100%;`;
-    return `width: 100%; max-width: ${w.value}px;`;
-  });
-
-  const preloadMarginPx = $derived(Math.max(800, readerSettings.preloadImages * 520));
-
   const scrollContainerSnapStyle = $derived(() => {
     if (isHorizontal) {
       if (hCfg.snapMode === "none") return "scroll-snap-type: none;";
-      return "scroll-snap-type: x proximity;";
-    }
-    if (isVerticalGrouped && vCfg.snapEnabled) {
-      return "scroll-snap-type: y proximity;";
+      // `mandatory` paired with `scroll-snap-stop: always` prevents fast swipes from skipping Image 2.
+      return "scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;";
     }
     return "scroll-snap-type: none;";
   });
+
+  function wakeFloatingControls() {
+    controlsDimmed = false;
+    if (idleDimTimer !== null) {
+      window.clearTimeout(idleDimTimer);
+    }
+    if (settingsStore.value.floating.autoDimInReader) {
+      idleDimTimer = window.setTimeout(() => {
+        idleDimTimer = null;
+        if (!quickSettingsOpen) {
+          controlsDimmed = true;
+        }
+      }, 2400);
+    }
+  }
 
   function isKeyFocused(key: string): boolean {
     if (focusedKeys.size === 0) return true;
@@ -125,8 +179,39 @@
   }
 
   function pageDimBrightness(pageKey: string): number {
-    if (isHorizontal || isVerticalGrouped) return 1; // Dimming is applied per group in grouped modes.
+    if (isHorizontal) return 1;
     return focusBrightness(isKeyFocused(pageKey), vCfg.dimUnfocused, vCfg.dimLevel);
+  }
+
+  function handlePageImageLoaded(
+    chapUrl: string,
+    info: { index: number; width: number; height: number }
+  ) {
+    if (normUrl(chapUrl) !== normUrl(activeUrl)) return;
+
+    // Passive Webtoon / Long-Strip detection on the first 8 loaded pages (zero extra network requests).
+    if (
+      !webtoonDecidedForChapter &&
+      readerSettings.autoWebtoonDetect &&
+      effectiveOverride === null &&
+      info.index < 8
+    ) {
+      dimensionSamples.set(info.index, info);
+      if (dimensionSamples.size >= 3) {
+        const result = detectWebtoonFromDimensions(Array.from(dimensionSamples.values()));
+        if (result.decided) {
+          webtoonDecidedForChapter = true;
+          if (result.isWebtoon && !manga?.detectedWebtoon) {
+            chapterDetectedWebtoon = true;
+            if (manga) {
+              manga = { ...manga, detectedWebtoon: true };
+            }
+            void api.markMangaDetectedWebtoon(mangaId).catch(() => {});
+            toasts.push(t.toastWebtoonDetected, "info", 2600);
+          }
+        }
+      }
+    }
   }
 
   function updateFocusNow() {
@@ -164,34 +249,7 @@
           focusedPageIdx = Number(firstPage.dataset.pageIdx) || 0;
         }
       }
-    } else if (isVerticalGrouped) {
-      const centerY = scrollRect.top + scrollRect.height * 0.45;
-      const groups = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-group-key]"));
-      let best: HTMLElement | null = null;
-      let bestDist = Number.POSITIVE_INFINITY;
-
-      for (const el of groups) {
-        const r = el.getBoundingClientRect();
-        // Keep any group actively crossing the focal center band un-dimmed.
-        if (r.top <= centerY && r.bottom >= centerY && el.dataset.groupKey) {
-          nextFocused.add(el.dataset.groupKey);
-        }
-        const elCenter = r.top + r.height / 2;
-        const dist = Math.abs(elCenter - centerY);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = el;
-        }
-      }
-      if (best?.dataset.groupKey) {
-        nextFocused.add(best.dataset.groupKey);
-        const firstPage = best.querySelector<HTMLElement>("[data-page-idx]");
-        if (firstPage?.dataset.pageIdx) {
-          focusedPageIdx = Number(firstPage.dataset.pageIdx) || 0;
-        }
-      }
     } else {
-      // Continuous Strip mode: keep images overlapping the focal center band un-dimmed.
       const centerY = scrollRect.top + scrollRect.height * 0.45;
       const pages = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-page-key]"));
       let best: HTMLElement | null = null;
@@ -217,7 +275,6 @@
       }
     }
 
-    // Only replace reactive Set when contents actually changed to avoid unnecessary re-renders.
     if (
       nextFocused.size !== focusedKeys.size ||
       Array.from(nextFocused).some((k) => !focusedKeys.has(k))
@@ -242,9 +299,31 @@
     if (pendingProgress) {
       const snap = pendingProgress;
       pendingProgress = null;
-      return api.saveProgress(snap.mangaId, snap.url, snap.name, snap.ratio).catch(() => {});
+      return api
+        .saveProgress(snap.mangaId, snap.url, snap.name, snap.ratio, snap.pageIndex)
+        .catch(() => {});
     }
     return Promise.resolve();
+  }
+
+  function captureCurrentProgressNow() {
+    if (!scrollEl || !activeChapter || loadingInitial) return;
+    let ratio = 0;
+    if (isHorizontal) {
+      const maxScroll = Math.max(1, scrollEl.scrollWidth - scrollEl.clientWidth);
+      ratio = Math.min(1, Math.max(0, Math.abs(scrollEl.scrollLeft) / maxScroll));
+    } else {
+      const maxScroll = Math.max(1, scrollEl.scrollHeight - scrollEl.clientHeight);
+      ratio = Math.min(1, Math.max(0, scrollEl.scrollTop / maxScroll));
+    }
+    pendingProgress = {
+      mangaId,
+      url: activeChapter.url,
+      name: activeChapter.name,
+      ratio,
+      pageIndex: focusedPageIdx,
+    };
+    void flushPendingProgress();
   }
 
   function clearPendingTimers(flush = false) {
@@ -265,6 +344,10 @@
       window.cancelAnimationFrame(focusRaf);
       focusRaf = null;
     }
+    if (idleDimTimer !== null) {
+      window.clearTimeout(idleDimTimer);
+      idleDimTimer = null;
+    }
   }
 
   function markChapterReadLocalAndRemote(url: string) {
@@ -278,19 +361,32 @@
     void api.markRead(mangaId, url).catch(() => {});
   }
 
-  function scrollToStartOfContainer() {
+  function scrollToStartOfContainer(smooth = false) {
     if (!scrollEl) return;
+    const behavior: ScrollBehavior = smooth ? "smooth" : "instant";
     if (isHorizontal) {
-      scrollEl.scrollLeft = 0;
+      scrollEl.scrollTo({ left: 0, behavior });
       lastScrollOffset = 0;
     } else {
-      scrollEl.scrollTop = 0;
+      scrollEl.scrollTo({ top: 0, behavior });
       lastScrollOffset = 0;
     }
+    showScrollTopBtn = false;
   }
 
-  function applyScrollRatio(ratio: number) {
+  function applyScrollRestore(ratio: number, pageIdx: number, targetChapUrl: string) {
     if (!scrollEl) return;
+    if (pageIdx > 0) {
+      const pageEl = scrollEl.querySelector<HTMLElement>(
+        `[data-page-key="${CSS.escape(`${targetChapUrl}:${pageIdx}`)}"]`
+      );
+      if (pageEl) {
+        pageEl.scrollIntoView({ behavior: "instant", block: "start", inline: "center" });
+        lastScrollOffset = isHorizontal ? Math.abs(scrollEl.scrollLeft) : scrollEl.scrollTop;
+        focusedPageIdx = pageIdx;
+        return;
+      }
+    }
     if (isHorizontal) {
       const maxX = Math.max(0, scrollEl.scrollWidth - scrollEl.clientWidth);
       const target = Math.round(maxX * ratio);
@@ -304,7 +400,7 @@
     }
   }
 
-  async function loadInitial(targetUrl: string, scrollRatio: number) {
+  async function loadInitial(targetUrl: string, scrollRatio: number, pageIndex: number) {
     const seq = ++loadSeq;
     clearPendingTimers(true);
     loadingInitial = true;
@@ -312,11 +408,15 @@
     errorState = null;
     strip = [];
     focusedKeys = new Set();
-    focusedPageIdx = 0;
+    focusedPageIdx = Math.max(0, pageIndex);
     prefetched.clear();
     markedReadSet.clear();
+    dimensionSamples.clear();
+    webtoonDecidedForChapter = false;
+    chapterDetectedWebtoon = false;
     restoredInitialScroll = false;
     isUserScrollingBeforeRestore = false;
+    showScrollTopBtn = false;
     lastScrollOffset = 0;
 
     scrollToStartOfContainer();
@@ -333,20 +433,24 @@
       activeUrl = chapterData.url;
       loadingInitial = false;
 
-      // Wait for Svelte to mount the single chapter's DOM into scrollEl before setting scroll position.
+      // Apply user's preferred mobile orientation lock when entering reader.
+      if (deviceEnv.isAndroid) {
+        void deviceEnv.setOrientationLock(readerSettings.orientationLock);
+      }
+
       await tick();
       if (seq !== loadSeq) return;
 
-      if (scrollRatio > 0.02 && scrollEl) {
-        applyScrollRatio(scrollRatio);
+      if ((pageIndex > 0 || scrollRatio > 0.02) && scrollEl) {
+        applyScrollRestore(scrollRatio, pageIndex, chapterData.url);
         restoreTimer = window.setTimeout(() => {
           restoreTimer = null;
           if (seq === loadSeq && scrollEl && !isUserScrollingBeforeRestore) {
-            applyScrollRatio(scrollRatio);
+            applyScrollRestore(scrollRatio, pageIndex, chapterData.url);
           }
           restoredInitialScroll = true;
           updateFocusNow();
-        }, 220);
+        }, 260);
       } else {
         scrollToStartOfContainer();
         restoredInitialScroll = true;
@@ -359,15 +463,14 @@
         });
       }
 
-      // Save immediate history entry when opening a chapter.
       void api
-        .saveProgress(mangaId, chapterData.url, chapterData.name, scrollRatio)
+        .saveProgress(mangaId, chapterData.url, chapterData.name, scrollRatio, Math.max(0, pageIndex))
         .catch(() => {});
 
-      // Short chapters that fit without scrolling should still be marked read.
       if (chapterData.images.length <= 2) {
         markChapterReadLocalAndRemote(chapterData.url);
       }
+      wakeFloatingControls();
     } catch (err) {
       if (seq !== loadSeq) return;
       errorState = formatAppError(err, settingsStore.value.language);
@@ -375,13 +478,68 @@
     }
   }
 
+  // Register Back interceptor (close Quick Settings first) & lifecycle flushers.
+  $effect(() => {
+    const unregisterBack = router.registerBackInterceptor(() => {
+      if (quickSettingsOpen) {
+        quickSettingsOpen = false;
+        return true;
+      }
+      return false;
+    });
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        captureCurrentProgressNow();
+      } else if (deviceEnv.isAndroid) {
+        void deviceEnv.reassertImmersive();
+      }
+    };
+
+    const onOrientationChanged = () => {
+      // HyperOS/MIUI orientation recovery: keep controls reachable and re-anchor current page.
+      suppressAutoHideUntil = Date.now() + 500;
+      toolbarVisible = true;
+      wakeFloatingControls();
+      captureCurrentProgressNow();
+
+      const anchorChap = activeUrl;
+      const anchorPage = focusedPageIdx;
+      window.setTimeout(() => {
+        if (!scrollEl || !anchorChap) return;
+        const pageEl = scrollEl.querySelector<HTMLElement>(
+          `[data-page-key="${CSS.escape(`${anchorChap}:${anchorPage}`)}"]`
+        );
+        if (pageEl) {
+          pageEl.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
+          lastScrollOffset = isHorizontal ? Math.abs(scrollEl.scrollLeft) : scrollEl.scrollTop;
+        }
+        updateFocusNow();
+      }, 220);
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("rtmaga:orientation-changed", onOrientationChanged);
+
+    return () => {
+      unregisterBack();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("rtmaga:orientation-changed", onOrientationChanged);
+      // Restore auto orientation when leaving reader on mobile.
+      if (deviceEnv.isAndroid) {
+        void deviceEnv.setOrientationLock("auto");
+      }
+    };
+  });
+
   $effect(() => {
     const _id = mangaId;
     const url = chapterUrl;
     const ratio = untrack(() => initialScrollRatio);
+    const page = untrack(() => initialPageIndex);
     untrack(() => {
       void _id;
-      void loadInitial(url, ratio);
+      void loadInitial(url, ratio, page);
     });
     return () => {
       loadSeq += 1;
@@ -389,10 +547,10 @@
     };
   });
 
-  // Preserve reading page position seamlessly whenever orientation, layout mode, pagesPerGroup, or direction changes!
+  // Preserve reading page position seamlessly whenever orientation, horizontal pagesPerGroup, or direction changes.
   let prevLayoutSig = "";
   $effect(() => {
-    const sig = `${readerSettings.orientation}|${vCfg.layoutMode}|${vCfg.pagesPerGroup}|${hCfg.pagesPerGroup}|${hCfg.direction}`;
+    const sig = `${effectiveOrientation}|${hCfg.pagesPerGroup}|${hCfg.direction}`;
     if (!prevLayoutSig) {
       prevLayoutSig = sig;
       return;
@@ -405,7 +563,6 @@
     if (!anchorChap || untrack(() => loadingInitial || strip.length === 0)) return;
 
     void (async () => {
-      // If switching to Horizontal mode while multiple chapters were auto-appended, keep only the active chapter.
       if (untrack(() => isHorizontal && strip.length > 1)) {
         const current = untrack(() => strip.find((c) => normUrl(c.url) === normUrl(anchorChap)));
         if (current) {
@@ -425,7 +582,6 @@
     })();
   });
 
-  // Re-evaluate focus when viewport resizes so unfocused dimming never sticks on wrong page/group.
   $effect(() => {
     const el = scrollEl;
     if (!el || typeof ResizeObserver === "undefined") return;
@@ -471,7 +627,6 @@
         return;
       }
 
-      // Capture exact scroll position before appending so the viewport NEVER jumps to the top.
       const anchorScrollTop = scrollEl ? scrollEl.scrollTop : 0;
       const shouldTrimOldest =
         strip.length >= 4 && normUrl(strip[0].url) !== normUrl(activeUrl);
@@ -513,10 +668,6 @@
     }
   }
 
-  /**
-   * Navigates directly to a single target chapter: hides all previous chapters in `strip`,
-   * loads ONLY the target chapter, and resets the scroll container to the start (0).
-   */
   function jumpToChapter(url: string) {
     if (!url) return;
     void flushPendingProgress();
@@ -524,10 +675,10 @@
     toolbarVisible = true;
     scrollToStartOfContainer();
 
-    const sameRouteProp = url === chapterUrl && initialScrollRatio === 0;
-    router.goReader(mangaId, url, 0);
+    const sameRouteProp = url === chapterUrl && initialScrollRatio === 0 && initialPageIndex === 0;
+    router.goReader(mangaId, url, 0, 0, true);
     if (sameRouteProp) {
-      void loadInitial(url, 0);
+      void loadInitial(url, 0, 0);
     }
   }
 
@@ -554,12 +705,39 @@
       targetGroup.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
       return;
     }
-    // Past ends of chapter -> transition chapters cleanly.
     if (deltaStep > 0 && activeChapter?.next) {
       jumpToChapter(activeChapter.next);
     } else if (deltaStep < 0 && activeChapter?.prev) {
       jumpToChapter(activeChapter.prev);
     }
+  }
+
+  function handleViewportClick(e: MouseEvent) {
+    wakeFloatingControls();
+    if (quickSettingsOpen) {
+      quickSettingsOpen = false;
+      return;
+    }
+    // Ignore clicks on buttons or links inside the viewport.
+    if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
+      return;
+    }
+
+    if (isHorizontal && readerSettings.tapZonesEnabled && scrollEl) {
+      const rect = scrollEl.getBoundingClientRect();
+      const relX = (e.clientX - rect.left) / Math.max(1, rect.width);
+      if (relX <= 0.28) {
+        stepHorizontalGroup(isRtl ? 1 : -1);
+        return;
+      }
+      if (relX >= 0.72) {
+        stepHorizontalGroup(isRtl ? -1 : 1);
+        return;
+      }
+    }
+
+    // Center tap toggles toolbar visibility smoothly.
+    toolbarVisible = !toolbarVisible;
   }
 
   async function handleManualVerify() {
@@ -569,7 +747,7 @@
       toasts.push(t.toastOpeningVerify, "info", 4500);
       await api.openManualVerification(errorState.blockedUrl);
       toasts.push(t.toastVerifyDone, "success");
-      await loadInitial(chapterUrl, initialScrollRatio);
+      await loadInitial(chapterUrl, initialScrollRatio, initialPageIndex);
     } catch (err) {
       errorState = formatAppError(err, settingsStore.value.language);
     } finally {
@@ -581,18 +759,26 @@
     if (!isHorizontal || !scrollEl || e.ctrlKey) return;
     if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
       e.preventDefault();
-      scrollEl.scrollLeft += e.deltaY * (isRtl ? -1 : 1);
+      if (hCfg.snapMode !== "none" && Math.abs(e.deltaY) >= 40) {
+        stepHorizontalGroup(e.deltaY > 0 ? 1 : -1);
+      } else {
+        scrollEl.scrollLeft += e.deltaY * (isRtl ? -1 : 1);
+      }
     }
   }
 
   function handleScroll() {
     if (!scrollEl || strip.length === 0 || loadingInitial) return;
 
+    wakeFloatingControls();
     scheduleFocusUpdate();
+
+    const suppressHide = Date.now() < suppressAutoHideUntil;
 
     if (isHorizontal) {
       const absLeft = Math.abs(scrollEl.scrollLeft);
       const delta = absLeft - lastScrollOffset;
+      showScrollTopBtn = absLeft > scrollEl.clientWidth * 0.8;
 
       if (!restoredInitialScroll && restoreTimer !== null && Math.abs(delta) > 15) {
         isUserScrollingBeforeRestore = true;
@@ -601,18 +787,20 @@
         restoredInitialScroll = true;
       }
 
-      if (delta > 20 && absLeft > 80) {
-        toolbarVisible = false;
-        quickSettingsOpen = false;
-      } else if (delta < -20 || absLeft < 40) {
-        toolbarVisible = true;
+      if (!suppressHide) {
+        if (delta > 20 && absLeft > 80) {
+          toolbarVisible = false;
+          quickSettingsOpen = false;
+        } else if (delta < -20 || absLeft < 40) {
+          toolbarVisible = true;
+        }
       }
       lastScrollOffset = absLeft;
 
       if (restoredInitialScroll && activeChapter) {
         const maxScroll = Math.max(1, scrollEl.scrollWidth - scrollEl.clientWidth);
         const ratio = Math.min(1, Math.max(0, absLeft / maxScroll));
-        scheduleSaveProgress(activeChapter.url, activeChapter.name, ratio);
+        scheduleSaveProgress(activeChapter.url, activeChapter.name, ratio, focusedPageIdx);
         if (ratio >= 0.85) {
           markChapterReadLocalAndRemote(activeChapter.url);
         }
@@ -626,6 +814,7 @@
     // Vertical scroll handling (Continuous Strip & Vertical Grouped Scroll).
     const top = scrollEl.scrollTop;
     const delta = top - lastScrollOffset;
+    showScrollTopBtn = top > 320;
 
     if (!restoredInitialScroll && restoreTimer !== null && Math.abs(delta) > 15) {
       isUserScrollingBeforeRestore = true;
@@ -634,11 +823,13 @@
       restoredInitialScroll = true;
     }
 
-    if (delta > 16 && top > 80) {
-      toolbarVisible = false;
-      quickSettingsOpen = false;
-    } else if (delta < -16 || top < 60) {
-      toolbarVisible = true;
+    if (!suppressHide) {
+      if (delta > 16 && top > 80) {
+        toolbarVisible = false;
+        quickSettingsOpen = false;
+      } else if (delta < -16 || top < 60) {
+        toolbarVisible = true;
+      }
     }
     lastScrollOffset = top;
 
@@ -667,7 +858,7 @@
         const secHeight = Math.max(1, currentSection.offsetHeight - scrollEl.clientHeight);
         const ratio = Math.min(1, Math.max(0, (top - currentSection.offsetTop) / secHeight));
 
-        scheduleSaveProgress(chap.url, chap.name, ratio);
+        scheduleSaveProgress(chap.url, chap.name, ratio, focusedPageIdx);
 
         if (ratio >= 0.85) {
           markChapterReadLocalAndRemote(chap.url);
@@ -689,8 +880,8 @@
     }
   }
 
-  function scheduleSaveProgress(url: string, name: string, ratio: number) {
-    pendingProgress = { mangaId, url, name, ratio };
+  function scheduleSaveProgress(url: string, name: string, ratio: number, pageIndex: number) {
+    pendingProgress = { mangaId, url, name, ratio, pageIndex };
     if (saveTimer !== null) {
       window.clearTimeout(saveTimer);
     }
@@ -710,7 +901,36 @@
     }
   }
 
+  async function toggleBookmark() {
+    if (!manga) return;
+    try {
+      const next = await api.toggleBookmark(manga.id);
+      manga = { ...manga, bookmarked: next };
+      toasts.push(next ? t.toastBookmarkAdded : t.toastBookmarkRemoved, "success", 1800);
+    } catch {
+      // Ignore error.
+    }
+  }
+
+  async function cycleOrientationLock() {
+    const order: OrientationLockMode[] = ["auto", "portrait", "landscape"];
+    const curr = readerSettings.orientationLock;
+    const next = order[(order.indexOf(curr) + 1) % order.length];
+    settingsStore.update((d) => {
+      d.reader.orientationLock = next;
+    });
+    await deviceEnv.setOrientationLock(next);
+    const label =
+      next === "portrait"
+        ? t.orientationPortrait
+        : next === "landscape"
+          ? t.orientationLandscape
+          : t.orientationAuto;
+    toasts.push(label, "info", 1600);
+  }
+
   async function exitReader() {
+    captureCurrentProgressNow();
     await flushPendingProgress();
     try {
       const win = getCurrentWindow();
@@ -721,7 +941,9 @@
     } catch {
       // Ignore outside Tauri.
     }
-    router.goManga(mangaId);
+    if (!router.goBack()) {
+      router.goManga(mangaId);
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -780,26 +1002,35 @@
     }
   }
 
+  async function applyPerMangaOverride(mode: ReaderModeOverride) {
+    if (manga) {
+      manga = { ...manga, readerModeOverride: mode };
+    }
+    try {
+      await api.setMangaReaderOverride(mangaId, mode);
+    } catch {
+      // Ignore error.
+    }
+  }
+
   function setOrientation(o: ReadingOrientation) {
     settingsStore.update((d) => {
       d.reader.orientation = o;
     });
+    // Record per-manga override so manual choice takes precedence over Auto Webtoon detection.
+    const nextOverride: ReaderModeOverride = o === "horizontal" ? "horizontal" : "vertical_strip";
+    void applyPerMangaOverride(nextOverride);
   }
 
-  function setVerticalLayout(m: VerticalLayoutMode) {
-    settingsStore.update((d) => {
-      d.reader.vertical.layoutMode = m;
-    });
+  function resetToAutoMode() {
+    void applyPerMangaOverride(null);
+    toasts.push(t.readerOverrideResetToast, "info", 2000);
   }
 
   function setPagesPerGroup(n: number) {
     const clamped = Math.max(1, Math.min(8, n));
     settingsStore.update((d) => {
-      if (isHorizontal) {
-        d.reader.horizontal.pagesPerGroup = clamped;
-      } else {
-        d.reader.vertical.pagesPerGroup = clamped;
-      }
+      d.reader.horizontal.pagesPerGroup = clamped;
     });
   }
 
@@ -835,12 +1066,6 @@
     }, 80);
   }
 
-  function updateReaderWidth(px: number) {
-    settingsStore.update((d) => {
-      d.reader.width = { mode: "px", value: px };
-    }, 150);
-  }
-
   function toggleAutoNext() {
     settingsStore.update((d) => {
       d.reader.autoNextChapter = !d.reader.autoNextChapter;
@@ -865,14 +1090,14 @@
   class="relative flex h-full w-full flex-col overflow-hidden"
   style="background-color: {readerBackdrop()};"
 >
-  <!-- Floating Auto-Hide Top Toolbar -->
+  <!-- Floating Auto-Hide Top Toolbar (respects Android display cutout) -->
   <header
-    class="fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-3 border-b px-4 py-2.5 backdrop-blur-md transition-transform duration-200"
-    style="background-color: color-mix(in srgb, var(--surface) 88%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
+    class="fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 backdrop-blur-md transition-transform duration-200 sm:px-4"
+    style="padding-top: max(0.5rem, var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 88%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
       ? '0%'
-      : '-110%'});"
+      : '-115%'});"
   >
-    <div class="flex min-w-0 items-center gap-2.5">
+    <div class="flex min-w-0 items-center gap-2">
       <button
         type="button"
         onclick={exitReader}
@@ -883,16 +1108,31 @@
         <span class="hidden sm:inline">{t.back}</span>
       </button>
 
-      <div class="min-w-0 border-l pl-3" style="border-color: var(--border);">
-        <div class="truncate text-sm font-semibold">{manga?.title ?? t.readingFallback}</div>
+      <div class="min-w-0 border-l pl-2.5" style="border-color: var(--border);">
+        <div class="flex items-center gap-1.5">
+          <div class="truncate text-sm font-semibold">{manga?.title ?? t.readingFallback}</div>
+          {#if isAutoWebtoonActive}
+            <span
+              class="hidden shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex"
+              style="background-color: var(--accent-soft); color: var(--accent);"
+              title={t.autoWebtoonBadge}
+            >
+              <Sparkles size={10} />
+              Webtoon
+            </span>
+          {/if}
+        </div>
         <div class="truncate text-xs" style="color: var(--text-muted);">
           {activeChapter?.name ?? ""}
+          {#if activeChapter && activeChapter.images.length > 0}
+            · {focusedPageIdx + 1}/{activeChapter.images.length}
+          {/if}
         </div>
       </div>
     </div>
 
-    <!-- Chapter selector + prev/next -->
-    <div class="flex items-center gap-1.5">
+    <!-- Chapter selector + prev/next + bookmark + settings -->
+    <div class="flex shrink-0 items-center gap-1">
       <button
         type="button"
         disabled={!activeChapter?.prev}
@@ -901,7 +1141,7 @@
         style="border-color: var(--border); background-color: var(--surface);"
         title={t.prevChapterTooltip}
       >
-        <ChevronLeft size={17} />
+        <ChevronLeft size={16} />
       </button>
 
       {#if manga && manga.chapters.length > 0}
@@ -912,7 +1152,7 @@
             e.currentTarget.blur();
             jumpToChapter(target);
           }}
-          class="max-w-44 rounded-lg border px-2.5 py-1.5 text-xs font-medium outline-none"
+          class="max-w-28 rounded-lg border px-2 py-1.5 text-xs font-medium outline-none sm:max-w-44"
           style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
         >
           {#each manga.chapters as ch (ch.url)}
@@ -929,15 +1169,30 @@
         style="border-color: var(--border); background-color: var(--surface);"
         title={t.nextChapterTooltip}
       >
-        <ChevronRight size={17} />
+        <ChevronRight size={16} />
       </button>
+
+      {#if manga}
+        <button
+          type="button"
+          onclick={toggleBookmark}
+          class="rounded-lg border p-1.5"
+          style="border-color: var(--border); background-color: {manga.bookmarked
+            ? 'var(--accent-soft)'
+            : 'var(--surface)'}; color: {manga.bookmarked ? 'var(--accent)' : 'var(--text)'};"
+          title={manga.bookmarked ? t.bookmarkRemove : t.bookmarkAdd}
+        >
+          <Bookmark size={16} fill={manga.bookmarked ? "currentColor" : "none"} />
+        </button>
+      {/if}
 
       <button
         type="button"
         onclick={() => {
           quickSettingsOpen = !quickSettingsOpen;
+          wakeFloatingControls();
         }}
-        class="ml-1 rounded-lg border p-1.5"
+        class="rounded-lg border p-1.5"
         style="border-color: var(--border); background-color: {quickSettingsOpen
           ? 'var(--accent-soft)'
           : 'var(--surface)'}; color: {quickSettingsOpen ? 'var(--accent)' : 'var(--text)'};"
@@ -946,28 +1201,52 @@
         <SlidersHorizontal size={16} />
       </button>
 
-      <button
-        type="button"
-        onclick={toggleFullscreen}
-        class="rounded-lg border p-1.5"
-        style="border-color: var(--border); background-color: var(--surface);"
-        title={t.fullscreenTooltip}
-      >
-        {#if isFullscreen}
-          <Minimize size={16} />
-        {:else}
-          <Maximize size={16} />
-        {/if}
-      </button>
+      {#if !deviceEnv.isAndroid}
+        <button
+          type="button"
+          onclick={toggleFullscreen}
+          class="rounded-lg border p-1.5"
+          style="border-color: var(--border); background-color: var(--surface);"
+          title={t.fullscreenTooltip}
+        >
+          {#if isFullscreen}
+            <Minimize size={16} />
+          {:else}
+            <Maximize size={16} />
+          {/if}
+        </button>
+      {/if}
     </div>
   </header>
 
   <!-- Quick Reader Settings Popover -->
   {#if quickSettingsOpen}
     <div
-      class="fixed top-14 right-4 z-40 flex max-h-[80vh] w-80 flex-col gap-3.5 overflow-y-auto rounded-2xl border p-4 text-xs shadow-xl"
-      style="background-color: var(--surface); border-color: var(--border);"
+      class="fixed right-4 z-40 flex max-h-[78dvh] w-80 max-w-[calc(100vw-2rem)] flex-col gap-3.5 overflow-y-auto rounded-2xl border p-4 text-xs shadow-xl"
+      style="top: calc(3.5rem + var(--safe-top)); background-color: var(--surface); border-color: var(--border);"
     >
+      {#if isAutoWebtoonActive || effectiveOverride !== null}
+        <div
+          class="flex items-center justify-between gap-2 rounded-xl border px-3 py-2"
+          style="background-color: var(--surface-subtle); border-color: var(--border);"
+        >
+          <span class="font-medium" style="color: var(--text);">
+            {effectiveOverride !== null ? t.readerOverrideActive : t.autoWebtoonBadge}
+          </span>
+          {#if effectiveOverride !== null}
+            <button
+              type="button"
+              onclick={resetToAutoMode}
+              class="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium"
+              style="background-color: var(--accent-soft); color: var(--accent);"
+            >
+              <RotateCcw size={11} />
+              {t.readerResetToAuto}
+            </button>
+          {/if}
+        </div>
+      {/if}
+
       <!-- Orientation toggle -->
       <div class="flex flex-col gap-1.5">
         <span class="font-medium">{t.readingModeLabel}</span>
@@ -977,11 +1256,11 @@
               type="button"
               onclick={() => setOrientation(val as ReadingOrientation)}
               class="rounded-lg border py-1.5 font-medium"
-              style="border-color: {readerSettings.orientation === val
+              style="border-color: {effectiveOrientation === val
                 ? 'var(--accent)'
-                : 'var(--border)'}; background-color: {readerSettings.orientation === val
+                : 'var(--border)'}; background-color: {effectiveOrientation === val
                 ? 'var(--accent-soft)'
-                : 'var(--surface-subtle)'}; color: {readerSettings.orientation === val
+                : 'var(--surface-subtle)'}; color: {effectiveOrientation === val
                 ? 'var(--accent)'
                 : 'var(--text)'};"
             >
@@ -991,31 +1270,7 @@
         </div>
       </div>
 
-      {#if !isHorizontal}
-        <!-- Vertical sub-mode -->
-        <div class="flex flex-col gap-1.5">
-          <span class="font-medium">{t.verticalStyleLabel}</span>
-          <div class="grid grid-cols-2 gap-1.5">
-            {#each [["continuous_strip", t.verticalContinuous], ["vertical_grouped", t.verticalGrouped]] as [val, label] (val)}
-              <button
-                type="button"
-                onclick={() => setVerticalLayout(val as VerticalLayoutMode)}
-                class="rounded-lg border py-1.5 font-medium"
-                style="border-color: {vCfg.layoutMode === val
-                  ? 'var(--accent)'
-                  : 'var(--border)'}; background-color: {vCfg.layoutMode === val
-                  ? 'var(--accent-soft)'
-                  : 'var(--surface-subtle)'}; color: {vCfg.layoutMode === val
-                  ? 'var(--accent)'
-                  : 'var(--text)'};"
-              >
-                {label}
-              </button>
-            {/each}
-          </div>
-        </div>
-      {:else}
-        <!-- Horizontal direction -->
+      {#if isHorizontal}
         <div class="flex flex-col gap-1.5">
           <span class="font-medium">{t.horizontalDirLabel}</span>
           <div class="grid grid-cols-2 gap-1.5">
@@ -1037,15 +1292,11 @@
             {/each}
           </div>
         </div>
-      {/if}
 
-      <!-- Pages per group (Horizontal or Vertical Grouped) -->
-      {#if isHorizontal || isVerticalGrouped}
-        {@const activeCount = isHorizontal ? hCfg.pagesPerGroup : vCfg.pagesPerGroup}
         <div class="flex flex-col gap-1.5">
           <div class="flex items-center justify-between font-medium">
             <span>{t.pagesPerGroupLabel}</span>
-            <span style="color: var(--text-muted);">{activeCount}</span>
+            <span style="color: var(--text-muted);">{hCfg.pagesPerGroup}</span>
           </div>
           <div class="grid grid-cols-4 gap-1.5">
             {#each [1, 2, 3] as n (n)}
@@ -1053,11 +1304,11 @@
                 type="button"
                 onclick={() => setPagesPerGroup(n)}
                 class="rounded-lg border py-1 font-medium"
-                style="border-color: {activeCount === n
+                style="border-color: {hCfg.pagesPerGroup === n
                   ? 'var(--accent)'
-                  : 'var(--border)'}; background-color: {activeCount === n
+                  : 'var(--border)'}; background-color: {hCfg.pagesPerGroup === n
                   ? 'var(--accent-soft)'
-                  : 'var(--surface-subtle)'}; color: {activeCount === n
+                  : 'var(--surface-subtle)'}; color: {hCfg.pagesPerGroup === n
                   ? 'var(--accent)'
                   : 'var(--text)'};"
               >
@@ -1068,17 +1319,14 @@
               type="number"
               min="1"
               max="8"
-              value={activeCount}
+              value={hCfg.pagesPerGroup}
               onchange={(e) => setPagesPerGroup(Number(e.currentTarget.value))}
               class="rounded-lg border px-2 py-1 text-center text-xs outline-none"
               style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
             />
           </div>
         </div>
-      {/if}
 
-      <!-- Snap controls -->
-      {#if isHorizontal}
         <div class="flex flex-col gap-1.5">
           <span class="font-medium">{t.snapModeLabel}</span>
           <div class="grid grid-cols-3 gap-1.5">
@@ -1100,22 +1348,8 @@
             {/each}
           </div>
         </div>
-      {:else if isVerticalGrouped}
-        <div class="flex items-center justify-between">
-          <span class="font-medium">{t.groupSnapLabel}</span>
-          <input
-            type="checkbox"
-            checked={vCfg.snapEnabled}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
-              settingsStore.update((d) => (d.reader.vertical.snapEnabled = checked));
-            }}
-            class="h-4 w-4 accent-rose-500"
-          />
-        </div>
       {/if}
 
-      <!-- Focus dimming quick toggle + slider -->
       <div class="flex flex-col gap-1.5">
         <div class="flex items-center justify-between">
           <span class="font-medium">{t.dimUnfocusedLabel}</span>
@@ -1144,28 +1378,6 @@
       </div>
 
       {#if !isHorizontal}
-        <div class="flex flex-col gap-1.5">
-          <div class="flex items-center justify-between font-medium">
-            <span>{t.imageWidth}</span>
-            <span style="color: var(--text-muted);">
-              {readerSettings.width.mode === "px"
-                ? `${readerSettings.width.value}px`
-                : readerSettings.width.mode === "percent"
-                  ? `${readerSettings.width.value}%`
-                  : t.fitWindow}
-            </span>
-          </div>
-          <input
-            type="range"
-            min="480"
-            max="1400"
-            step="20"
-            value={readerSettings.width.mode === "px" ? readerSettings.width.value : 800}
-            oninput={(e) => updateReaderWidth(Number(e.currentTarget.value))}
-            class="w-full accent-rose-500"
-          />
-        </div>
-
         <div class="flex items-center justify-between">
           <span class="font-medium">{t.autoAppendNext}</span>
           <input
@@ -1208,9 +1420,8 @@
     bind:this={scrollEl}
     onscroll={handleScroll}
     onwheel={handleWheel}
-    onclick={() => {
-      if (quickSettingsOpen) quickSettingsOpen = false;
-    }}
+    onclick={handleViewportClick}
+    ontouchstart={wakeFloatingControls}
     dir={isRtl ? "rtl" : "ltr"}
     class={isHorizontal
       ? "relative flex h-full w-full overflow-x-auto overflow-y-hidden"
@@ -1248,7 +1459,7 @@
           {/if}
           <button
             type="button"
-            onclick={() => loadInitial(chapterUrl, initialScrollRatio)}
+            onclick={() => loadInitial(chapterUrl, initialScrollRatio, initialPageIndex)}
             class="rounded-xl px-4 py-2 text-xs font-medium text-white"
             style="background-color: var(--accent);"
           >
@@ -1265,20 +1476,22 @@
         </div>
       </div>
     {:else if isHorizontal && activeChapter}
-      <!-- HORIZONTAL READING MODE -->
+      <!-- HORIZONTAL READING MODE (strict anti-skip slots + scroll-snap-stop: always) -->
       {@const groups = partitionPages(activeChapter.images, hCfg.pagesPerGroup)}
       <div
-        class="flex h-full w-max items-center pt-12 pb-4 {hCfg.centerGroups ? 'px-[8vw]' : 'px-4'}"
-        style="gap: {hCfg.groupGapPx}px;"
+        class="flex h-full w-max items-center"
+        style="gap: {hCfg.pagesPerGroup === 1 ? 0 : hCfg.groupGapPx}px;"
       >
         {#each groups as group (`${activeChapter.url}:hg:${group.groupIdx}`)}
           {@const gKey = `${activeChapter.url}:hg:${group.groupIdx}`}
           {@const gBright = groupDimBrightness(gKey, hCfg.dimUnfocused, hCfg.dimLevel)}
           <div
             data-group-key={gKey}
-            class="flex h-full shrink-0 items-center justify-center"
-            style="gap: {hCfg.pageGapPx}px; {hCfg.snapMode === 'group'
-              ? 'scroll-snap-align: center;'
+            class="flex h-full shrink-0 items-center justify-center {group.items.length === 1
+              ? 'w-screen'
+              : 'min-w-[92vw] px-2'}"
+            style="gap: {hCfg.pageGapPx}px; {hCfg.snapMode !== 'none'
+              ? 'scroll-snap-align: center; scroll-snap-stop: always;'
               : ''} {gBright < 0.999
               ? `filter: brightness(${gBright}); transition: filter 160ms ease;`
               : 'transition: filter 160ms ease;'}"
@@ -1288,12 +1501,17 @@
                 token={entry.token}
                 index={entry.pageIdx}
                 pageKey={`${activeChapter.url}:${entry.pageIdx}`}
-                {preloadMarginPx}
-                eager={entry.pageIdx < readerSettings.preloadImages ||
-                  Math.abs(entry.pageIdx - focusedPageIdx) <= readerSettings.preloadImages}
+                loadMode={computePageLoadMode(
+                  entry.pageIdx,
+                  focusedPageIdx,
+                  readerSettings.preloadImages,
+                  true
+                )}
                 horizontal={true}
                 snapPage={hCfg.snapMode === "page"}
+                snapStopAlways={hCfg.snapMode !== "none"}
                 groupPageCount={group.items.length}
+                onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
               />
             {/each}
           </div>
@@ -1302,8 +1520,10 @@
         <!-- End-of-chapter horizontal card -->
         <div
           dir="ltr"
-          class="flex h-full shrink-0 flex-col items-center justify-center px-8"
-          style={hCfg.snapMode !== "none" ? "scroll-snap-align: center;" : ""}
+          class="flex h-full w-screen shrink-0 flex-col items-center justify-center px-8"
+          style={hCfg.snapMode !== "none"
+            ? "scroll-snap-align: center; scroll-snap-stop: always;"
+            : ""}
         >
           {#if activeChapter.next}
             <button
@@ -1326,14 +1546,10 @@
         </div>
       </div>
     {:else}
-      <!-- VERTICAL READING MODE (Continuous Strip OR Vertical Grouped Scroll) -->
-      <div
-        class="mx-auto flex flex-col pt-14 pb-24 {isVerticalGrouped && vCfg.alignment === 'start'
-          ? 'items-start'
-          : 'items-center'}"
-        style={contentWidthStyle()}
-      >
+      <!-- VERTICAL READING MODE (Continuous Vertical Scroll) -->
+      <div class="mx-auto flex w-full max-w-[900px] flex-col items-center pt-14 pb-24">
         {#each strip as chap, chapIdx (chap.url)}
+          {@const isActiveChap = normUrl(chap.url) === normUrl(activeUrl)}
           <section data-chapter-url={chap.url} class="flex w-full flex-col">
             {#if chapIdx > 0}
               <div
@@ -1346,54 +1562,25 @@
               </div>
             {/if}
 
-            {#if isVerticalGrouped}
-              {@const vGroups = partitionPages(chap.images, vCfg.pagesPerGroup)}
-              <div class="flex w-full flex-col" style="gap: {vCfg.groupGapPx}px;">
-                {#each vGroups as group (`${chap.url}:vg:${group.groupIdx}`)}
-                  {@const gKey = `${chap.url}:vg:${group.groupIdx}`}
-                  {@const gBright = groupDimBrightness(gKey, vCfg.dimUnfocused, vCfg.dimLevel)}
-                  <div
-                    data-group-key={gKey}
-                    class="flex w-full flex-col"
-                    style="gap: {vCfg.pageGapPx}px; {vCfg.snapEnabled
-                      ? `scroll-snap-align: ${vCfg.alignment === 'start' ? 'start' : 'center'};`
-                      : ''} {gBright < 0.999
-                      ? `filter: brightness(${gBright}); transition: filter 160ms ease;`
-                      : 'transition: filter 160ms ease;'}"
-                  >
-                    {#each group.items as entry (`${chap.url}:${entry.pageIdx}`)}
-                      <PageImage
-                        token={entry.token}
-                        index={entry.pageIdx}
-                        pageKey={`${chap.url}:${entry.pageIdx}`}
-                        {preloadMarginPx}
-                        eager={(chapIdx === 0 && entry.pageIdx < readerSettings.preloadImages) ||
-                          (normUrl(chap.url) === normUrl(activeUrl) &&
-                            Math.abs(entry.pageIdx - focusedPageIdx) <=
-                              readerSettings.preloadImages)}
-                      />
-                    {/each}
-                  </div>
-                {/each}
-              </div>
-            {:else}
-              <!-- Continuous Strip: never snaps, customizable page gap, optional per-image focus dimming -->
-              <div class="flex w-full flex-col" style="gap: {vCfg.pageGapPx}px;">
-                {#each chap.images as token, imgIdx (`${chap.url}:${imgIdx}`)}
-                  {@const pKey = `${chap.url}:${imgIdx}`}
-                  <PageImage
-                    {token}
-                    index={imgIdx}
-                    pageKey={pKey}
-                    {preloadMarginPx}
-                    eager={(chapIdx === 0 && imgIdx < readerSettings.preloadImages) ||
-                      (normUrl(chap.url) === normUrl(activeUrl) &&
-                        Math.abs(imgIdx - focusedPageIdx) <= readerSettings.preloadImages)}
-                    dimBrightness={pageDimBrightness(pKey)}
-                  />
-                {/each}
-              </div>
-            {/if}
+            <!-- Continuous Strip: seamless zero-gap when Auto-Webtoon active -->
+            <div class="flex w-full flex-col" style="gap: {effectiveVerticalGapPx}px;">
+              {#each chap.images as token, imgIdx (`${chap.url}:${imgIdx}`)}
+                {@const pKey = `${chap.url}:${imgIdx}`}
+                <PageImage
+                  {token}
+                  index={imgIdx}
+                  pageKey={pKey}
+                  loadMode={computePageLoadMode(
+                    imgIdx,
+                    focusedPageIdx,
+                    readerSettings.preloadImages,
+                    isActiveChap
+                  )}
+                  dimBrightness={pageDimBrightness(pKey)}
+                  onImageLoaded={(info) => handlePageImageLoaded(chap.url, info)}
+                />
+              {/each}
+            </div>
           </section>
         {/each}
 
@@ -1433,4 +1620,20 @@
       </div>
     {/if}
   </div>
+
+  <!-- Minimal Customizable Floating Reader Controls -->
+  <FloatingControls
+    screen="reader"
+    inReader={true}
+    showScrollTop={showScrollTopBtn}
+    onScrollTop={() => scrollToStartOfContainer(true)}
+    onToggleReaderSettings={() => {
+      quickSettingsOpen = !quickSettingsOpen;
+      wakeFloatingControls();
+    }}
+    readerSettingsActive={quickSettingsOpen}
+    onCycleOrientationLock={cycleOrientationLock}
+    orientationLock={readerSettings.orientationLock}
+    dimmed={controlsDimmed}
+  />
 </div>

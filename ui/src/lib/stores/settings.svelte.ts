@@ -1,17 +1,32 @@
 import { api } from "../api";
 import { getDict, getLocale } from "../i18n";
-import type { Language, Settings, Theme } from "../types";
+import type { FloatingScreenKey, Language, Settings, Theme } from "../types";
 import { toasts } from "./toast.svelte";
+
+const ALL_FLOATING_SCREENS: FloatingScreenKey[] = [
+  "home",
+  "bookmarks",
+  "history",
+  "manga",
+  "reader",
+  "settings",
+];
 
 export const DEFAULT_SETTINGS: Settings = {
   language: "en",
   theme: "system",
+  device: {
+    customName: null,
+  },
   reader: {
     orientation: "vertical",
     width: { mode: "px", value: 800 },
     gapPx: 0,
-    preloadImages: 4,
+    preloadImages: 6,
     autoNextChapter: true,
+    autoWebtoonDetect: true,
+    tapZonesEnabled: true,
+    orientationLock: "auto",
     readerBg: "dark",
     vertical: {
       layoutMode: "continuous_strip",
@@ -34,6 +49,27 @@ export const DEFAULT_SETTINGS: Settings = {
       dimLevel: 55,
     },
   },
+  floating: {
+    scrollToTopScreens: [...ALL_FLOATING_SCREENS],
+    scrollToTop: {
+      edge: "right",
+      verticalPercent: 82,
+      horizontalOffsetPx: 16,
+    },
+    showReaderSettings: true,
+    readerSettings: {
+      edge: "right",
+      verticalPercent: 68,
+      horizontalOffsetPx: 16,
+    },
+    showOrientationLock: true,
+    orientationLock: {
+      edge: "right",
+      verticalPercent: 54,
+      horizontalOffsetPx: 16,
+    },
+    autoDimInReader: true,
+  },
   updates: {
     enabled: true,
     intervalHours: 6,
@@ -43,6 +79,13 @@ export const DEFAULT_SETTINGS: Settings = {
   sources: {
     headlessEnabled: true,
     maxConnPerHost: 4,
+  },
+  doh: {
+    enabled: false,
+    providerId: "cloudflare",
+    profileId: "default",
+    customProfileId: null,
+    allowSystemFallback: true,
   },
   proxy: {
     enabled: false,
@@ -63,7 +106,9 @@ export const DEFAULT_SETTINGS: Settings = {
 
 function mergeSettings(raw: Partial<Settings>): Settings {
   const rawReader = raw.reader ?? ({} as Partial<Settings["reader"]>);
+  const rawFloating = raw.floating ?? ({} as Partial<Settings["floating"]>);
   const rawProxy = raw.proxy ?? ({} as Partial<Settings["proxy"]>);
+  const rawDoh = raw.doh ?? ({} as Partial<Settings["doh"]>);
   const mergedVertical = {
     ...DEFAULT_SETTINGS.reader.vertical,
     ...(rawReader.vertical ?? {}),
@@ -75,20 +120,48 @@ function mergeSettings(raw: Partial<Settings>): Settings {
   ) {
     mergedVertical.pageGapPx = rawReader.gapPx;
   }
+  const preloadRaw = rawReader.preloadImages ?? DEFAULT_SETTINGS.reader.preloadImages;
+  const clampedPreload = Math.max(5, Math.min(8, preloadRaw));
+
   return {
     language: raw.language ?? DEFAULT_SETTINGS.language,
     theme: raw.theme ?? DEFAULT_SETTINGS.theme,
+    device: {
+      ...DEFAULT_SETTINGS.device,
+      ...(raw.device ?? {}),
+    },
     reader: {
       ...DEFAULT_SETTINGS.reader,
       ...rawReader,
+      preloadImages: clampedPreload,
       vertical: mergedVertical,
       horizontal: {
         ...DEFAULT_SETTINGS.reader.horizontal,
         ...(rawReader.horizontal ?? {}),
       },
     },
+    floating: {
+      ...DEFAULT_SETTINGS.floating,
+      ...rawFloating,
+      scrollToTopScreens: Array.isArray(rawFloating.scrollToTopScreens)
+        ? rawFloating.scrollToTopScreens
+        : [...ALL_FLOATING_SCREENS],
+      scrollToTop: {
+        ...DEFAULT_SETTINGS.floating.scrollToTop,
+        ...(rawFloating.scrollToTop ?? {}),
+      },
+      readerSettings: {
+        ...DEFAULT_SETTINGS.floating.readerSettings,
+        ...(rawFloating.readerSettings ?? {}),
+      },
+      orientationLock: {
+        ...DEFAULT_SETTINGS.floating.orientationLock,
+        ...(rawFloating.orientationLock ?? {}),
+      },
+    },
     updates: { ...DEFAULT_SETTINGS.updates, ...(raw.updates ?? {}) },
     sources: { ...DEFAULT_SETTINGS.sources, ...(raw.sources ?? {}) },
+    doh: { ...DEFAULT_SETTINGS.doh, ...rawDoh },
     proxy: {
       ...DEFAULT_SETTINGS.proxy,
       ...rawProxy,

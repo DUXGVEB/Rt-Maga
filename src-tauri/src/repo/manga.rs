@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use mangacore::Manga;
+use mangacore::{ChapterRef, Manga};
 use sqlx::FromRow;
 
 use crate::error::AppError;
@@ -19,6 +19,8 @@ pub(crate) struct MangaRow {
     pub(crate) latest_chapter_name: Option<String>,
     pub(crate) has_new: i64,
     pub(crate) checked_at: Option<i64>,
+    pub(crate) reader_mode_override: Option<String>,
+    pub(crate) detected_webtoon: i64,
 }
 
 /// Persisted chapter record belonging to a manga.
@@ -244,16 +246,58 @@ impl Database {
         Ok(())
     }
 
-    /// Lists manga that currently exist in `history` and are eligible for background update checks.
+    /// Sets or clears the per-manga manual reader mode override
+    /// (`None`, `"vertical_strip"`, `"vertical_grouped"`, or `"horizontal"`).
     ///
     /// # Errors
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
-    pub(crate) async fn list_history_manga_for_updates(&self) -> Result<Vec<MangaRow>, AppError> {
+    pub(crate) async fn set_manga_reader_override(
+        &self,
+        manga_id: i64,
+        override_mode: Option<&str>,
+    ) -> Result<(), AppError> {
+        let clean = override_mode.and_then(|raw| match raw.trim() {
+            "vertical_strip" | "vertical_grouped" | "horizontal" => Some(raw.trim()),
+            _ => None,
+        });
+        sqlx::query("UPDATE manga SET reader_mode_override = ? WHERE id = ?")
+            .bind(clean)
+            .bind(manga_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
+    /// Persists the passive Webtoon / Long-Strip detection verdict for a manga.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn mark_manga_detected_webtoon(&self, manga_id: i64) -> Result<(), AppError> {
+        sqlx::query("UPDATE manga SET detected_webtoon = 1 WHERE id = ?")
+            .bind(manga_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
+    /// Lists manga eligible for background update checks: **bookmarked manga first**,
+    /// followed by remaining reading-history manga, deduplicated by manga ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn list_targets_for_updates(&self) -> Result<Vec<MangaRow>, AppError> {
         let rows = sqlx::query_as::<_, MangaRow>(
-            "SELECT m.* FROM manga m
-             INNER JOIN history h ON h.manga_id = m.id
-             ORDER BY h.read_at DESC",
+            "SELECT m.*
+             FROM manga m
+             LEFT JOIN bookmark b ON b.manga_id = m.id
+             LEFT JOIN history h ON h.manga_id = m.id
+             WHERE b.manga_id IS NOT NULL OR h.manga_id IS NOT NULL
+             ORDER BY
+                CASE WHEN b.manga_id IS NOT NULL THEN 0 ELSE 1 END ASC,
+                COALESCE(h.read_at, b.created_at, m.updated_at) DESC",
         )
         .fetch_all(self.pool())
         .await?;
@@ -261,7 +305,7 @@ impl Database {
     }
 
     /// Records the result of checking a manga for new chapters.
-    /// Returns `true` if a genuinely newer latest chapter was discovered.
+    /// Returns all genuinely newly discovered chapters (in ascending chapter order).
     ///
     /// # Errors
     ///
@@ -270,7 +314,7 @@ impl Database {
         &self,
         manga_id: i64,
         fresh: &Manga,
-    ) -> Result<Option<String>, AppError> {
+    ) -> Result<Vec<ChapterRef>, AppError> {
         let now = now_unix_secs();
         let existing_urls: HashSet<String> =
             sqlx::query_as::<_, (String,)>("SELECT url FROM chapter WHERE manga_id = ?")
@@ -281,35 +325,38 @@ impl Database {
                 .map(|(u,)| u.trim_end_matches('/').to_owned())
                 .collect();
 
-        let new_latest = fresh.chapters.last();
         let _ = self.upsert_manga_with_id(Some(manga_id), fresh).await?;
 
-        let discovered_name = match new_latest {
-            Some(latest)
-                if !existing_urls.is_empty()
-                    && !existing_urls.contains(latest.url.as_str().trim_end_matches('/')) =>
-            {
-                sqlx::query("UPDATE manga SET has_new = 1, checked_at = ? WHERE id = ?")
-                    .bind(now)
-                    .bind(manga_id)
-                    .execute(self.pool())
-                    .await?;
-                Some(latest.name.clone())
-            }
-            _ => {
-                sqlx::query("UPDATE manga SET checked_at = ? WHERE id = ?")
-                    .bind(now)
-                    .bind(manga_id)
-                    .execute(self.pool())
-                    .await?;
-                None
-            }
+        let newly_discovered: Vec<ChapterRef> = if existing_urls.is_empty() {
+            Vec::new()
+        } else {
+            fresh
+                .chapters
+                .iter()
+                .filter(|ch| !existing_urls.contains(ch.url.as_str().trim_end_matches('/')))
+                .cloned()
+                .collect()
         };
 
-        Ok(discovered_name)
+        if newly_discovered.is_empty() {
+            sqlx::query("UPDATE manga SET checked_at = ? WHERE id = ?")
+                .bind(now)
+                .bind(manga_id)
+                .execute(self.pool())
+                .await?;
+        } else {
+            sqlx::query("UPDATE manga SET has_new = 1, checked_at = ? WHERE id = ?")
+                .bind(now)
+                .bind(manga_id)
+                .execute(self.pool())
+                .await?;
+        }
+
+        Ok(newly_discovered)
     }
 
-    /// Deletes cached manga records that are NOT in reading history and haven't been updated for `max_age_days`.
+    /// Deletes cached manga records that are NOT in reading history or bookmarks
+    /// and haven't been updated for `max_age_days`.
     ///
     /// # Errors
     ///
@@ -319,7 +366,8 @@ impl Database {
         let res = sqlx::query(
             "DELETE FROM manga
              WHERE updated_at < ?
-               AND id NOT IN (SELECT manga_id FROM history)",
+               AND id NOT IN (SELECT manga_id FROM history)
+               AND id NOT IN (SELECT manga_id FROM bookmark)",
         )
         .bind(cutoff)
         .execute(self.pool())

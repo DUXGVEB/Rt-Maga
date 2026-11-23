@@ -22,3 +22,7 @@
 
 -keep class com.rtmaga.reader.ApkInstallerPlugin { *; }
 -keep class com.rtmaga.reader.InstallApkArgs { *; }
+-keep class com.rtmaga.reader.DeviceEnvPlugin { *; }
+-keep class com.rtmaga.reader.OrientationLockArgs { *; }
+-keep class com.rtmaga.reader.ImmersiveArgs { *; }
+-keep class com.rtmaga.reader.LocalNotificationArgs { *; }

@@ -2,6 +2,7 @@
   import {
     ArrowDownUp,
     ArrowLeft,
+    Bookmark,
     BookOpen,
     Check,
     ExternalLink,
@@ -115,9 +116,25 @@
   function startPrimary() {
     if (!manga || manga.chapters.length === 0) return;
     if (manga.progress) {
-      router.goReader(manga.id, manga.progress.chapterUrl, manga.progress.scrollRatio);
+      router.goReader(
+        manga.id,
+        manga.progress.chapterUrl,
+        manga.progress.scrollRatio,
+        manga.progress.pageIndex
+      );
     } else {
-      router.goReader(manga.id, manga.chapters[0].url, 0);
+      router.goReader(manga.id, manga.chapters[0].url, 0, 0);
+    }
+  }
+
+  async function toggleBookmark() {
+    if (!manga) return;
+    try {
+      const next = await api.toggleBookmark(manga.id);
+      manga = { ...manga, bookmarked: next };
+      toasts.push(next ? t.toastBookmarkAdded : t.toastBookmarkRemoved, "success", 1800);
+    } catch {
+      toasts.push(t.toastHistoryUpdateFailed, "error");
     }
   }
 </script>
@@ -126,12 +143,14 @@
   <div class="flex items-center justify-between">
     <button
       type="button"
-      onclick={() => router.goHome()}
+      onclick={() => {
+        if (!router.goBack()) router.goHome();
+      }}
       class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:opacity-80"
       style="color: var(--text-muted);"
     >
       <ArrowLeft size={16} />
-      <span>{t.backHome}</span>
+      <span>{t.back}</span>
     </button>
 
     {#if manga}
@@ -265,10 +284,26 @@
             </span>
           </button>
 
+          <button
+            type="button"
+            onclick={toggleBookmark}
+            class="inline-flex items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors"
+            style="border-color: {manga.bookmarked
+              ? 'var(--accent)'
+              : 'var(--border)'}; background-color: {manga.bookmarked
+              ? 'var(--accent-soft)'
+              : 'var(--surface-subtle)'}; color: {manga.bookmarked
+              ? 'var(--accent)'
+              : 'var(--text)'};"
+          >
+            <Bookmark size={15} fill={manga.bookmarked ? "currentColor" : "none"} />
+            <span>{manga.bookmarked ? t.bookmarkedLabel : t.bookmarkAdd}</span>
+          </button>
+
           {#if manga.progress && manga.chapters.length > 0}
             <button
               type="button"
-              onclick={() => manga && router.goReader(manga.id, manga.chapters[0].url, 0)}
+              onclick={() => manga && router.goReader(manga.id, manga.chapters[0].url, 0, 0)}
               class="rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors"
               style="border-color: var(--border); background-color: var(--surface-subtle);"
             >
@@ -327,7 +362,8 @@
               router.goReader(
                 manga.id,
                 chapter.url,
-                isCurrent ? manga.progress?.scrollRatio : 0
+                isCurrent ? manga.progress?.scrollRatio : 0,
+                isCurrent ? manga.progress?.pageIndex : 0
               )}
             class="flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:brightness-95"
             style="background-color: {isCurrent

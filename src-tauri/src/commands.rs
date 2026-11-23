@@ -2,14 +2,22 @@
 
 use std::sync::Arc;
 
-use mangacore::{ProxyEndpoint, ProxyTestResult};
+use mangacore::{
+    DohConfig, DohTestResult, NetworkProviderInfo, ProxyEndpoint, ProxyTestResult,
+    network_provider_catalog, test_doh_config,
+};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::android_env::{DeviceEnvInfo, NotificationPermissionInfo, OrientationLockReply};
 use crate::cache::CacheInfo;
 use crate::error::AppError;
+use crate::repo::bookmark::BookmarkSort;
+use crate::repo::history::LastReadingDestination;
 use crate::services::app_release::{AppReleaseInfo, CURRENT_APP_VERSION, InstallUpdateOutcome};
-use crate::services::library::{FetchMode, HistoryItemView, MangaView, ResolveResponse};
+use crate::services::library::{
+    BookmarkItemView, FetchMode, HistoryItemView, MangaView, NotificationItemView, ResolveResponse,
+};
 use crate::services::reader::ChapterView;
 use crate::services::sync::{SyncDecision, SyncSenderMode, SyncStatusView};
 use crate::services::updater::{CheckScope, UpdateSummary};
@@ -63,7 +71,7 @@ pub(crate) async fn get_chapter(
     reader::get_chapter(&state, &url, manga_id).await
 }
 
-/// Saves the user's current reading position into `history`.
+/// Saves the user's current reading position (including exact `page_index`) into `history`.
 #[tauri::command]
 pub(crate) async fn save_progress(
     state: State<'_, Arc<AppState>>,
@@ -71,8 +79,102 @@ pub(crate) async fn save_progress(
     chapter_url: String,
     chapter_name: String,
     scroll_ratio: f64,
+    page_index: Option<i64>,
 ) -> Result<(), AppError> {
-    library::save_progress(&state, manga_id, &chapter_url, &chapter_name, scroll_ratio).await
+    library::save_progress(
+        &state,
+        manga_id,
+        &chapter_url,
+        &chapter_name,
+        scroll_ratio,
+        page_index.unwrap_or(0),
+    )
+    .await
+}
+
+/// Returns the persisted last reading destination used for History double-tap resume.
+#[tauri::command]
+pub(crate) async fn get_last_reading_destination(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<LastReadingDestination>, AppError> {
+    library::get_last_reading_destination(&state).await
+}
+
+/// Toggles bookmark state for a manga and returns the updated boolean state.
+#[tauri::command]
+pub(crate) async fn toggle_bookmark(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+) -> Result<bool, AppError> {
+    library::toggle_bookmark(&state, manga_id).await
+}
+
+/// Lists all bookmarked manga in the requested sort order.
+#[tauri::command]
+pub(crate) async fn list_bookmarks(
+    state: State<'_, Arc<AppState>>,
+    sort: Option<BookmarkSort>,
+) -> Result<Vec<BookmarkItemView>, AppError> {
+    library::list_bookmarks(&state, sort.unwrap_or_default()).await
+}
+
+/// Sets or clears a manga's per-title reader mode override.
+#[tauri::command]
+pub(crate) async fn set_manga_reader_override(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+    override_mode: Option<String>,
+) -> Result<(), AppError> {
+    library::set_manga_reader_override(&state, manga_id, override_mode.as_deref()).await
+}
+
+/// Persists that passive Webtoon / Long-Strip detection matched a manga.
+#[tauri::command]
+pub(crate) async fn mark_manga_detected_webtoon(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+) -> Result<(), AppError> {
+    library::mark_manga_detected_webtoon(&state, manga_id).await
+}
+
+/// Lists persistent chapter notifications for the Notification Center.
+#[tauri::command]
+pub(crate) async fn list_notifications(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<NotificationItemView>, AppError> {
+    library::list_notifications(&state).await
+}
+
+/// Marks a single notification as read.
+#[tauri::command]
+pub(crate) async fn mark_notification_read(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+) -> Result<(), AppError> {
+    library::mark_notification_read(&state, id).await
+}
+
+/// Marks all stored notifications as read.
+#[tauri::command]
+pub(crate) async fn mark_all_notifications_read(
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), AppError> {
+    library::mark_all_notifications_read(&state).await
+}
+
+/// Deletes a single notification from the Notification Center.
+#[tauri::command]
+pub(crate) async fn delete_notification(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+) -> Result<(), AppError> {
+    library::delete_notification(&state, id).await
+}
+
+/// Clears all notifications from the Notification Center.
+#[tauri::command]
+pub(crate) async fn clear_notifications(state: State<'_, Arc<AppState>>) -> Result<(), AppError> {
+    library::clear_notifications(&state).await
 }
 
 /// Marks a chapter as read in SQLite.
@@ -132,15 +234,19 @@ pub(crate) async fn set_settings(
     settings: Settings,
 ) -> Result<Settings, AppError> {
     let saved = state.db.save_settings(&settings).await?;
-    let (schedule_changed, proxy_changed, conn_changed) = {
+    let (schedule_changed, doh_changed, proxy_changed, conn_changed) = {
         let mut guard = state.settings.write().await;
         let sched = guard.updates.enabled != saved.updates.enabled
             || guard.updates.interval_hours != saved.updates.interval_hours;
+        let doh = guard.doh != saved.doh;
         let prox = guard.proxy != saved.proxy;
         let conn = guard.sources.max_conn_per_host != saved.sources.max_conn_per_host;
         *guard = saved.clone();
-        (sched, prox, conn)
+        (sched, doh, prox, conn)
     };
+    if doh_changed {
+        state.registry.http().set_doh_config(saved.doh.clone());
+    }
     if proxy_changed {
         state.registry.http().set_proxy_config(saved.proxy.clone());
     }
@@ -156,6 +262,76 @@ pub(crate) async fn set_settings(
         updater::restart_background_loop(app, Arc::clone(&state)).await;
     }
     Ok(saved)
+}
+
+/// Returns the built-in catalog of reputable DNS-over-HTTPS (`DoH`) providers and profiles.
+#[tauri::command]
+pub(crate) fn get_network_providers() -> Vec<NetworkProviderInfo> {
+    network_provider_catalog()
+}
+
+/// Tests connectivity and round-trip latency for a DNS-over-HTTPS (`DoH`) provider configuration.
+#[tauri::command]
+pub(crate) async fn test_doh_provider(config: DohConfig) -> Result<DohTestResult, AppError> {
+    test_doh_config(&config).await.map_err(AppError::from)
+}
+
+/// Returns live adaptive device environment info (safe areas, OEM skin, real device name, orientation).
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "tauri::command extracts owned AppHandle"
+)]
+pub(crate) fn get_device_env(app: AppHandle) -> Result<DeviceEnvInfo, AppError> {
+    crate::android_env::get_device_env(&app)
+}
+
+/// Updates mobile screen orientation lock (`"auto"`, `"portrait"`, or `"landscape"`).
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "tauri::command extracts owned AppHandle"
+)]
+pub(crate) fn set_orientation_lock(
+    app: AppHandle,
+    mode: &str,
+) -> Result<OrientationLockReply, AppError> {
+    crate::android_env::set_orientation_lock(&app, mode)
+}
+
+/// Updates Android fullscreen immersive system bars mode.
+#[tauri::command]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    clippy::needless_pass_by_value,
+    reason = "IPC command toggles immersive fullscreen mode with owned AppHandle"
+)]
+pub(crate) fn set_immersive(app: AppHandle, enabled: bool) -> Result<(), AppError> {
+    crate::android_env::set_immersive(&app, enabled)
+}
+
+/// Checks whether Android/OS notifications are currently permitted.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "tauri::command extracts owned AppHandle"
+)]
+pub(crate) fn check_notification_permission(
+    app: AppHandle,
+) -> Result<NotificationPermissionInfo, AppError> {
+    crate::android_env::check_notification_permission(&app)
+}
+
+/// Requests Android 13+ `POST_NOTIFICATIONS` permission at runtime.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "tauri::command extracts owned AppHandle"
+)]
+pub(crate) fn request_notification_permission(
+    app: AppHandle,
+) -> Result<NotificationPermissionInfo, AppError> {
+    crate::android_env::request_notification_permission(&app)
 }
 
 /// Returns the current runtime platform (`"windows"`, `"android"`, or `"other"`).
@@ -185,12 +361,17 @@ pub(crate) async fn test_proxy(
         .map_err(AppError::from)
 }
 
-/// Returns the current serverless LAN sync status snapshot.
+/// Returns the current serverless LAN sync status snapshot with the resolved local device name.
 #[tauri::command]
 pub(crate) async fn sync_get_status(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<SyncStatusView, AppError> {
-    Ok(state.sync.status().await)
+    let mut status = state.sync.status().await;
+    let custom = state.current_settings().await.device.custom_name;
+    status.local_device_name =
+        crate::android_env::resolve_display_device_name(Some(&app), custom.as_deref());
+    Ok(status)
 }
 
 /// Starts a 5-minute LAN sync sender session (`pc_qr` or `phone_pin`).

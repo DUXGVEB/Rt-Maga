@@ -18,6 +18,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 use url::Url;
 
+use crate::doh::{DohConfig, DohResolver};
 use crate::error::ScrapeError;
 
 /// Realistic desktop browser User-Agent used for page and image requests.
@@ -382,6 +383,8 @@ pub struct HttpPolicy {
     pub max_conn_per_host: usize,
     /// Initial application-internal proxy configuration (defaults to Direct Mode).
     pub proxy: ProxyConfig,
+    /// Initial in-app DNS-over-HTTPS (`DoH`) provider configuration.
+    pub doh: DohConfig,
 }
 
 impl Default for HttpPolicy {
@@ -391,6 +394,7 @@ impl Default for HttpPolicy {
             timeout: DEFAULT_TIMEOUT,
             max_conn_per_host: DEFAULT_MAX_CONN_PER_HOST,
             proxy: ProxyConfig::default(),
+            doh: DohConfig::default(),
         }
     }
 }
@@ -421,13 +425,14 @@ pub struct HttpClient {
 
 #[derive(Debug)]
 struct HttpClientInner {
-    direct_client: Client,
+    direct_client: RwLock<Client>,
     jar: Arc<Jar>,
     user_agent: String,
     timeout: Duration,
     host_semaphores: DashMap<String, Arc<Semaphore>>,
     max_conn_per_host: AtomicUsize,
     proxy_config: RwLock<ProxyConfig>,
+    doh_config: RwLock<DohConfig>,
     proxy_clients: DashMap<String, Client>,
 }
 
@@ -448,25 +453,76 @@ impl HttpClient {
     /// Returns [`ScrapeError::Network`] if the underlying TLS/HTTP client cannot be initialized.
     pub fn with_policy(policy: HttpPolicy) -> Result<Self, ScrapeError> {
         let jar = Arc::new(Jar::default());
-        let direct_client = build_reqwest_client(
+        let clean_doh = policy.doh.sanitized();
+        let direct_client = build_direct_client(
             &policy.user_agent,
             policy.timeout,
-            Some(Arc::clone(&jar)),
-            None,
+            Arc::clone(&jar),
+            &clean_doh,
         )?;
 
         Ok(Self {
             inner: Arc::new(HttpClientInner {
-                direct_client,
+                direct_client: RwLock::new(direct_client),
                 jar,
                 user_agent: policy.user_agent,
                 timeout: policy.timeout,
                 host_semaphores: DashMap::new(),
                 max_conn_per_host: AtomicUsize::new(policy.max_conn_per_host.max(1)),
                 proxy_config: RwLock::new(policy.proxy.sanitized()),
+                doh_config: RwLock::new(clean_doh),
                 proxy_clients: DashMap::new(),
             }),
         })
+    }
+
+    /// Updates the live DNS-over-HTTPS ([`DohConfig`]) provider and rebuilds the direct HTTP client
+    /// when the configuration changes.
+    pub fn set_doh_config(&self, config: DohConfig) {
+        let clean = config.sanitized();
+        let changed = match self.inner.doh_config.write() {
+            Ok(mut guard) => {
+                let diff = *guard != clean;
+                *guard = clean.clone();
+                diff
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = clean.clone();
+                true
+            }
+        };
+        if !changed {
+            return;
+        }
+        match build_direct_client(
+            &self.inner.user_agent,
+            self.inner.timeout,
+            Arc::clone(&self.inner.jar),
+            &clean,
+        ) {
+            Ok(next_client) => {
+                match self.inner.direct_client.write() {
+                    Ok(mut g) => *g = next_client,
+                    Err(p) => *p.into_inner() = next_client,
+                }
+                debug!(
+                    enabled = clean.enabled,
+                    provider = %clean.provider_id,
+                    profile = %clean.profile_id,
+                    "updated in-app DoH resolver configuration"
+                );
+            }
+            Err(err) => {
+                warn!(%err, "failed to rebuild direct client with DoH resolver");
+            }
+        }
+    }
+
+    fn direct_client(&self) -> Client {
+        match self.inner.direct_client.read() {
+            Ok(g) => g.clone(),
+            Err(p) => p.into_inner().clone(),
+        }
     }
 
     /// Updates the live per-host concurrency limit and resets cached host semaphores if changed.
@@ -562,6 +618,7 @@ impl HttpClient {
             PROXY_TEST_TIMEOUT,
             None,
             Some(proxy),
+            None,
         )
         .map_err(|e| ScrapeError::Proxy(redact_secrets(&e.to_string(), endpoint)))?;
 
@@ -624,7 +681,7 @@ impl HttpClient {
                 Ok(c) => c,
                 Err(err) if allow_fallback => {
                     warn!(%err, "proxy unavailable; falling back to direct mode (user-enabled)");
-                    return fetch_html_with_client(&self.inner.direct_client, url, None).await;
+                    return fetch_html_with_client(&self.direct_client(), url, None).await;
                 }
                 Err(err) => return Err(err),
             };
@@ -633,13 +690,13 @@ impl HttpClient {
                 Ok(page) => return Ok(page),
                 Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
                     warn!(%err, "proxy request failed; falling back to direct mode (user-enabled)");
-                    return fetch_html_with_client(&self.inner.direct_client, url, None).await;
+                    return fetch_html_with_client(&self.direct_client(), url, None).await;
                 }
                 Err(err) => return Err(err),
             }
         }
 
-        fetch_html_with_client(&self.inner.direct_client, url, None).await
+        fetch_html_with_client(&self.direct_client(), url, None).await
     }
 
     /// Downloads raw image bytes with an explicit `Referer` header and active proxy routing.
@@ -666,7 +723,7 @@ impl HttpClient {
                 Ok(c) => c,
                 Err(err) if allow_fallback => {
                     warn!(%err, "proxy unavailable for image; falling back to direct mode");
-                    return fetch_image_with_client(&self.inner.direct_client, url, referer, None)
+                    return fetch_image_with_client(&self.direct_client(), url, referer, None)
                         .await;
                 }
                 Err(err) => return Err(err),
@@ -676,14 +733,14 @@ impl HttpClient {
                 Ok(bytes) => return Ok(bytes),
                 Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
                     warn!(%err, "proxied image fetch failed; falling back to direct mode");
-                    return fetch_image_with_client(&self.inner.direct_client, url, referer, None)
+                    return fetch_image_with_client(&self.direct_client(), url, referer, None)
                         .await;
                 }
                 Err(err) => return Err(err),
             }
         }
 
-        fetch_image_with_client(&self.inner.direct_client, url, referer, None).await
+        fetch_image_with_client(&self.direct_client(), url, referer, None).await
     }
 
     fn client_for_proxy(&self, endpoint: &ProxyEndpoint) -> Result<Client, ScrapeError> {
@@ -698,6 +755,7 @@ impl HttpClient {
             self.inner.timeout,
             Some(Arc::clone(&self.inner.jar)),
             Some(proxy),
+            None,
         )
         .map_err(|e| ScrapeError::Proxy(redact_secrets(&e.to_string(), endpoint)))?;
         self.inner.proxy_clients.insert(key, client.clone());
@@ -720,11 +778,46 @@ impl HttpClient {
     }
 }
 
+fn build_direct_client(
+    user_agent: &str,
+    timeout: Duration,
+    jar: Arc<Jar>,
+    doh: &DohConfig,
+) -> Result<Client, ScrapeError> {
+    let resolver: Option<Arc<DohResolver>> = if doh.enabled {
+        let fallback = if doh.allow_system_fallback {
+            crate::doh::DohFallbackPolicy::SystemDns
+        } else {
+            crate::doh::DohFallbackPolicy::FailClosed
+        };
+        match doh.resolve_endpoint() {
+            Ok(endpoint) => match DohResolver::new(endpoint, fallback) {
+                Ok(r) => Some(Arc::new(r)),
+                Err(err) if doh.allow_system_fallback => {
+                    warn!(%err, "DoH resolver init failed; falling back to system DNS");
+                    None
+                }
+                Err(err) => return Err(err),
+            },
+            Err(err) if doh.allow_system_fallback => {
+                warn!(%err, "DoH endpoint unresolved; falling back to system DNS");
+                None
+            }
+            Err(err) => return Err(err),
+        }
+    } else {
+        None
+    };
+
+    build_reqwest_client(user_agent, timeout, Some(jar), None, resolver)
+}
+
 fn build_reqwest_client(
     user_agent: &str,
     timeout: Duration,
     jar: Option<Arc<Jar>>,
     proxy: Option<reqwest::Proxy>,
+    dns_resolver: Option<Arc<DohResolver>>,
 ) -> Result<Client, ScrapeError> {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -748,6 +841,9 @@ fn build_reqwest_client(
 
     if let Some(cookie_jar) = jar {
         builder = builder.cookie_provider(cookie_jar);
+    }
+    if let Some(resolver) = dns_resolver {
+        builder = builder.dns_resolver(resolver);
     }
     if let Some(p) = proxy {
         builder = builder.proxy(p);
@@ -1048,23 +1144,27 @@ pub fn validate_public_http_url(url: &Url) -> Result<(), ScrapeError> {
     {
         return Err(ScrapeError::DisallowedHost(host.to_owned()));
     }
-    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
-        let disallowed = match ip {
-            IpAddr::V4(v4) => is_disallowed_ipv4(v4),
-            IpAddr::V6(v6) => {
-                let s0 = v6.segments()[0];
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || (s0 & 0xfe00) == 0xfc00
-                    || (s0 & 0xffc0) == 0xfe80
-                    || v6.to_ipv4_mapped().is_some_and(is_disallowed_ipv4)
-            }
-        };
-        if disallowed {
-            return Err(ScrapeError::DisallowedHost(host.to_owned()));
-        }
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>()
+        && is_disallowed_ip(ip)
+    {
+        return Err(ScrapeError::DisallowedHost(host.to_owned()));
     }
     Ok(())
+}
+
+/// Returns `true` if `ip` is loopback, RFC1918 private, link-local, CGNAT, or unspecified.
+pub(crate) fn is_disallowed_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_disallowed_ipv4(v4),
+        IpAddr::V6(v6) => {
+            let s0 = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (s0 & 0xfe00) == 0xfc00
+                || (s0 & 0xffc0) == 0xfe80
+                || v6.to_ipv4_mapped().is_some_and(is_disallowed_ipv4)
+        }
+    }
 }
 
 fn is_disallowed_ipv4(v4: Ipv4Addr) -> bool {

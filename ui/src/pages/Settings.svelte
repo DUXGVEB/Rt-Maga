@@ -1,35 +1,89 @@
 <script lang="ts">
-  import { Download, RefreshCw, Sparkles, Trash2 } from "lucide-svelte";
+  import { Bell, Download, RefreshCw, RotateCcw, Smartphone, Sparkles, Trash2 } from "lucide-svelte";
+  import { onMount } from "svelte";
   import { api } from "../lib/api";
   import LanSyncPanel from "../lib/components/LanSyncPanel.svelte";
-  import ProxySettingsPanel from "../lib/components/ProxySettingsPanel.svelte";
+  import NetworkProtectionPanel from "../lib/components/NetworkProtectionPanel.svelte";
   import { LANGUAGE_OPTIONS } from "../lib/i18n";
   import { appReleaseStore } from "../lib/stores/appRelease.svelte";
+  import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
   import type {
     CacheInfo,
-    GroupAlignment,
+    FloatingEdge,
+    FloatingScreenKey,
     HorizontalDirection,
     HorizontalSnapMode,
     Language,
+    NotificationPermissionInfo,
     ReaderBg,
     ReadingOrientation,
     Settings,
     Theme,
-    VerticalLayoutMode,
   } from "../lib/types";
 
   let cache = $state<CacheInfo | null>(null);
   let clearingCache = $state(false);
+  let notifPerm = $state<NotificationPermissionInfo>({ granted: true, canRequest: false });
 
   const s = $derived(settingsStore.value);
   const t = $derived(settingsStore.t);
   const isHorizontal = $derived(s.reader.orientation === "horizontal");
-  const isVerticalGrouped = $derived(
-    !isHorizontal && s.reader.vertical.layoutMode === "vertical_grouped"
-  );
+
+  const floatingScreens: FloatingScreenKey[] = [
+    "home",
+    "bookmarks",
+    "history",
+    "manga",
+    "reader",
+    "settings",
+  ];
+
+  function floatingScreenLabel(key: FloatingScreenKey): string {
+    switch (key) {
+      case "home":
+        return t.navHome;
+      case "bookmarks":
+        return t.navBookmarks;
+      case "history":
+        return t.navHistory;
+      case "manga":
+        return t.floatingScreenManga;
+      case "reader":
+        return t.floatingScreenReader;
+      case "settings":
+        return t.navSettings;
+    }
+  }
+
+  function toggleScrollTopScreen(screen: FloatingScreenKey) {
+    patch((d) => {
+      const list = d.floating.scrollToTopScreens;
+      if (list.includes(screen)) {
+        d.floating.scrollToTopScreens = list.filter((x) => x !== screen);
+      } else {
+        d.floating.scrollToTopScreens = [...list, screen];
+      }
+    });
+  }
+
+  onMount(async () => {
+    try {
+      notifPerm = await api.checkNotificationPermission();
+    } catch {
+      notifPerm = { granted: true, canRequest: false };
+    }
+  });
+
+  async function requestAndroidNotifPermission() {
+    try {
+      notifPerm = await api.requestNotificationPermission();
+    } catch {
+      // Ignore outside Android.
+    }
+  }
 
   async function loadCacheInfo() {
     try {
@@ -122,6 +176,60 @@
     </div>
   </section>
 
+  <!-- Device Identity -->
+  <section class="settings-card">
+    <div class="flex items-center gap-2">
+      <Smartphone size={15} style="color: var(--accent);" />
+      <h2 class="section-title">{t.deviceIdentitySection}</h2>
+    </div>
+
+    <div class="row">
+      <div>
+        <div class="label">{t.deviceDetectedLabel}</div>
+        <div class="desc">
+          {deviceEnv.info.realDeviceName}
+          {#if deviceEnv.info.skin && deviceEnv.info.skin !== "desktop"}
+            · {deviceEnv.info.skin.toUpperCase()}
+          {/if}
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <div class="label">{t.deviceCustomNameLabel}</div>
+        <div class="desc">{t.deviceCustomNameDesc}</div>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <input
+          type="text"
+          maxlength="48"
+          value={s.device.customName ?? ""}
+          placeholder={deviceEnv.info.realDeviceName}
+          oninput={(e) => {
+            const val = e.currentTarget.value;
+            patch((d) => {
+              d.device.customName = val.trim() ? val : null;
+            }, 300);
+          }}
+          class="w-44 rounded-lg border px-2.5 py-1.5 text-xs outline-none sm:w-52"
+          style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+        />
+        {#if s.device.customName}
+          <button
+            type="button"
+            onclick={() => patch((d) => (d.device.customName = null))}
+            class="rounded-lg border p-1.5"
+            style="border-color: var(--border); background-color: var(--surface-subtle);"
+            title={t.deviceResetName}
+          >
+            <RotateCcw size={13} />
+          </button>
+        {/if}
+      </div>
+    </div>
+  </section>
+
   <!-- Reader -->
   <section class="settings-card">
     <h2 class="section-title">{t.readerSection}</h2>
@@ -147,147 +255,28 @@
     </div>
 
     {#if !isHorizontal}
-      <!-- Vertical layout mode -->
+      <!-- Continuous vertical strip page gap -->
       <div class="row">
         <div>
-          <div class="label">{t.verticalStyleLabel}</div>
-          <div class="desc">{t.verticalStyleDesc}</div>
+          <div class="label">{t.gapLabel(s.reader.vertical.pageGapPx)}</div>
+          <div class="desc">{t.gapDesc}</div>
         </div>
-        <div class="flex gap-1.5">
-          {#each [["continuous_strip", t.verticalContinuous], ["vertical_grouped", t.verticalGrouped]] as [val, label] (val)}
-            <button
-              type="button"
-              onclick={() =>
-                patch((d) => (d.reader.vertical.layoutMode = val as VerticalLayoutMode))}
-              class="pill"
-              class:pill-active={s.reader.vertical.layoutMode === val}
-            >
-              {label}
-            </button>
-          {/each}
-        </div>
+        <input
+          type="range"
+          min="0"
+          max="48"
+          step="2"
+          value={s.reader.vertical.pageGapPx}
+          oninput={(e) => {
+            const v = Number(e.currentTarget.value);
+            patch((d) => {
+              d.reader.vertical.pageGapPx = v;
+              d.reader.gapPx = v;
+            }, 150);
+          }}
+          class="w-48 accent-rose-500"
+        />
       </div>
-
-      {#if isVerticalGrouped}
-        <!-- Vertical grouped: pages per group -->
-        <div class="row">
-          <div>
-            <div class="label">{t.pagesPerGroupLabel}</div>
-            <div class="desc">{t.pagesPerGroupDesc}</div>
-          </div>
-          <div class="flex items-center gap-1.5">
-            {#each [1, 2, 3] as n (n)}
-              <button
-                type="button"
-                onclick={() => patch((d) => (d.reader.vertical.pagesPerGroup = n))}
-                class="pill"
-                class:pill-active={s.reader.vertical.pagesPerGroup === n}
-              >
-                {n}
-              </button>
-            {/each}
-            <input
-              type="number"
-              min="1"
-              max="8"
-              value={s.reader.vertical.pagesPerGroup}
-              onchange={(e) => {
-                const v = Math.max(1, Math.min(8, Math.round(Number(e.currentTarget.value) || 1)));
-                patch((d) => (d.reader.vertical.pagesPerGroup = v));
-              }}
-              class="w-14 rounded-lg border px-2 py-1 text-center text-xs"
-              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
-            />
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="label">{t.pageGapLabel(s.reader.vertical.pageGapPx)}</div>
-          <input
-            type="range"
-            min="0"
-            max="48"
-            step="2"
-            value={s.reader.vertical.pageGapPx}
-            oninput={(e) => {
-              const v = Number(e.currentTarget.value);
-              patch((d) => {
-                d.reader.vertical.pageGapPx = v;
-                d.reader.gapPx = v;
-              }, 150);
-            }}
-            class="w-48 accent-rose-500"
-          />
-        </div>
-
-        <div class="row">
-          <div class="label">{t.groupGapLabel(s.reader.vertical.groupGapPx)}</div>
-          <input
-            type="range"
-            min="8"
-            max="96"
-            step="4"
-            value={s.reader.vertical.groupGapPx}
-            oninput={(e) => {
-              const v = Number(e.currentTarget.value);
-              patch((d) => (d.reader.vertical.groupGapPx = v), 150);
-            }}
-            class="w-48 accent-rose-500"
-          />
-        </div>
-
-        <div class="row">
-          <div class="label">{t.groupSnapLabel}</div>
-          <input
-            type="checkbox"
-            checked={s.reader.vertical.snapEnabled}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
-              patch((d) => (d.reader.vertical.snapEnabled = checked));
-            }}
-            class="h-4 w-4 accent-rose-500"
-          />
-        </div>
-
-        <div class="row">
-          <div class="label">{t.groupAlignLabel}</div>
-          <div class="flex gap-1.5">
-            {#each [["center", t.alignCenter], ["start", t.alignStart]] as [val, label] (val)}
-              <button
-                type="button"
-                onclick={() => patch((d) => (d.reader.vertical.alignment = val as GroupAlignment))}
-                class="pill"
-                class:pill-active={s.reader.vertical.alignment === val}
-              >
-                {label}
-              </button>
-            {/each}
-          </div>
-        </div>
-      {:else}
-        <!-- Continuous strip page gap -->
-        <div class="row">
-          <div>
-            <div class="label">{t.gapLabel(s.reader.vertical.pageGapPx)}</div>
-            <div class="desc">{t.gapDesc}</div>
-          </div>
-          <input
-            type="range"
-            min="0"
-            max="48"
-            step="2"
-            value={s.reader.vertical.pageGapPx}
-            oninput={(e) => {
-              const v = Number(e.currentTarget.value);
-              patch((d) => {
-                d.reader.vertical.pageGapPx = v;
-                d.reader.gapPx = v;
-              }, 150);
-            }}
-            class="w-48 accent-rose-500"
-          />
-        </div>
-      {/if}
 
       <!-- Vertical focus dimming -->
       <div class="row">
@@ -318,73 +307,6 @@
             oninput={(e) => {
               const v = Number(e.currentTarget.value);
               patch((d) => (d.reader.vertical.dimLevel = v), 120);
-            }}
-            class="w-48 accent-rose-500"
-          />
-        </div>
-      {/if}
-
-      <div class="row">
-        <div>
-          <div class="label">{t.widthModeLabel}</div>
-          <div class="desc">{t.widthModeDesc}</div>
-        </div>
-        <div class="flex gap-1.5">
-          <button
-            type="button"
-            onclick={() => patch((d) => (d.reader.width = { mode: "px", value: 800 }))}
-            class="pill"
-            class:pill-active={s.reader.width.mode === "px"}
-          >
-            {t.widthPixels}
-          </button>
-          <button
-            type="button"
-            onclick={() => patch((d) => (d.reader.width = { mode: "percent", value: 70 }))}
-            class="pill"
-            class:pill-active={s.reader.width.mode === "percent"}
-          >
-            {t.widthPercent}
-          </button>
-          <button
-            type="button"
-            onclick={() => patch((d) => (d.reader.width = { mode: "fit_window" }))}
-            class="pill"
-            class:pill-active={s.reader.width.mode === "fit_window"}
-          >
-            {t.fitWindow}
-          </button>
-        </div>
-      </div>
-
-      {#if s.reader.width.mode === "px"}
-        <div class="row">
-          <div class="label">{t.widthLabelPx(s.reader.width.value)}</div>
-          <input
-            type="range"
-            min="480"
-            max="1400"
-            step="20"
-            value={s.reader.width.value}
-            oninput={(e) => {
-              const v = Number(e.currentTarget.value);
-              patch((d) => (d.reader.width = { mode: "px", value: v }), 150);
-            }}
-            class="w-48 accent-rose-500"
-          />
-        </div>
-      {:else if s.reader.width.mode === "percent"}
-        <div class="row">
-          <div class="label">{t.widthLabelPct(s.reader.width.value)}</div>
-          <input
-            type="range"
-            min="35"
-            max="100"
-            step="5"
-            value={s.reader.width.value}
-            oninput={(e) => {
-              const v = Number(e.currentTarget.value);
-              patch((d) => (d.reader.width = { mode: "percent", value: v }), 150);
             }}
             class="w-48 accent-rose-500"
           />
@@ -558,13 +480,45 @@
 
     <div class="row">
       <div>
+        <div class="label">{t.autoWebtoonLabel}</div>
+        <div class="desc">{t.autoWebtoonDesc}</div>
+      </div>
+      <input
+        type="checkbox"
+        checked={s.reader.autoWebtoonDetect}
+        onchange={(e) => {
+          const checked = e.currentTarget.checked;
+          patch((d) => (d.reader.autoWebtoonDetect = checked));
+        }}
+        class="h-4 w-4 accent-rose-500"
+      />
+    </div>
+
+    <div class="row">
+      <div>
+        <div class="label">{t.tapZonesLabel}</div>
+        <div class="desc">{t.tapZonesDesc}</div>
+      </div>
+      <input
+        type="checkbox"
+        checked={s.reader.tapZonesEnabled}
+        onchange={(e) => {
+          const checked = e.currentTarget.checked;
+          patch((d) => (d.reader.tapZonesEnabled = checked));
+        }}
+        class="h-4 w-4 accent-rose-500"
+      />
+    </div>
+
+    <div class="row">
+      <div>
         <div class="label">{t.preloadLabel(s.reader.preloadImages)}</div>
         <div class="desc">{t.preloadDesc}</div>
       </div>
       <input
         type="range"
-        min="1"
-        max="12"
+        min="5"
+        max="8"
         step="1"
         value={s.reader.preloadImages}
         oninput={(e) => {
@@ -592,11 +546,186 @@
     </div>
   </section>
 
+  <!-- Floating Controls Customization -->
+  <section class="settings-card">
+    <div>
+      <h2 class="section-title">{t.floatingSection}</h2>
+      <div class="desc">{t.floatingSubtitle}</div>
+    </div>
+
+    <!-- Scroll-to-Top per-screen toggles -->
+    <div class="flex flex-col gap-2">
+      <div class="label">{t.floatingScrollTopScreens}</div>
+      <div class="flex flex-wrap gap-1.5">
+        {#each floatingScreens as screen (screen)}
+          {@const active = s.floating.scrollToTopScreens.includes(screen)}
+          <button
+            type="button"
+            onclick={() => toggleScrollTopScreen(screen)}
+            class="pill"
+            class:pill-active={active}
+          >
+            {floatingScreenLabel(screen)}
+          </button>
+        {/each}
+      </div>
+    </div>
+
+    <!-- Scroll-to-Top position -->
+    <div class="row">
+      <div class="label">{t.floatingScrollTopPos}</div>
+      <div class="flex flex-wrap items-center gap-2">
+        {#each [["left", t.floatingEdgeLeft], ["right", t.floatingEdgeRight]] as [edge, label] (edge)}
+          <button
+            type="button"
+            onclick={() => patch((d) => (d.floating.scrollToTop.edge = edge as FloatingEdge))}
+            class="pill"
+            class:pill-active={s.floating.scrollToTop.edge === edge}
+          >
+            {label}
+          </button>
+        {/each}
+        <input
+          type="range"
+          min="15"
+          max="88"
+          step="1"
+          value={s.floating.scrollToTop.verticalPercent}
+          oninput={(e) => {
+            const v = Number(e.currentTarget.value);
+            patch((d) => (d.floating.scrollToTop.verticalPercent = v), 120);
+          }}
+          class="w-28 accent-rose-500"
+          title="{s.floating.scrollToTop.verticalPercent}%"
+        />
+        <span class="w-9 text-right text-xs" style="color: var(--text-muted);">
+          {s.floating.scrollToTop.verticalPercent}%
+        </span>
+      </div>
+    </div>
+
+    <!-- Reader Settings floating button -->
+    <div class="row">
+      <div>
+        <div class="label">{t.floatingReaderSettingsLabel}</div>
+        <div class="desc">{t.floatingReaderSettingsDesc}</div>
+      </div>
+      <input
+        type="checkbox"
+        checked={s.floating.showReaderSettings}
+        onchange={(e) => {
+          const checked = e.currentTarget.checked;
+          patch((d) => (d.floating.showReaderSettings = checked));
+        }}
+        class="h-4 w-4 accent-rose-500"
+      />
+    </div>
+
+    {#if s.floating.showReaderSettings}
+      <div class="row">
+        <div class="desc">{t.floatingPositionLabel}</div>
+        <div class="flex flex-wrap items-center gap-2">
+          {#each [["left", t.floatingEdgeLeft], ["right", t.floatingEdgeRight]] as [edge, label] (edge)}
+            <button
+              type="button"
+              onclick={() => patch((d) => (d.floating.readerSettings.edge = edge as FloatingEdge))}
+              class="pill"
+              class:pill-active={s.floating.readerSettings.edge === edge}
+            >
+              {label}
+            </button>
+          {/each}
+          <input
+            type="range"
+            min="15"
+            max="88"
+            step="1"
+            value={s.floating.readerSettings.verticalPercent}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              patch((d) => (d.floating.readerSettings.verticalPercent = v), 120);
+            }}
+            class="w-28 accent-rose-500"
+          />
+          <span class="w-9 text-right text-xs" style="color: var(--text-muted);">
+            {s.floating.readerSettings.verticalPercent}%
+          </span>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Mobile Orientation Lock floating button -->
+    <div class="row">
+      <div>
+        <div class="label">{t.floatingOrientationLockLabel}</div>
+        <div class="desc">{t.floatingOrientationLockDesc}</div>
+      </div>
+      <input
+        type="checkbox"
+        checked={s.floating.showOrientationLock}
+        onchange={(e) => {
+          const checked = e.currentTarget.checked;
+          patch((d) => (d.floating.showOrientationLock = checked));
+        }}
+        class="h-4 w-4 accent-rose-500"
+      />
+    </div>
+
+    {#if s.floating.showOrientationLock}
+      <div class="row">
+        <div class="desc">{t.floatingPositionLabel}</div>
+        <div class="flex flex-wrap items-center gap-2">
+          {#each [["left", t.floatingEdgeLeft], ["right", t.floatingEdgeRight]] as [edge, label] (edge)}
+            <button
+              type="button"
+              onclick={() => patch((d) => (d.floating.orientationLock.edge = edge as FloatingEdge))}
+              class="pill"
+              class:pill-active={s.floating.orientationLock.edge === edge}
+            >
+              {label}
+            </button>
+          {/each}
+          <input
+            type="range"
+            min="15"
+            max="88"
+            step="1"
+            value={s.floating.orientationLock.verticalPercent}
+            oninput={(e) => {
+              const v = Number(e.currentTarget.value);
+              patch((d) => (d.floating.orientationLock.verticalPercent = v), 120);
+            }}
+            class="w-28 accent-rose-500"
+          />
+          <span class="w-9 text-right text-xs" style="color: var(--text-muted);">
+            {s.floating.orientationLock.verticalPercent}%
+          </span>
+        </div>
+      </div>
+    {/if}
+
+    <div class="row">
+      <div>
+        <div class="label">{t.floatingAutoDimLabel}</div>
+        <div class="desc">{t.floatingAutoDimDesc}</div>
+      </div>
+      <input
+        type="checkbox"
+        checked={s.floating.autoDimInReader}
+        onchange={(e) => {
+          const checked = e.currentTarget.checked;
+          patch((d) => (d.floating.autoDimInReader = checked));
+        }}
+        class="h-4 w-4 accent-rose-500"
+      />
+    </div>
+  </section>
+
   <!-- Serverless LAN Sync -->
   <LanSyncPanel />
 
-  <!-- In-App Proxy Mode -->
-  <ProxySettingsPanel />
+  <!-- Provider-Based Network Protection (Encrypted DNS + Advanced Proxy) -->
+  <NetworkProtectionPanel />
 
   <!-- Updates -->
   <section class="settings-card">
@@ -652,15 +781,28 @@
         <div class="label">{t.notificationsLabel}</div>
         <div class="desc">{t.notificationsDesc}</div>
       </div>
-      <input
-        type="checkbox"
-        checked={s.updates.notifyWindows}
-        onchange={(e) => {
-          const checked = e.currentTarget.checked;
-          patch((d) => (d.updates.notifyWindows = checked));
-        }}
-        class="h-4 w-4 accent-rose-500"
-      />
+      <div class="flex items-center gap-2">
+        {#if deviceEnv.isAndroid && !notifPerm.granted}
+          <button
+            type="button"
+            onclick={requestAndroidNotifPermission}
+            class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium"
+            style="border-color: var(--accent); color: var(--accent); background-color: var(--accent-soft);"
+          >
+            <Bell size={12} />
+            <span>{t.notifGrantPermissionBtn}</span>
+          </button>
+        {/if}
+        <input
+          type="checkbox"
+          checked={s.updates.notifyWindows}
+          onchange={(e) => {
+            const checked = e.currentTarget.checked;
+            patch((d) => (d.updates.notifyWindows = checked));
+          }}
+          class="h-4 w-4 accent-rose-500"
+        />
+      </div>
     </div>
   </section>
 

@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { Clock, Home, Moon, RefreshCw, Settings, Sun } from "lucide-svelte";
+  import { Bell, Bookmark, Clock, Home, Moon, RefreshCw, Settings, Sun } from "lucide-svelte";
   import logoUrl from "../../assets/logo.png";
+  import { notificationsStore } from "../stores/notifications.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { updatesStore } from "../stores/updates.svelte";
@@ -20,20 +21,47 @@
   style="background-color: var(--surface); border-color: var(--border);"
 >
   <div class="flex flex-col gap-6">
-    <!-- Brand -->
-    <button
-      type="button"
-      onclick={() => router.goHome()}
-      class="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-opacity hover:opacity-85"
-    >
-      <img src={logoUrl} alt="RtMaga" class="h-8 w-8 shrink-0 rounded-lg shadow-sm" />
-      <div class="leading-tight">
-        <div class="text-base font-semibold tracking-tight">RtMaga</div>
-        <div class="text-[11px]" style="color: var(--text-muted);">{t.brandSubtitle}</div>
-      </div>
-    </button>
+    <!-- Brand + Bell Notification Center -->
+    <div class="flex items-center justify-between gap-1 px-1">
+      <button
+        type="button"
+        onclick={() => router.goHome()}
+        class="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-opacity hover:opacity-85"
+      >
+        <img src={logoUrl} alt="RtMaga" class="h-8 w-8 shrink-0 rounded-lg shadow-sm" />
+        <div class="min-w-0 leading-tight">
+          <div class="truncate text-base font-semibold tracking-tight">RtMaga</div>
+          <div class="truncate text-[11px]" style="color: var(--text-muted);">
+            {t.brandSubtitle}
+          </div>
+        </div>
+      </button>
 
-    <!-- Navigation -->
+      <button
+        type="button"
+        onclick={() => notificationsStore.toggleDrawer()}
+        class="relative shrink-0 rounded-lg p-2 transition-colors hover:brightness-95"
+        style="background-color: {notificationsStore.drawerOpen
+          ? 'var(--accent-soft)'
+          : 'transparent'}; color: {notificationsStore.drawerOpen
+          ? 'var(--accent)'
+          : 'var(--text-muted)'};"
+        title={t.notifCenterTitle}
+        aria-label={t.notifCenterTitle}
+      >
+        <Bell size={18} />
+        {#if notificationsStore.unreadCount > 0}
+          <span
+            class="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white"
+            style="background-color: var(--accent);"
+          >
+            {notificationsStore.unreadCount > 99 ? "99+" : notificationsStore.unreadCount}
+          </span>
+        {/if}
+      </button>
+    </div>
+
+    <!-- Navigation: Home | Bookmarks | History (double-tap resume) | Settings -->
     <nav class="flex flex-col gap-1">
       <button
         type="button"
@@ -55,9 +83,20 @@
 
       <button
         type="button"
-        onclick={() => router.goHistory()}
+        onclick={() => router.goBookmarks()}
+        class="nav-item"
+        class:active={router.current.name === "bookmarks"}
+      >
+        <Bookmark size={18} />
+        <span>{t.navBookmarks}</span>
+      </button>
+
+      <button
+        type="button"
+        onclick={() => void router.goHistoryOrResume()}
         class="nav-item"
         class:active={router.current.name === "history"}
+        title={t.historyResumeHint}
       >
         <Clock size={18} />
         <span>{t.navHistory}</span>

@@ -179,10 +179,11 @@
             <div
               role="button"
               tabindex="0"
-              onclick={() => router.goReader(item.mangaId, item.chapterUrl, item.scrollRatio)}
+              onclick={() =>
+                router.goReader(item.mangaId, item.chapterUrl, item.scrollRatio, item.pageIndex)}
               onkeydown={(e) => {
                 if (e.key === "Enter") {
-                  router.goReader(item.mangaId, item.chapterUrl, item.scrollRatio);
+                  router.goReader(item.mangaId, item.chapterUrl, item.scrollRatio, item.pageIndex);
                 }
               }}
               class="flex cursor-pointer items-center gap-4 rounded-xl border p-3 transition-colors hover:brightness-95"

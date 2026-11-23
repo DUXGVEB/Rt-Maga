@@ -25,10 +25,12 @@ pub(crate) struct SyncHistoryPayload {
     pub chapter_url: String,
     pub chapter_name: String,
     pub scroll_ratio: f64,
+    #[serde(default)]
+    pub page_index: i64,
     pub read_at: i64,
 }
 
-/// Serializable manga + chapters + history record transferred over LAN.
+/// Serializable manga + chapters + history + bookmark record transferred over LAN.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SyncMangaPayload {
@@ -38,6 +40,8 @@ pub(crate) struct SyncMangaPayload {
     pub cover_url: Option<String>,
     pub latest_chapter_url: Option<String>,
     pub latest_chapter_name: Option<String>,
+    #[serde(default)]
+    pub bookmarked: bool,
     pub chapters: Vec<SyncChapterPayload>,
     pub history: Option<SyncHistoryPayload>,
 }
@@ -60,6 +64,7 @@ pub(crate) struct SyncMergeReport {
     pub updated_newer_chapter: usize,
     pub skipped_same_chapter: usize,
     pub kept_local_newer: usize,
+    pub synced_bookmarks: usize,
     pub total_received: usize,
 }
 
@@ -72,6 +77,7 @@ struct ExportMangaRow {
     cover_url: Option<String>,
     latest_chapter_url: Option<String>,
     latest_chapter_name: Option<String>,
+    bookmarked: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -88,11 +94,13 @@ struct LocalHistoryRow {
     chapter_url: String,
     chapter_name: String,
     scroll_ratio: f64,
+    page_index: i64,
     read_at: i64,
 }
 
 impl Database {
-    /// Exports all manga in reading history (along with chapters and read flags) into a [`SyncBundle`].
+    /// Exports all manga in reading history and/or bookmarks (along with chapters, read flags,
+    /// and bookmark state) into a [`SyncBundle`].
     ///
     /// # Errors
     ///
@@ -102,10 +110,20 @@ impl Database {
         device_name: &str,
     ) -> Result<SyncBundle, AppError> {
         let rows: Vec<ExportMangaRow> = sqlx::query_as(
-            "SELECT m.id, m.url, m.site, m.title, m.cover_url, m.latest_chapter_url, m.latest_chapter_name
+            "SELECT
+                m.id,
+                m.url,
+                m.site,
+                m.title,
+                m.cover_url,
+                m.latest_chapter_url,
+                m.latest_chapter_name,
+                CASE WHEN b.manga_id IS NOT NULL THEN 1 ELSE 0 END AS bookmarked
              FROM manga m
-             INNER JOIN history h ON h.manga_id = m.id
-             ORDER BY h.read_at DESC",
+             LEFT JOIN history h ON h.manga_id = m.id
+             LEFT JOIN bookmark b ON b.manga_id = m.id
+             WHERE h.manga_id IS NOT NULL OR b.manga_id IS NOT NULL
+             ORDER BY COALESCE(h.read_at, b.created_at, m.updated_at) DESC",
         )
         .fetch_all(self.pool())
         .await?;
@@ -119,14 +137,16 @@ impl Database {
             .fetch_all(self.pool())
             .await?;
 
-            let hist = self.get_history_for_manga(row.id).await?.map(
-                |(chapter_url, chapter_name, scroll_ratio, read_at)| SyncHistoryPayload {
-                    chapter_url,
-                    chapter_name,
-                    scroll_ratio,
-                    read_at,
-                },
-            );
+            let hist = self
+                .get_history_for_manga(row.id)
+                .await?
+                .map(|h| SyncHistoryPayload {
+                    chapter_url: h.chapter_url,
+                    chapter_name: h.chapter_name,
+                    scroll_ratio: h.scroll_ratio,
+                    page_index: h.page_index,
+                    read_at: h.read_at,
+                });
 
             manga.push(SyncMangaPayload {
                 url: row.url,
@@ -135,6 +155,7 @@ impl Database {
                 cover_url: row.cover_url,
                 latest_chapter_url: row.latest_chapter_url,
                 latest_chapter_name: row.latest_chapter_name,
+                bookmarked: row.bookmarked != 0,
                 chapters: chap_rows
                     .into_iter()
                     .map(|c| SyncChapterPayload {
@@ -150,7 +171,7 @@ impl Database {
         }
 
         Ok(SyncBundle {
-            version: 1,
+            version: 2,
             device_name: device_name.to_owned(),
             exported_at: now_unix_secs(),
             manga,
@@ -198,7 +219,7 @@ impl Database {
             if let Some(&manga_id) = existing_by_norm.get(&key) {
                 merge_existing_manga(&mut tx, manga_id, item, now, &mut report).await?;
             } else {
-                let manga_id = insert_new_sync_manga(&mut tx, item, now).await?;
+                let manga_id = insert_new_sync_manga(&mut tx, item, now, &mut report).await?;
                 existing_by_norm.insert(key, manga_id);
                 report.added_manga += 1;
             }
@@ -213,6 +234,7 @@ async fn insert_new_sync_manga(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     item: &SyncMangaPayload,
     now: i64,
+    report: &mut SyncMergeReport,
 ) -> Result<i64, AppError> {
     let clean_cover = item
         .cover_url
@@ -248,6 +270,10 @@ async fn insert_new_sync_manga(
     let manga_id = res.last_insert_rowid();
     upsert_sync_chapters(tx, manga_id, &item.chapters).await?;
 
+    if item.bookmarked {
+        union_bookmark(tx, manga_id, now, report).await?;
+    }
+
     if let Some(hist) = item
         .history
         .as_ref()
@@ -257,6 +283,26 @@ async fn insert_new_sync_manga(
     }
 
     Ok(manga_id)
+}
+
+async fn union_bookmark(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    manga_id: i64,
+    now: i64,
+    report: &mut SyncMergeReport,
+) -> Result<(), AppError> {
+    let res = sqlx::query(
+        "INSERT INTO bookmark (manga_id, created_at) VALUES (?, ?)
+         ON CONFLICT(manga_id) DO NOTHING",
+    )
+    .bind(manga_id)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    if res.rows_affected() > 0 {
+        report.synced_bookmarks += 1;
+    }
+    Ok(())
 }
 
 async fn update_merged_manga_metadata(
@@ -339,6 +385,9 @@ async fn merge_existing_manga(
 ) -> Result<(), AppError> {
     upsert_sync_chapters(tx, manga_id, &item.chapters).await?;
     update_merged_manga_metadata(tx, manga_id, item, now).await?;
+    if item.bookmarked {
+        union_bookmark(tx, manga_id, now, report).await?;
+    }
 
     let Some(incoming) = item
         .history
@@ -350,7 +399,7 @@ async fn merge_existing_manga(
     };
 
     let local_hist: Option<LocalHistoryRow> = sqlx::query_as(
-        "SELECT chapter_url, chapter_name, scroll_ratio, read_at FROM history WHERE manga_id = ?",
+        "SELECT chapter_url, chapter_name, scroll_ratio, page_index, read_at FROM history WHERE manga_id = ?",
     )
     .bind(manga_id)
     .fetch_optional(&mut **tx)
@@ -364,11 +413,15 @@ async fn merge_existing_manga(
 
     if norm_url(&local.chapter_url) == norm_url(&incoming.chapter_url) {
         let inc_ratio = sanitize_ratio(incoming.scroll_ratio);
-        if inc_ratio > local.scroll_ratio + 0.01 {
+        let inc_page = incoming.page_index.max(0);
+        if inc_ratio > local.scroll_ratio + 0.01 || inc_page > local.page_index {
+            let best_ratio = local.scroll_ratio.max(inc_ratio);
+            let best_page = local.page_index.max(inc_page);
             sqlx::query(
-                "UPDATE history SET scroll_ratio = ?, read_at = MAX(read_at, ?) WHERE manga_id = ?",
+                "UPDATE history SET scroll_ratio = ?, page_index = ?, read_at = MAX(read_at, ?) WHERE manga_id = ?",
             )
-            .bind(inc_ratio)
+            .bind(best_ratio)
+            .bind(best_page)
             .bind(incoming.read_at)
             .bind(manga_id)
             .execute(&mut **tx)
@@ -460,19 +513,22 @@ async fn write_history_row(
     hist: &SyncHistoryPayload,
 ) -> Result<(), AppError> {
     let ratio = sanitize_ratio(hist.scroll_ratio);
+    let page = hist.page_index.max(0);
     sqlx::query(
-        "INSERT INTO history (manga_id, chapter_url, chapter_name, scroll_ratio, read_at)
-         VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO history (manga_id, chapter_url, chapter_name, scroll_ratio, page_index, read_at)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(manga_id) DO UPDATE SET
             chapter_url = excluded.chapter_url,
             chapter_name = excluded.chapter_name,
             scroll_ratio = excluded.scroll_ratio,
+            page_index = excluded.page_index,
             read_at = excluded.read_at",
     )
     .bind(manga_id)
     .bind(hist.chapter_url.trim())
     .bind(hist.chapter_name.trim())
     .bind(ratio)
+    .bind(page)
     .bind(hist.read_at)
     .execute(&mut **tx)
     .await?;

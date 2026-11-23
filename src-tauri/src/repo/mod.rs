@@ -1,7 +1,9 @@
 //! SQLite repository layer backed by `sqlx` in WAL mode.
 
+pub(crate) mod bookmark;
 pub(crate) mod history;
 pub(crate) mod manga;
+pub(crate) mod notification;
 pub(crate) mod settings;
 pub(crate) mod sync;
 
@@ -187,6 +189,7 @@ mod tests {
             "https://example.com/series/demo-1-chap-1",
             "Chapter 1",
             0.42,
+            3,
         )
         .await
         .unwrap();
@@ -194,6 +197,11 @@ mod tests {
         let hist = db.list_history().await.unwrap();
         assert_eq!(hist.len(), 1);
         assert_eq!(hist[0].manga_id, id);
+        assert_eq!(hist[0].page_index, 3);
+
+        let last_dest = db.get_last_reading_destination().await.unwrap().unwrap();
+        assert_eq!(last_dest.manga_id, id);
+        assert_eq!(last_dest.page_index, 3);
 
         let s = Settings {
             theme: Theme::Dark,
@@ -225,24 +233,133 @@ mod tests {
             "https://example.com/series/demo-1-chap-1",
             "Chapter 1",
             f64::NAN,
+            -5,
         )
         .await
         .unwrap();
         let progress = db.get_history_for_manga(id).await.unwrap().unwrap();
-        assert!((progress.2 - 0.0).abs() < f64::EPSILON);
+        assert!((progress.scroll_ratio - 0.0).abs() < f64::EPSILON);
+        assert_eq!(progress.page_index, 0);
 
         // Re-checking with an already-known chapter must NOT trigger a false new-chapter alert.
         let same = db.record_update_check(id, &updated).await.unwrap();
-        assert!(same.is_none(), "known latest chapter must not flag has_new");
+        assert!(
+            same.is_empty(),
+            "known latest chapter must not flag has_new"
+        );
 
-        // Adding a genuinely new chapter MUST trigger a new-chapter discovery.
+        // Adding multiple genuinely new chapters MUST return all of them in order.
         updated.chapters.push(ChapterRef {
             url: Url::parse("https://example.com/series/demo-1-chap-3").unwrap(),
             name: "Chapter 3".to_owned(),
             number: Some(3.0),
         });
+        updated.chapters.push(ChapterRef {
+            url: Url::parse("https://example.com/series/demo-1-chap-4").unwrap(),
+            name: "Chapter 4".to_owned(),
+            number: Some(4.0),
+        });
         let discovered = db.record_update_check(id, &updated).await.unwrap();
-        assert_eq!(discovered.as_deref(), Some("Chapter 3"));
+        assert_eq!(discovered.len(), 2);
+        assert_eq!(discovered[0].name, "Chapter 3");
+        assert_eq!(discovered[1].name, "Chapter 4");
+    }
+
+    #[tokio::test]
+    async fn bookmarks_priority_and_notification_deduplication_work() {
+        use crate::repo::bookmark::BookmarkSort;
+
+        let db = Database::open_in_memory().await.unwrap();
+        let hist_only = Manga {
+            url: Url::parse("https://example.com/series/hist-only").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Alpha History".to_owned(),
+            cover: None,
+            chapters: vec![ChapterRef {
+                url: Url::parse("https://example.com/series/hist-only-1").unwrap(),
+                name: "Chapter 1".to_owned(),
+                number: Some(1.0),
+            }],
+        };
+        let bookmarked = Manga {
+            url: Url::parse("https://example.com/series/fav-manga").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Beta Bookmark".to_owned(),
+            cover: None,
+            chapters: vec![ChapterRef {
+                url: Url::parse("https://example.com/series/fav-119").unwrap(),
+                name: "Chapter 119".to_owned(),
+                number: Some(119.0),
+            }],
+        };
+
+        let id_hist = db.upsert_manga(&hist_only).await.unwrap();
+        let id_fav = db.upsert_manga(&bookmarked).await.unwrap();
+        db.save_history(
+            id_hist,
+            "https://example.com/series/hist-only-1",
+            "Chapter 1",
+            0.2,
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert!(db.toggle_bookmark(id_fav).await.unwrap());
+        assert!(db.is_bookmarked(id_fav).await.unwrap());
+        assert_eq!(
+            db.list_bookmarks(BookmarkSort::Newest).await.unwrap().len(),
+            1
+        );
+
+        // Bookmarked manga must appear BEFORE non-bookmarked history manga in update targets.
+        let targets = db.list_targets_for_updates().await.unwrap();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].id, id_fav);
+        assert_eq!(targets[1].id, id_hist);
+
+        // Multi-chapter discovery must create a concise range ("120–125") and deduplicate repeats.
+        let fresh_chaps: Vec<ChapterRef> = (120..=125)
+            .map(|n| ChapterRef {
+                url: Url::parse(&format!("https://example.com/series/fav-{n}")).unwrap(),
+                name: format!("Chapter {n}"),
+                number: Some(f32::from(u8::try_from(n).unwrap())),
+            })
+            .collect();
+        let row = db.get_manga_by_id(id_fav).await.unwrap().unwrap();
+        let notif = db
+            .record_chapter_notification(&row, &fresh_chaps)
+            .await
+            .unwrap()
+            .expect("first discovery must create notification");
+        assert_eq!(notif.chapter_range, "120–125");
+        assert_eq!(notif.chapter_count, 6);
+
+        // Repeating the exact same chapters must be deduplicated cleanly.
+        let dup = db
+            .record_chapter_notification(&row, &fresh_chaps)
+            .await
+            .unwrap();
+        assert!(
+            dup.is_none(),
+            "already notified chapters must be deduplicated"
+        );
+        assert_eq!(db.list_notifications().await.unwrap().len(), 1);
+
+        db.mark_notification_read(notif.id).await.unwrap();
+        assert_eq!(db.list_notifications().await.unwrap()[0].read, 1);
+
+        // Per-manga reader override & detected_webtoon round-trip.
+        db.set_manga_reader_override(id_fav, Some("horizontal"))
+            .await
+            .unwrap();
+        db.mark_manga_detected_webtoon(id_fav).await.unwrap();
+        let updated_row = db.get_manga_by_id(id_fav).await.unwrap().unwrap();
+        assert_eq!(
+            updated_row.reader_mode_override.as_deref(),
+            Some("horizontal")
+        );
+        assert_eq!(updated_row.detected_webtoon, 1);
     }
 
     #[tokio::test]
@@ -269,6 +386,7 @@ mod tests {
             "https://example.com/series/backup-demo-chap-1",
             "Chapter 1",
             0.75,
+            4,
         )
         .await
         .unwrap();
@@ -301,7 +419,7 @@ mod tests {
             device_name: "PeerPhone".to_owned(),
             exported_at: 5000,
             manga: vec![
-                // Same chapter with lower scroll ratio -> skip, but chapter 2 read flag should union!
+                // Same chapter with lower scroll ratio -> skip, but chapter 2 read flag & bookmark should union!
                 SyncMangaPayload {
                     url: "https://example.com/series/same/".to_owned(),
                     site: "example.com".to_owned(),
@@ -309,6 +427,7 @@ mod tests {
                     cover_url: None,
                     latest_chapter_url: None,
                     latest_chapter_name: None,
+                    bookmarked: true,
                     chapters: vec![SyncChapterPayload {
                         url: "https://example.com/series/same-chap-2".to_owned(),
                         name: "Chapter 2".to_owned(),
@@ -320,6 +439,7 @@ mod tests {
                         chapter_url: "https://example.com/series/same-chap-2".to_owned(),
                         chapter_name: "Chapter 2".to_owned(),
                         scroll_ratio: 0.2,
+                        page_index: 2,
                         read_at: 9999,
                     }),
                 },
@@ -331,11 +451,13 @@ mod tests {
                     cover_url: None,
                     latest_chapter_url: None,
                     latest_chapter_name: None,
+                    bookmarked: false,
                     chapters: Vec::new(),
                     history: Some(SyncHistoryPayload {
                         chapter_url: "https://example.com/series/inc-chap-4".to_owned(),
                         chapter_name: "Chapter 4".to_owned(),
                         scroll_ratio: 0.1,
+                        page_index: 1,
                         read_at: 100,
                     }),
                 },
@@ -347,11 +469,13 @@ mod tests {
                     cover_url: None,
                     latest_chapter_url: None,
                     latest_chapter_name: None,
+                    bookmarked: false,
                     chapters: Vec::new(),
                     history: Some(SyncHistoryPayload {
                         chapter_url: "https://example.com/series/loc-chap-3".to_owned(),
                         chapter_name: "Chapter 3".to_owned(),
                         scroll_ratio: 0.9,
+                        page_index: 9,
                         read_at: 99_999,
                     }),
                 },
@@ -365,6 +489,7 @@ mod tests {
                         "https://example.com/series/brand-new-chap-1".to_owned(),
                     ),
                     latest_chapter_name: Some("Chapter 1".to_owned()),
+                    bookmarked: true,
                     chapters: vec![SyncChapterPayload {
                         url: "https://example.com/series/brand-new-chap-1".to_owned(),
                         name: "Chapter 1".to_owned(),
@@ -376,6 +501,7 @@ mod tests {
                         chapter_url: "https://example.com/series/brand-new-chap-1".to_owned(),
                         chapter_name: "Chapter 1".to_owned(),
                         scroll_ratio: 0.6,
+                        page_index: 6,
                         read_at: 2000,
                     }),
                 },
@@ -411,6 +537,7 @@ mod tests {
             "https://example.com/series/same-chap-2",
             "Chapter 2",
             0.5,
+            2,
         )
         .await
         .unwrap();
@@ -427,6 +554,7 @@ mod tests {
             "https://example.com/series/inc-chap-2",
             "Chapter 2",
             0.3,
+            1,
         )
         .await
         .unwrap();
@@ -440,6 +568,7 @@ mod tests {
             "https://example.com/series/loc-chap-5",
             "Chapter 5",
             0.4,
+            3,
         )
         .await
         .unwrap();
@@ -450,6 +579,8 @@ mod tests {
         assert_eq!(report.updated_newer_chapter, 1);
         assert_eq!(report.skipped_same_chapter, 1);
         assert_eq!(report.kept_local_newer, 1);
+        assert_eq!(report.synced_bookmarks, 2);
+        assert!(db.is_bookmarked(id_same).await.unwrap());
 
         // Verify chapter read flags were unioned (both chap 1 and chap 2 read).
         let same_chaps = db.list_chapters(id_same).await.unwrap();
@@ -458,11 +589,11 @@ mod tests {
 
         // Verify Incoming Ahead moved to Chapter 4 while Local Ahead stayed on Chapter 5.
         let inc_h = db.get_history_for_manga(id_inc).await.unwrap().unwrap();
-        assert_eq!(inc_h.0, "https://example.com/series/inc-chap-4");
+        assert_eq!(inc_h.chapter_url, "https://example.com/series/inc-chap-4");
         let loc_h = db.get_history_for_manga(id_loc).await.unwrap().unwrap();
-        assert_eq!(loc_h.0, "https://example.com/series/loc-chap-5");
+        assert_eq!(loc_h.chapter_url, "https://example.com/series/loc-chap-5");
 
-        // Verify export round-trip contains all 4 history manga.
+        // Verify export round-trip contains all 4 history/bookmarked manga.
         let exported = db.export_sync_bundle("TestPC").await.unwrap();
         assert_eq!(exported.manga.len(), 4);
     }
@@ -492,12 +623,13 @@ mod tests {
             "https://example.com/series/protect-chap-5",
             "Chapter 5",
             0.3,
+            2,
         )
         .await
         .unwrap();
 
         let incoming = SyncBundle {
-            version: 1,
+            version: 2,
             device_name: "OldPhone".to_owned(),
             exported_at: 1000,
             manga: vec![
@@ -511,11 +643,13 @@ mod tests {
                         "https://example.com/series/protect-chap-2".to_owned(),
                     ),
                     latest_chapter_name: Some("Chapter 2".to_owned()),
+                    bookmarked: false,
                     chapters: Vec::new(),
                     history: Some(SyncHistoryPayload {
                         chapter_url: "https://example.com/series/protect-chap-5/".to_owned(),
                         chapter_name: "Chapter 5".to_owned(),
                         scroll_ratio: 0.85,
+                        page_index: 7,
                         read_at: 2000,
                     }),
                 },
@@ -527,6 +661,7 @@ mod tests {
                     cover_url: None,
                     latest_chapter_url: None,
                     latest_chapter_name: None,
+                    bookmarked: false,
                     chapters: Vec::new(),
                     history: None,
                 },
@@ -548,6 +683,7 @@ mod tests {
             "older incoming latest_chapter_name must not overwrite newer local Chapter 5"
         );
         let hist = db.get_history_for_manga(id).await.unwrap().unwrap();
-        assert!((hist.2 - 0.85).abs() < 1e-6);
+        assert!((hist.scroll_ratio - 0.85).abs() < 1e-6);
+        assert_eq!(hist.page_index, 7);
     }
 }

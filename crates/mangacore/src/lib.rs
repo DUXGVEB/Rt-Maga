@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+pub mod doh;
 pub mod error;
 pub mod http;
 pub mod model;
@@ -13,6 +14,10 @@ pub mod parse;
 pub mod registry;
 pub mod source;
 
+pub use doh::{
+    DohConfig, DohProfileInfo, DohTestResult, NetworkProviderInfo, NetworkServiceType,
+    network_provider_catalog, test_doh_config,
+};
 pub use error::ScrapeError;
 pub use http::{
     DomainProxyRule, DomainRuleAction, FetchedBytes, FetchedPage, HttpClient, HttpPolicy,

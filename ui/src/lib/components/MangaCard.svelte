@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { BookOpen, Sparkles } from "lucide-svelte";
+  import { Bookmark, BookOpen, Sparkles } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
@@ -22,7 +22,7 @@
   });
 
   function openContinue() {
-    router.goReader(item.mangaId, item.chapterUrl, item.scrollRatio);
+    router.goReader(item.mangaId, item.chapterUrl, item.scrollRatio, item.pageIndex);
   }
 
   function openDetail(e: MouseEvent) {
@@ -68,6 +68,16 @@
       >
         <Sparkles size={11} />
         {t.badgeNew}
+      </span>
+    {/if}
+
+    {#if item.bookmarked}
+      <span
+        class="absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full text-white shadow-sm backdrop-blur-md"
+        style="background-color: rgba(15, 15, 18, 0.62);"
+        title={t.navBookmarks}
+      >
+        <Bookmark size={12} fill="currentColor" />
       </span>
     {/if}
 

@@ -2193,10 +2193,537 @@ const th: Dictionary = {
     "รหัสใช้ครั้งเดียวหมดอายุใน 5 นาที • ผิดได้สูงสุด 5 ครั้ง • เฉพาะ LAN เดียวกัน • ซิงค์ข้อมูลเท่านั้น ไม่ควบคุมอุปกรณ์",
 };
 
+interface V3Dictionary {
+  navBookmarks: string;
+  historyResumeHint: string;
+  historyNoResumeTarget: string;
+  pressBackAgainToExit: string;
+
+  bookmarksTitle: string;
+  bookmarksSubtitle: string;
+  bookmarksSortLabel: string;
+  bookmarksSortNewest: string;
+  bookmarksSortHasNew: string;
+  bookmarksSortRecent: string;
+  bookmarksSortTitle: string;
+  bookmarksEmptyTitle: string;
+  bookmarksEmptyDesc: string;
+  bookmarkAdd: string;
+  bookmarkRemove: string;
+  bookmarkedLabel: string;
+  toastBookmarkAdded: string;
+  toastBookmarkRemoved: string;
+
+  notifCenterTitle: string;
+  notifMarkAllRead: string;
+  notifEmptyTitle: string;
+  notifEmptyDesc: string;
+  notifChaptersLabel: (range: string, count: number) => string;
+  notifGrantPermissionBtn: string;
+
+  scrollToTopLabel: string;
+  orientationAuto: string;
+  orientationPortrait: string;
+  orientationLandscape: string;
+
+  autoWebtoonLabel: string;
+  autoWebtoonDesc: string;
+  autoWebtoonBadge: string;
+  toastWebtoonDetected: string;
+  readerOverrideActive: string;
+  readerResetToAuto: string;
+  readerOverrideResetToast: string;
+  tapZonesLabel: string;
+  tapZonesDesc: string;
+
+  deviceIdentitySection: string;
+  deviceDetectedLabel: string;
+  deviceCustomNameLabel: string;
+  deviceCustomNameDesc: string;
+  deviceResetName: string;
+
+  floatingSection: string;
+  floatingSubtitle: string;
+  floatingScrollTopScreens: string;
+  floatingScrollTopPos: string;
+  floatingScreenManga: string;
+  floatingScreenReader: string;
+  floatingReaderSettingsLabel: string;
+  floatingReaderSettingsDesc: string;
+  floatingOrientationLockLabel: string;
+  floatingOrientationLockDesc: string;
+  floatingPositionLabel: string;
+  floatingEdgeLeft: string;
+  floatingEdgeRight: string;
+  floatingAutoDimLabel: string;
+  floatingAutoDimDesc: string;
+
+  netProtectionSection: string;
+  netProtectionSubtitle: string;
+  netSystemDns: string;
+  netEncryptedDnsOn: string;
+  netHonestDisclaimer: string;
+  netSelectProvider: string;
+  netTypeEncryptedDns: string;
+  netTypeDnsFiltering: string;
+  netTypeLocalTunnel: string;
+  netProfileLabel: string;
+  netAccountIdLabel: string;
+  netSystemFallbackLabel: string;
+  netSystemFallbackDesc: string;
+  netTestDnsBtn: string;
+  netTestDnsOk: (ms: number, ips: number) => string;
+  netTestDnsFailed: string;
+  netLocalTunnelPresetBtn: string;
+  netLocalTunnelPresetDesc: string;
+  netLocalTunnelPresetApplied: string;
+  netAdvancedProxyToggle: string;
+}
+
+const V3_EN: V3Dictionary = {
+  navBookmarks: "Bookmarks",
+  historyResumeHint: "Tap History again while on History to resume reading",
+  historyNoResumeTarget: "No recent reading session to resume",
+  pressBackAgainToExit: "Press Back again to exit",
+
+  bookmarksTitle: "Bookmarks",
+  bookmarksSubtitle: "Your saved manga — prioritized first when checking for new chapters and included in LAN Sync.",
+  bookmarksSortLabel: "Sort:",
+  bookmarksSortNewest: "Recently added",
+  bookmarksSortHasNew: "New chapters first",
+  bookmarksSortRecent: "Recently read",
+  bookmarksSortTitle: "Title (A-Z)",
+  bookmarksEmptyTitle: "No bookmarks yet",
+  bookmarksEmptyDesc: "Tap the Bookmark button on any manga page or inside the reader to save it here.",
+  bookmarkAdd: "Bookmark",
+  bookmarkRemove: "Remove bookmark",
+  bookmarkedLabel: "Bookmarked",
+  toastBookmarkAdded: "Added to Bookmarks",
+  toastBookmarkRemoved: "Removed from Bookmarks",
+
+  notifCenterTitle: "Notifications",
+  notifMarkAllRead: "Mark all read",
+  notifEmptyTitle: "All caught up",
+  notifEmptyDesc: "New chapter alerts for your bookmarks and reading history will appear here.",
+  notifChaptersLabel: (range, count) =>
+    count > 1 ? `New chapters ${range} (+${count})` : `New: ${range}`,
+  notifGrantPermissionBtn: "Allow notifications",
+
+  scrollToTopLabel: "Scroll to top",
+  orientationAuto: "Orientation: Auto",
+  orientationPortrait: "Locked: Portrait",
+  orientationLandscape: "Locked: Landscape",
+
+  autoWebtoonLabel: "Auto Webtoon / Long-Strip detection",
+  autoWebtoonDesc: "Passively detects tall webtoon strips from loaded pages and switches to seamless vertical scrolling.",
+  autoWebtoonBadge: "Auto Webtoon mode",
+  toastWebtoonDetected: "Webtoon format detected — switched to seamless vertical strip",
+  readerOverrideActive: "Custom mode for this manga",
+  readerResetToAuto: "Reset to Auto",
+  readerOverrideResetToast: "Reset to automatic reading mode",
+  tapZonesLabel: "Horizontal edge tap zones",
+  tapZonesDesc: "Tap left/right edges to turn pages and tap center to toggle controls in horizontal mode.",
+
+  deviceIdentitySection: "Device Identity",
+  deviceDetectedLabel: "Detected device",
+  deviceCustomNameLabel: "Display name (LAN Sync)",
+  deviceCustomNameDesc: "Leave empty to use your real device name automatically.",
+  deviceResetName: "Reset to detected name",
+
+  floatingSection: "Floating Controls",
+  floatingSubtitle: "Customize floating button visibility and screen placement (auto-avoids overlaps and cutouts).",
+  floatingScrollTopScreens: "Show Scroll-to-Top button on",
+  floatingScrollTopPos: "Scroll-to-Top placement",
+  floatingScreenManga: "Manga",
+  floatingScreenReader: "Reader",
+  floatingReaderSettingsLabel: "Floating Reader Settings button",
+  floatingReaderSettingsDesc: "Quick-access button inside the reader to adjust layout and mode.",
+  floatingOrientationLockLabel: "Mobile Orientation Lock button",
+  floatingOrientationLockDesc: "Quickly lock Portrait, Landscape, or Auto rotation while reading on mobile.",
+  floatingPositionLabel: "Edge & vertical height",
+  floatingEdgeLeft: "Left",
+  floatingEdgeRight: "Right",
+  floatingAutoDimLabel: "Auto-dim floating controls in Reader",
+  floatingAutoDimDesc: "Gently fades floating buttons when idle and restores brightness on touch.",
+
+  netProtectionSection: "Network Protection (In-App DNS)",
+  netProtectionSubtitle: "Zero-config Encrypted DNS (DNS-over-HTTPS) for manga requests inside RtMaga — no system VPN required.",
+  netSystemDns: "System DNS",
+  netEncryptedDnsOn: "Encrypted DNS",
+  netHonestDisclaimer:
+    "Encrypted DNS / DNS Filtering encrypts domain lookups inside RtMaga to bypass ISP DNS blocking or filter ad/malware domains. It is NOT a VPN and does not hide your IP address; for full IP tunneling, use a local SOCKS5/HTTP proxy or external VPN.",
+  netSelectProvider: "Choose a provider",
+  netTypeEncryptedDns: "Encrypted DNS",
+  netTypeDnsFiltering: "DNS Filtering",
+  netTypeLocalTunnel: "Local Tunnel",
+  netProfileLabel: "Filtering profile",
+  netAccountIdLabel: "Profile / Account ID",
+  netSystemFallbackLabel: "Fall back to System DNS on failure",
+  netSystemFallbackDesc: "Automatically use OS DNS if the selected provider cannot be reached.",
+  netTestDnsBtn: "Test DNS provider",
+  netTestDnsOk: (ms, ips) => `Connected · ${ms} ms (${ips} IPs)`,
+  netTestDnsFailed: "Connection failed",
+  netLocalTunnelPresetBtn: "Use Local SOCKS5 Tunnel (127.0.0.1:40000)",
+  netLocalTunnelPresetDesc: "Route RtMaga traffic through a local SOCKS5 proxy tunnel (e.g. local WARP proxy).",
+  netLocalTunnelPresetApplied: "Applied local SOCKS5 tunnel preset (127.0.0.1:40000)",
+  netAdvancedProxyToggle: "Advanced Proxy & Per-Domain Rules",
+};
+
+const V3_VI: V3Dictionary = {
+  navBookmarks: "Đánh dấu",
+  historyResumeHint: "Nhấn Lịch sử lần nữa khi đang ở trang Lịch sử để đọc tiếp ngay",
+  historyNoResumeTarget: "Chưa có truyện gần đây để đọc tiếp",
+  pressBackAgainToExit: "Nhấn Quay lại lần nữa để thoát",
+
+  bookmarksTitle: "Truyện đã đánh dấu",
+  bookmarksSubtitle: "Danh sách yêu thích — được ưu tiên kiểm tra chương mới trước và tự động đồng bộ qua LAN.",
+  bookmarksSortLabel: "Sắp xếp:",
+  bookmarksSortNewest: "Mới thêm",
+  bookmarksSortHasNew: "Có chương mới",
+  bookmarksSortRecent: "Đọc gần đây",
+  bookmarksSortTitle: "Tên truyện (A-Z)",
+  bookmarksEmptyTitle: "Chưa có truyện nào được đánh dấu",
+  bookmarksEmptyDesc: "Nhấn nút Đánh dấu trên trang chi tiết truyện hoặc trong trình đọc để lưu lại đây.",
+  bookmarkAdd: "Đánh dấu",
+  bookmarkRemove: "Bỏ đánh dấu",
+  bookmarkedLabel: "Đã đánh dấu",
+  toastBookmarkAdded: "Đã thêm vào Đánh dấu",
+  toastBookmarkRemoved: "Đã bỏ khỏi Đánh dấu",
+
+  notifCenterTitle: "Thông báo",
+  notifMarkAllRead: "Đọc tất cả",
+  notifEmptyTitle: "Chưa có thông báo mới",
+  notifEmptyDesc: "Thông báo chương mới từ truyện đánh dấu và lịch sử đọc sẽ hiển thị tại đây.",
+  notifChaptersLabel: (range, count) =>
+    count > 1 ? `Chương mới ${range} (+${count})` : `Mới: ${range}`,
+  notifGrantPermissionBtn: "Cấp quyền thông báo",
+
+  scrollToTopLabel: "Lên đầu trang",
+  orientationAuto: "Xoay màn hình: Tự động",
+  orientationPortrait: "Khóa dọc",
+  orientationLandscape: "Khóa ngang",
+
+  autoWebtoonLabel: "Tự động nhận diện Webtoon / Dải dài",
+  autoWebtoonDesc: "Phân tích tỉ lệ ảnh đã tải và tự chuyển sang cuộn dọc liền mạch (không khoảng trống).",
+  autoWebtoonBadge: "Chế độ Webtoon tự động",
+  toastWebtoonDetected: "Phát hiện truyện Webtoon — tự chuyển sang cuộn dọc liền mạch",
+  readerOverrideActive: "Chế độ riêng cho truyện này",
+  readerResetToAuto: "Về tự động",
+  readerOverrideResetToast: "Đã đặt lại chế độ đọc tự động",
+  tapZonesLabel: "Chạm cạnh trái/phải để chuyển trang",
+  tapZonesDesc: "Trong chế độ đọc ngang: chạm cạnh trái/phải để sang trang, chạm giữa để ẩn/hiện thanh công cụ.",
+
+  deviceIdentitySection: "Tên thiết bị",
+  deviceDetectedLabel: "Thiết bị được nhận diện",
+  deviceCustomNameLabel: "Tên hiển thị (LAN Sync)",
+  deviceCustomNameDesc: "Để trống để tự dùng tên thật của thiết bị.",
+  deviceResetName: "Khôi phục tên mặc định",
+
+  floatingSection: "Nút nổi tùy chỉnh",
+  floatingSubtitle: "Tùy chỉnh hiển thị và vị trí các nút nổi (tự động tránh đè nhau và tránh tai thỏ/cử chỉ).",
+  floatingScrollTopScreens: "Hiện nút Lên đầu trang tại",
+  floatingScrollTopPos: "Vị trí nút Lên đầu trang",
+  floatingScreenManga: "Chi tiết truyện",
+  floatingScreenReader: "Trình đọc",
+  floatingReaderSettingsLabel: "Nút Cài đặt đọc nổi",
+  floatingReaderSettingsDesc: "Nút mở nhanh cài đặt chế độ đọc ngay trong trình đọc.",
+  floatingOrientationLockLabel: "Nút Khóa xoay màn hình (Di động)",
+  floatingOrientationLockDesc: "Chuyển nhanh giữa Tự động, Khóa dọc và Khóa ngang khi đọc trên điện thoại.",
+  floatingPositionLabel: "Cạnh & độ cao dọc",
+  floatingEdgeLeft: "Trái",
+  floatingEdgeRight: "Phải",
+  floatingAutoDimLabel: "Tự làm mờ nút nổi khi đang đọc",
+  floatingAutoDimDesc: "Tự giảm độ sáng nút nổi khi không thao tác và sáng lại khi chạm.",
+
+  netProtectionSection: "Bảo vệ mạng (DNS nội bộ)",
+  netProtectionSubtitle: "Chọn nhanh nhà cung cấp DNS mã hóa (DNS-over-HTTPS) trong ứng dụng — không cần cấu hình phức tạp hay VPN hệ thống.",
+  netSystemDns: "DNS hệ thống",
+  netEncryptedDnsOn: "Bật DNS mã hóa",
+  netHonestDisclaimer:
+    "DNS mã hóa / Lọc DNS chỉ mã hóa tra cứu tên miền bên trong RtMaga để vượt chặn DNS nhà mạng hoặc lọc quảng cáo/mã độc. Đây KHÔNG phải VPN và không đổi địa chỉ IP; nếu cần định tuyến toàn bộ lưu lượng, hãy dùng Local SOCKS5/HTTP Proxy hoặc VPN ngoài.",
+  netSelectProvider: "Chọn nhà cung cấp",
+  netTypeEncryptedDns: "DNS mã hóa",
+  netTypeDnsFiltering: "Lọc DNS",
+  netTypeLocalTunnel: "Đường hầm cục bộ",
+  netProfileLabel: "Hồ sơ lọc",
+  netAccountIdLabel: "Mã hồ sơ / Tài khoản",
+  netSystemFallbackLabel: "Tự về DNS hệ thống khi lỗi",
+  netSystemFallbackDesc: "Tự chuyển về DNS mặc định của máy nếu không kết nối được máy chủ DNS đã chọn.",
+  netTestDnsBtn: "Kiểm tra DNS",
+  netTestDnsOk: (ms, ips) => `Đã kết nối · ${ms} ms (${ips} IP)`,
+  netTestDnsFailed: "Kết nối thất bại",
+  netLocalTunnelPresetBtn: "Dùng Local SOCKS5 (127.0.0.1:40000)",
+  netLocalTunnelPresetDesc: "Định tuyến qua cổng proxy SOCKS5 cục bộ (ví dụ WARP local proxy).",
+  netLocalTunnelPresetApplied: "Đã áp dụng cấu hình Local SOCKS5 (127.0.0.1:40000)",
+  netAdvancedProxyToggle: "Cấu hình Proxy thủ công & Quy tắc theo tên miền",
+};
+
+const V3_ZH: V3Dictionary = {
+  ...V3_EN,
+  navBookmarks: "收藏",
+  historyResumeHint: "在历史页面再次点击“历史”可立即继续上次阅读",
+  historyNoResumeTarget: "暂无可继续的阅读记录",
+  pressBackAgainToExit: "再按一次返回退出",
+  bookmarksTitle: "我的收藏",
+  bookmarksSubtitle: "优先检查新章节并自动包含在局域网同步中。",
+  bookmarksSortLabel: "排序：",
+  bookmarksSortNewest: "最近添加",
+  bookmarksSortHasNew: "有新章节优先",
+  bookmarksSortRecent: "最近阅读",
+  bookmarksSortTitle: "按标题 (A-Z)",
+  bookmarksEmptyTitle: "暂无收藏",
+  bookmarksEmptyDesc: "在漫画详情页或阅读器中点击收藏按钮即可添加到这里。",
+  bookmarkAdd: "收藏",
+  bookmarkRemove: "取消收藏",
+  bookmarkedLabel: "已收藏",
+  toastBookmarkAdded: "已加入收藏",
+  toastBookmarkRemoved: "已取消收藏",
+  notifCenterTitle: "通知中心",
+  notifMarkAllRead: "全部已读",
+  notifEmptyTitle: "暂无新通知",
+  notifEmptyDesc: "收藏和阅读历史的新章节更新提醒将显示在这里。",
+  notifChaptersLabel: (range, count) => (count > 1 ? `新章节 ${range} (+${count})` : `新：${range}`),
+  notifGrantPermissionBtn: "允许通知",
+  scrollToTopLabel: "回到顶部",
+  orientationAuto: "方向：自动",
+  orientationPortrait: "锁定竖屏",
+  orientationLandscape: "锁定横屏",
+  autoWebtoonLabel: "自动识别条漫 (Webtoon)",
+  autoWebtoonDesc: "根据已加载图片的长宽比自动切换为无缝长图垂直滚动。",
+  autoWebtoonBadge: "自动条漫模式",
+  toastWebtoonDetected: "检测到条漫格式 — 已切换为无缝竖向模式",
+  readerOverrideActive: "此漫画已手动指定模式",
+  readerResetToAuto: "恢复自动",
+  readerOverrideResetToast: "已恢复自动阅读模式",
+  tapZonesLabel: "横向边缘点击翻页",
+  tapZonesDesc: "在横向模式中点击左右边缘翻页，点击中间切换工具栏。",
+  deviceIdentitySection: "设备名称",
+  deviceDetectedLabel: "检测到的设备",
+  deviceCustomNameLabel: "自定义名称 (局域网同步)",
+  deviceCustomNameDesc: "留空则自动使用真实设备名称。",
+  deviceResetName: "恢复默认名称",
+  floatingSection: "悬浮按钮设置",
+  floatingSubtitle: "自定义悬浮按钮显示页面与位置（自动避让重叠与刘海区域）。",
+  floatingScrollTopScreens: "在以下页面显示回到顶部按钮",
+  floatingScrollTopPos: "回到顶部按钮位置",
+  floatingScreenManga: "漫画详情",
+  floatingScreenReader: "阅读器",
+  floatingReaderSettingsLabel: "阅读器悬浮设置按钮",
+  floatingReaderSettingsDesc: "在阅读器中快速打开阅读设置。",
+  floatingOrientationLockLabel: "移动端方向锁定按钮",
+  floatingOrientationLockDesc: "快速切换自动/竖屏/横屏锁定。",
+  floatingPositionLabel: "边缘与垂直位置",
+  floatingEdgeLeft: "左侧",
+  floatingEdgeRight: "右侧",
+  floatingAutoDimLabel: "阅读时闲置自动淡化",
+  floatingAutoDimDesc: "无操作时自动降低悬浮按钮透明度，触摸时恢复。",
+  netProtectionSection: "网络保护（应用内加密 DNS）",
+  netProtectionSubtitle: "内置免配置 DNS-over-HTTPS 服务商，无需系统 VPN。",
+  netSystemDns: "系统 DNS",
+  netEncryptedDnsOn: "启用加密 DNS",
+  netSelectProvider: "选择服务商",
+  netTypeEncryptedDns: "加密 DNS",
+  netTypeDnsFiltering: "DNS 过滤",
+  netTypeLocalTunnel: "本地隧道",
+  netProfileLabel: "过滤配置",
+  netTestDnsBtn: "测试 DNS 连接",
+  netTestDnsOk: (ms, ips) => `已连接 · ${ms} ms (${ips} 个 IP)`,
+  netTestDnsFailed: "连接失败",
+  netAdvancedProxyToggle: "高级代理与按域名规则",
+};
+
+const V3_JA: V3Dictionary = {
+  ...V3_EN,
+  navBookmarks: "ブックマーク",
+  historyResumeHint: "履歴画面でもう一度「履歴」を押すと前回の続きから開きます",
+  historyNoResumeTarget: "再開できる閲覧履歴がありません",
+  pressBackAgainToExit: "もう一度戻ると終了します",
+  bookmarksTitle: "ブックマーク",
+  bookmarksSubtitle: "新着チェックで優先され、LAN同期にも含まれます。",
+  bookmarksSortLabel: "並び替え：",
+  bookmarksSortNewest: "追加順",
+  bookmarksSortHasNew: "新着優先",
+  bookmarksSortRecent: "最近読んだ順",
+  bookmarksSortTitle: "タイトル順",
+  bookmarksEmptyTitle: "ブックマークはありません",
+  bookmarksEmptyDesc: "作品ページやリーダーのブックマークボタンから追加できます。",
+  bookmarkAdd: "ブックマーク",
+  bookmarkRemove: "ブックマーク解除",
+  bookmarkedLabel: "登録済み",
+  toastBookmarkAdded: "ブックマークに追加しました",
+  toastBookmarkRemoved: "ブックマークを解除しました",
+  notifCenterTitle: "通知センター",
+  notifMarkAllRead: "すべて既読",
+  notifEmptyTitle: "新しい通知はありません",
+  notifEmptyDesc: "新着チャプターの通知がここに表示されます。",
+  notifChaptersLabel: (range, count) => (count > 1 ? `新着 ${range} (+${count})` : `新着: ${range}`),
+  notifGrantPermissionBtn: "通知を許可",
+  scrollToTopLabel: "トップへ戻る",
+  orientationAuto: "回転: 自動",
+  orientationPortrait: "縦向き固定",
+  orientationLandscape: "横向き固定",
+  autoWebtoonLabel: "Webtoon / 縦読み自動判定",
+  autoWebtoonDesc: "縦長画像を自動検出し、シームレスな縦スクロールに切り替えます。",
+  autoWebtoonBadge: "自動Webtoonモード",
+  toastWebtoonDetected: "Webtoon形式を検出 — 縦読みモードに切替しました",
+  readerOverrideActive: "この作品のカスタムモード",
+  readerResetToAuto: "自動に戻す",
+  readerOverrideResetToast: "自動モードにリセットしました",
+  deviceIdentitySection: "デバイス名",
+  deviceDetectedLabel: "検出されたデバイス",
+  deviceCustomNameLabel: "表示名 (LAN同期)",
+  deviceCustomNameDesc: "空欄の場合は実際のデバイス名を使用します。",
+  floatingSection: "フローティングボタン",
+  floatingSubtitle: "画面ごとの表示切替と配置位置を調整できます。",
+  floatingScrollTopScreens: "トップへ戻るボタンの表示画面",
+  floatingEdgeLeft: "左",
+  floatingEdgeRight: "右",
+  netProtectionSection: "ネットワーク保護 (アプリ内DNS)",
+  netSystemDns: "システムDNS",
+  netEncryptedDnsOn: "暗号化DNS",
+  netTestDnsBtn: "DNS接続テスト",
+  netAdvancedProxyToggle: "詳細プロキシ設定とドメインルール",
+};
+
+const V3_RU: V3Dictionary = {
+  ...V3_EN,
+  navBookmarks: "Закладки",
+  historyResumeHint: "Нажмите «История» ещё раз, чтобы продолжить чтение",
+  historyNoResumeTarget: "Нет недавней главы для продолжения",
+  pressBackAgainToExit: "Нажмите «Назад» ещё раз для выхода",
+  bookmarksTitle: "Закладки",
+  bookmarksSubtitle: "Проверяются первыми на новые главы и синхронизируются по LAN.",
+  bookmarksSortLabel: "Сортировка:",
+  bookmarksSortNewest: "Недавние",
+  bookmarksSortHasNew: "С новыми главами",
+  bookmarksSortRecent: "Недавно прочитанные",
+  bookmarksSortTitle: "По названию",
+  bookmarksEmptyTitle: "Закладок пока нет",
+  bookmarksEmptyDesc: "Нажмите кнопку закладки на странице манги или в читалке.",
+  bookmarkAdd: "В закладки",
+  bookmarkRemove: "Убрать закладку",
+  bookmarkedLabel: "В закладках",
+  toastBookmarkAdded: "Добавлено в закладки",
+  toastBookmarkRemoved: "Удалено из закладок",
+  notifCenterTitle: "Уведомления",
+  notifMarkAllRead: "Прочитать все",
+  notifEmptyTitle: "Нет новых уведомлений",
+  notifEmptyDesc: "Здесь появятся уведомления о новых главах.",
+  notifGrantPermissionBtn: "Разрешить уведомления",
+  scrollToTopLabel: "Наверх",
+  orientationAuto: "Ориентация: Авто",
+  orientationPortrait: "Портретная",
+  orientationLandscape: "Альбомная",
+  deviceIdentitySection: "Имя устройства",
+  floatingSection: "Плавающие кнопки",
+  floatingEdgeLeft: "Слева",
+  floatingEdgeRight: "Справа",
+  netProtectionSection: "Защита сети (Encrypted DNS)",
+  netSystemDns: "Системный DNS",
+  netEncryptedDnsOn: "Шифрованный DNS",
+  netTestDnsBtn: "Проверить DNS",
+  netAdvancedProxyToggle: "Расширенный прокси и правила доменов",
+};
+
+const V3_KO: V3Dictionary = {
+  ...V3_EN,
+  navBookmarks: "북마크",
+  historyResumeHint: "기록 화면에서 기록을 다시 누르면 마지막으로 보던 화를 이어서 봅니다",
+  historyNoResumeTarget: "이어서 볼 최근 기록이 없습니다",
+  pressBackAgainToExit: "한 번 더 뒤로 누르면 종료됩니다",
+  bookmarksTitle: "북마크",
+  bookmarksSubtitle: "새 챕터 확인 시 우선 체크되며 LAN 동기화에도 포함됩니다.",
+  bookmarksSortLabel: "정렬:",
+  bookmarksSortNewest: "최근 추가순",
+  bookmarksSortHasNew: "새 챕터 우선",
+  bookmarksSortRecent: "최근 읽은순",
+  bookmarksSortTitle: "제목순",
+  bookmarksEmptyTitle: "북마크가 없습니다",
+  bookmarksEmptyDesc: "만화 정보 페이지나 뷰어에서 북마크 버튼을 눌러 저장하세요.",
+  bookmarkAdd: "북마크",
+  bookmarkRemove: "북마크 해제",
+  bookmarkedLabel: "북마크됨",
+  toastBookmarkAdded: "북마크에 추가됨",
+  toastBookmarkRemoved: "북마크에서 제거됨",
+  notifCenterTitle: "알림 센터",
+  notifMarkAllRead: "모두 읽음",
+  notifEmptyTitle: "새 알림이 없습니다",
+  notifEmptyDesc: "새 챕터 알림이 여기에 표시됩니다.",
+  notifGrantPermissionBtn: "알림 허용",
+  scrollToTopLabel: "맨 위로",
+  orientationAuto: "회전: 자동",
+  orientationPortrait: "세로 고정",
+  orientationLandscape: "가로 고정",
+  deviceIdentitySection: "기기 이름",
+  floatingSection: "플로팅 버튼",
+  floatingEdgeLeft: "왼쪽",
+  floatingEdgeRight: "오른쪽",
+  netProtectionSection: "네트워크 보호 (앱 내 암호화 DNS)",
+  netSystemDns: "시스템 DNS",
+  netEncryptedDnsOn: "암호화 DNS",
+  netTestDnsBtn: "DNS 연결 테스트",
+  netAdvancedProxyToggle: "고급 프록시 및 도메인 규칙",
+};
+
+const V3_TH: V3Dictionary = {
+  ...V3_EN,
+  navBookmarks: "บุ๊กมาร์ก",
+  historyResumeHint: "กดประวัติอีกครั้งขณะอยู่ในหน้าประวัติเพื่ออ่านต่อทันที",
+  historyNoResumeTarget: "ยังไม่มีประวัติการอ่านล่าสุด",
+  pressBackAgainToExit: "กดย้อนกลับอีกครั้งเพื่อออก",
+  bookmarksTitle: "บุ๊กมาร์ก",
+  bookmarksSubtitle: "ตรวจสอบตอนใหม่ก่อนเป็นอันดับแรกและซิงค์ผ่าน LAN โดยอัตโนมัติ",
+  bookmarksSortLabel: "เรียงตาม:",
+  bookmarksSortNewest: "เพิ่มล่าสุด",
+  bookmarksSortHasNew: "มีตอนใหม่ก่อน",
+  bookmarksSortRecent: "อ่านล่าสุด",
+  bookmarksSortTitle: "ชื่อเรื่อง (A-Z)",
+  bookmarksEmptyTitle: "ยังไม่มีบุ๊กมาร์ก",
+  bookmarksEmptyDesc: "กดปุ่มบุ๊กมาร์กในหน้ามังงะหรือหน้าอ่านเพื่อบันทึกไว้ที่นี่",
+  bookmarkAdd: "บุ๊กมาร์ก",
+  bookmarkRemove: "ลบบุ๊กมาร์ก",
+  bookmarkedLabel: "บุ๊กมาร์กแล้ว",
+  toastBookmarkAdded: "เพิ่มในบุ๊กมาร์กแล้ว",
+  toastBookmarkRemoved: "ลบออกจากบุ๊กมาร์กแล้ว",
+  notifCenterTitle: "การแจ้งเตือน",
+  notifMarkAllRead: "อ่านทั้งหมด",
+  notifEmptyTitle: "ไม่มีการแจ้งเตือนใหม่",
+  notifEmptyDesc: "การแจ้งเตือนตอนใหม่จะปรากฏที่นี่",
+  notifGrantPermissionBtn: "อนุญาตการแจ้งเตือน",
+  scrollToTopLabel: "เลื่อนขึ้นด้านบน",
+  orientationAuto: "การหมุน: อัตโนมัติ",
+  orientationPortrait: "ล็อกแนวตั้ง",
+  orientationLandscape: "ล็อกแนวนอน",
+  deviceIdentitySection: "ชื่ออุปกรณ์",
+  floatingSection: "ปุ่มลอยแบบกำหนดเอง",
+  floatingEdgeLeft: "ซ้าย",
+  floatingEdgeRight: "ขวา",
+  netProtectionSection: "การป้องกันเครือข่าย (DNS ภายในแอป)",
+  netSystemDns: "DNS ของระบบ",
+  netEncryptedDnsOn: "DNS เข้ารหัส",
+  netTestDnsBtn: "ทดสอบ DNS",
+  netAdvancedProxyToggle: "พร็อกซีขั้นสูงและกฎตามโดเมน",
+};
+
+const V3_DICTIONARIES: Record<Language, V3Dictionary> = {
+  en: V3_EN,
+  vi: V3_VI,
+  zh: V3_ZH,
+  ja: V3_JA,
+  ru: V3_RU,
+  ko: V3_KO,
+  th: V3_TH,
+};
+
+export type FullDictionary = Dictionary & V3Dictionary;
+
 const DICTIONARIES: Record<Language, Dictionary> = { en, vi, zh, ja, ru, ko, th };
 
-export function getDict(lang: Language): Dictionary {
-  return DICTIONARIES[lang] ?? en;
+export function getDict(lang: Language): FullDictionary {
+  return {
+    ...(DICTIONARIES[lang] ?? en),
+    ...(V3_DICTIONARIES[lang] ?? V3_EN),
+  };
 }
 
 export function getLocale(lang: Language): string {

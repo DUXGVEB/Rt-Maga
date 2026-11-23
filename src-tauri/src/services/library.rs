@@ -5,8 +5,10 @@ use serde::Serialize;
 
 use crate::error::AppError;
 use crate::image_proxy::encode_cover_token;
-use crate::repo::history::HistoryEntryRow;
+use crate::repo::bookmark::{BookmarkEntryRow, BookmarkSort};
+use crate::repo::history::{HistoryEntryRow, HistoryProgressRow, LastReadingDestination};
 use crate::repo::manga::{ChapterRow, MangaRow};
+use crate::repo::notification::NotificationRow;
 use crate::state::AppState;
 
 /// Controls whether loading a manga uses local DB data or refetches from the remote website.
@@ -36,6 +38,7 @@ pub(crate) struct ProgressView {
     pub chapter_url: String,
     pub chapter_name: String,
     pub scroll_ratio: f64,
+    pub page_index: i64,
     pub read_at: i64,
 }
 
@@ -49,6 +52,9 @@ pub(crate) struct MangaView {
     pub title: String,
     pub cover_token: Option<String>,
     pub has_new: bool,
+    pub bookmarked: bool,
+    pub reader_mode_override: Option<String>,
+    pub detected_webtoon: bool,
     pub latest_chapter_name: Option<String>,
     pub chapters: Vec<ChapterRefView>,
     pub progress: Option<ProgressView>,
@@ -74,12 +80,53 @@ pub(crate) struct HistoryItemView {
     pub chapter_url: String,
     pub chapter_name: String,
     pub scroll_ratio: f64,
+    pub page_index: i64,
     pub read_at: i64,
     pub latest_chapter_url: Option<String>,
     pub latest_chapter_name: Option<String>,
     pub has_new: bool,
+    pub bookmarked: bool,
     pub total_chapters: i64,
     pub current_chapter_idx: Option<i64>,
+}
+
+/// Bookmarked manga entry rendered on the dedicated Bookmarks screen.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BookmarkItemView {
+    pub manga_id: i64,
+    pub manga_url: String,
+    pub site: String,
+    pub title: String,
+    pub cover_token: Option<String>,
+    pub bookmarked_at: i64,
+    pub latest_chapter_url: Option<String>,
+    pub latest_chapter_name: Option<String>,
+    pub has_new: bool,
+    pub total_chapters: i64,
+    pub chapter_url: Option<String>,
+    pub chapter_name: Option<String>,
+    pub scroll_ratio: Option<f64>,
+    pub page_index: Option<i64>,
+    pub read_at: Option<i64>,
+    pub current_chapter_idx: Option<i64>,
+    pub reader_mode_override: Option<String>,
+    pub detected_webtoon: bool,
+}
+
+/// Notification Center entry rendered in the in-app notification drawer.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NotificationItemView {
+    pub id: i64,
+    pub manga_id: i64,
+    pub manga_title: String,
+    pub cover_token: Option<String>,
+    pub chapter_range: String,
+    pub latest_chapter_url: String,
+    pub chapter_count: i64,
+    pub read: bool,
+    pub created_at: i64,
 }
 
 /// Resolves an arbitrary pasted link, persists the manga in SQLite, and returns the UI view.
@@ -183,11 +230,133 @@ pub(crate) async fn save_progress(
     chapter_url: &str,
     chapter_name: &str,
     scroll_ratio: f64,
+    page_index: i64,
 ) -> Result<(), AppError> {
     state
         .db
-        .save_history(manga_id, chapter_url, chapter_name, scroll_ratio)
+        .save_history(
+            manga_id,
+            chapter_url,
+            chapter_name,
+            scroll_ratio,
+            page_index,
+        )
         .await
+}
+
+/// Returns the persisted last reading destination used for History double-tap resume.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn get_last_reading_destination(
+    state: &AppState,
+) -> Result<Option<LastReadingDestination>, AppError> {
+    state.db.get_last_reading_destination().await
+}
+
+/// Toggles bookmark status for a manga and returns the updated state (`true` = bookmarked).
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn toggle_bookmark(state: &AppState, manga_id: i64) -> Result<bool, AppError> {
+    state.db.toggle_bookmark(manga_id).await
+}
+
+/// Lists all bookmarked manga with signed cover proxy tokens.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn list_bookmarks(
+    state: &AppState,
+    sort: BookmarkSort,
+) -> Result<Vec<BookmarkItemView>, AppError> {
+    let rows = state.db.list_bookmarks(sort).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| map_bookmark_row(row, &state.proxy_key))
+        .collect())
+}
+
+/// Sets or clears the per-manga manual reader mode override.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn set_manga_reader_override(
+    state: &AppState,
+    manga_id: i64,
+    override_mode: Option<&str>,
+) -> Result<(), AppError> {
+    state
+        .db
+        .set_manga_reader_override(manga_id, override_mode)
+        .await
+}
+
+/// Records that passive Webtoon / Long-Strip detection matched this manga.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn mark_manga_detected_webtoon(
+    state: &AppState,
+    manga_id: i64,
+) -> Result<(), AppError> {
+    state.db.mark_manga_detected_webtoon(manga_id).await
+}
+
+/// Lists stored chapter notifications for the Notification Center.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn list_notifications(
+    state: &AppState,
+) -> Result<Vec<NotificationItemView>, AppError> {
+    let rows = state.db.list_notifications().await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| map_notification_row(row, &state.proxy_key))
+        .collect())
+}
+
+/// Marks a single notification as read.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn mark_notification_read(state: &AppState, id: i64) -> Result<(), AppError> {
+    state.db.mark_notification_read(id).await
+}
+
+/// Marks all notifications as read.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn mark_all_notifications_read(state: &AppState) -> Result<(), AppError> {
+    state.db.mark_all_notifications_read().await
+}
+
+/// Deletes a single notification by ID.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn delete_notification(state: &AppState, id: i64) -> Result<(), AppError> {
+    state.db.delete_notification(id).await
+}
+
+/// Clears all notifications from the Notification Center.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn clear_notifications(state: &AppState) -> Result<(), AppError> {
+    state.db.clear_notifications().await
 }
 
 /// Marks a chapter as read in SQLite.
@@ -244,14 +413,26 @@ async fn build_manga_view(state: &AppState, manga_id: i64) -> Result<MangaView, 
         })?;
     let chapters = state.db.list_chapters(manga_id).await?;
     let progress = state.db.get_history_for_manga(manga_id).await?;
+    let bookmarked = state.db.is_bookmarked(manga_id).await?;
 
-    Ok(map_manga_view(row, chapters, progress, &state.proxy_key))
+    Ok(map_manga_view(
+        row,
+        chapters,
+        progress,
+        bookmarked,
+        &state.proxy_key,
+    ))
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "internal view mapper receiving a single boolean bookmark status"
+)]
 fn map_manga_view(
     row: MangaRow,
     chapters: Vec<ChapterRow>,
-    progress: Option<(String, String, f64, i64)>,
+    progress: Option<HistoryProgressRow>,
+    bookmarked: bool,
     proxy_key: &[u8; 32],
 ) -> MangaView {
     let cover_token = row
@@ -266,6 +447,9 @@ fn map_manga_view(
         title: row.title,
         cover_token,
         has_new: row.has_new != 0,
+        bookmarked,
+        reader_mode_override: row.reader_mode_override,
+        detected_webtoon: row.detected_webtoon != 0,
         latest_chapter_name: row.latest_chapter_name,
         chapters: chapters
             .into_iter()
@@ -277,14 +461,13 @@ fn map_manga_view(
                 read: c.read != 0,
             })
             .collect(),
-        progress: progress.map(
-            |(chapter_url, chapter_name, scroll_ratio, read_at)| ProgressView {
-                chapter_url,
-                chapter_name,
-                scroll_ratio,
-                read_at,
-            },
-        ),
+        progress: progress.map(|p| ProgressView {
+            chapter_url: p.chapter_url,
+            chapter_name: p.chapter_name,
+            scroll_ratio: p.scroll_ratio,
+            page_index: p.page_index,
+            read_at: p.read_at,
+        }),
     }
 }
 
@@ -303,11 +486,60 @@ fn map_history_row(row: HistoryEntryRow, proxy_key: &[u8; 32]) -> HistoryItemVie
         chapter_url: row.chapter_url,
         chapter_name: row.chapter_name,
         scroll_ratio: row.scroll_ratio,
+        page_index: row.page_index,
         read_at: row.read_at,
         latest_chapter_url: row.latest_chapter_url,
         latest_chapter_name: row.latest_chapter_name,
         has_new: row.has_new != 0,
+        bookmarked: row.bookmarked != 0,
         total_chapters: row.total_chapters,
         current_chapter_idx: row.current_chapter_idx,
+    }
+}
+
+fn map_bookmark_row(row: BookmarkEntryRow, proxy_key: &[u8; 32]) -> BookmarkItemView {
+    let cover_token = row
+        .cover_url
+        .as_deref()
+        .map(|c| encode_cover_token(c, &row.manga_url, proxy_key));
+
+    BookmarkItemView {
+        manga_id: row.manga_id,
+        manga_url: row.manga_url,
+        site: row.site,
+        title: row.title,
+        cover_token,
+        bookmarked_at: row.bookmarked_at,
+        latest_chapter_url: row.latest_chapter_url,
+        latest_chapter_name: row.latest_chapter_name,
+        has_new: row.has_new != 0,
+        total_chapters: row.total_chapters,
+        chapter_url: row.chapter_url,
+        chapter_name: row.chapter_name,
+        scroll_ratio: row.scroll_ratio,
+        page_index: row.page_index,
+        read_at: row.read_at,
+        current_chapter_idx: row.current_chapter_idx,
+        reader_mode_override: row.reader_mode_override,
+        detected_webtoon: row.detected_webtoon != 0,
+    }
+}
+
+fn map_notification_row(row: NotificationRow, proxy_key: &[u8; 32]) -> NotificationItemView {
+    let cover_token = row
+        .cover_url
+        .as_deref()
+        .map(|c| encode_cover_token(c, &row.manga_url, proxy_key));
+
+    NotificationItemView {
+        id: row.id,
+        manga_id: row.manga_id,
+        manga_title: row.manga_title,
+        cover_token,
+        chapter_range: row.chapter_range,
+        latest_chapter_url: row.latest_chapter_url,
+        chapter_count: row.chapter_count,
+        read: row.read != 0,
+        created_at: row.created_at,
     }
 }

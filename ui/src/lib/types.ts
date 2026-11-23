@@ -19,6 +19,38 @@ export type HorizontalSnapMode = "none" | "page" | "group";
 
 export type GroupAlignment = "center" | "start";
 
+export type OrientationLockMode = "auto" | "portrait" | "landscape";
+
+export type FloatingEdge = "left" | "right";
+
+export type FloatingScreenKey =
+  | "home"
+  | "bookmarks"
+  | "history"
+  | "manga"
+  | "reader"
+  | "settings";
+
+export interface FloatingButtonPosition {
+  edge: FloatingEdge;
+  verticalPercent: number;
+  horizontalOffsetPx: number;
+}
+
+export interface FloatingButtonsSettings {
+  scrollToTopScreens: FloatingScreenKey[];
+  scrollToTop: FloatingButtonPosition;
+  showReaderSettings: boolean;
+  readerSettings: FloatingButtonPosition;
+  showOrientationLock: boolean;
+  orientationLock: FloatingButtonPosition;
+  autoDimInReader: boolean;
+}
+
+export interface DeviceSettings {
+  customName: string | null;
+}
+
 export interface VerticalModeSettings {
   layoutMode: VerticalLayoutMode;
   pagesPerGroup: number;
@@ -47,9 +79,50 @@ export interface ReaderSettings {
   gapPx: number;
   preloadImages: number;
   autoNextChapter: boolean;
+  autoWebtoonDetect: boolean;
+  tapZonesEnabled: boolean;
+  orientationLock: OrientationLockMode;
   readerBg: ReaderBg;
   vertical: VerticalModeSettings;
   horizontal: HorizontalModeSettings;
+}
+
+export type NetworkServiceType = "encrypted_dns" | "dns_filtering" | "local_tunnel";
+
+export interface DohProfileInfo {
+  id: string;
+  label: string;
+  description: string;
+  endpointUrl: string;
+  serviceType: NetworkServiceType;
+}
+
+export interface NetworkProviderInfo {
+  id: string;
+  name: string;
+  serviceType: NetworkServiceType;
+  summary: string;
+  limitations: string;
+  requiresAccountId: boolean;
+  accountIdLabel: string | null;
+  profiles: DohProfileInfo[];
+}
+
+export interface DohConfig {
+  enabled: boolean;
+  providerId: string;
+  profileId: string;
+  customProfileId: string | null;
+  allowSystemFallback: boolean;
+}
+
+export interface DohTestResult {
+  ok: boolean;
+  latencyMs: number;
+  providerName: string;
+  profileLabel: string;
+  resolvedIps: number;
+  error: string | null;
 }
 
 export type ProxyProtocol = "http" | "https" | "socks5";
@@ -109,6 +182,7 @@ export interface SyncMergeReport {
   updatedNewerChapter: number;
   skippedSameChapter: number;
   keptLocalNewer: number;
+  syncedBookmarks: number;
   totalReceived: number;
 }
 
@@ -150,11 +224,49 @@ export interface CacheSettings {
 export interface Settings {
   language: Language;
   theme: Theme;
+  device: DeviceSettings;
   reader: ReaderSettings;
+  floating: FloatingButtonsSettings;
   updates: UpdateSettings;
   sources: SourceSettings;
+  doh: DohConfig;
   proxy: ProxyConfig;
   cache: CacheSettings;
+}
+
+export interface DeviceInsets {
+  cutoutTop: number;
+  cutoutBottom: number;
+  cutoutLeft: number;
+  cutoutRight: number;
+  gestureLeft: number;
+  gestureRight: number;
+  imeBottom: number;
+}
+
+export interface DeviceEnvInfo {
+  platform: "windows" | "android" | "other" | string;
+  sdkInt: number;
+  manufacturer: string;
+  model: string;
+  skin: string;
+  realDeviceName: string;
+  orientation: "portrait" | "landscape" | string;
+  orientationLock: OrientationLockMode | string;
+  viewportWidthDp: number;
+  viewportHeightDp: number;
+  immersive: boolean;
+  insets: DeviceInsets;
+}
+
+export interface NotificationPermissionInfo {
+  granted: boolean;
+  canRequest: boolean;
+}
+
+export interface OrientationLockReply {
+  ok: boolean;
+  mode: string;
 }
 
 export interface ChapterRefView {
@@ -169,8 +281,11 @@ export interface ProgressView {
   chapterUrl: string;
   chapterName: string;
   scrollRatio: number;
+  pageIndex: number;
   readAt: number;
 }
+
+export type ReaderModeOverride = "vertical_strip" | "vertical_grouped" | "horizontal" | null;
 
 export interface MangaView {
   id: number;
@@ -179,6 +294,9 @@ export interface MangaView {
   title: string;
   coverToken: string | null;
   hasNew: boolean;
+  bookmarked: boolean;
+  readerModeOverride: ReaderModeOverride;
+  detectedWebtoon: boolean;
   latestChapterName: string | null;
   chapters: ChapterRefView[];
   progress: ProgressView | null;
@@ -207,12 +325,58 @@ export interface HistoryItemView {
   chapterUrl: string;
   chapterName: string;
   scrollRatio: number;
+  pageIndex: number;
   readAt: number;
   latestChapterUrl: string | null;
   latestChapterName: string | null;
   hasNew: boolean;
+  bookmarked: boolean;
   totalChapters: number;
   currentChapterIdx: number | null;
+}
+
+export type BookmarkSort = "newest" | "title" | "recent_read" | "has_new";
+
+export interface BookmarkItemView {
+  mangaId: number;
+  mangaUrl: string;
+  site: string;
+  title: string;
+  coverToken: string | null;
+  bookmarkedAt: number;
+  latestChapterUrl: string | null;
+  latestChapterName: string | null;
+  hasNew: boolean;
+  totalChapters: number;
+  chapterUrl: string | null;
+  chapterName: string | null;
+  scrollRatio: number | null;
+  pageIndex: number | null;
+  readAt: number | null;
+  currentChapterIdx: number | null;
+  readerModeOverride: ReaderModeOverride;
+  detectedWebtoon: boolean;
+}
+
+export interface NotificationItemView {
+  id: number;
+  mangaId: number;
+  mangaTitle: string;
+  coverToken: string | null;
+  chapterRange: string;
+  latestChapterUrl: string;
+  chapterCount: number;
+  read: boolean;
+  createdAt: number;
+}
+
+export interface LastReadingDestination {
+  mangaId: number;
+  chapterUrl: string;
+  chapterName: string;
+  scrollRatio: number;
+  pageIndex: number;
+  readAt: number;
 }
 
 export interface CacheInfo {
