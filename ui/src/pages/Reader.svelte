@@ -31,6 +31,7 @@
     computeHorizontalTrackMetrics,
     computeNavStepCooldownMs,
     computePageLoadMode,
+    computeSeamlessTrackTranslateX,
     computeVerticalSpeedMultiplier,
     detectWebtoonFromDimensions,
     focusBrightness,
@@ -102,6 +103,9 @@
   let horizontalDragging = $state(false);
   let horizontalDragOffsetPx = $state(0);
   let suppressTrackTransition = $state(false);
+  let seamlessTrackEl = $state<HTMLDivElement | null>(null);
+  let seamlessActiveLeft = $state<number | null>(null);
+  let seamlessActiveWidth = $state(0);
   let horizontalDragDidMove = false;
   let horizontalPointers = new Map<number, { x: number; y: number }>();
   let horizontalPinchStartDist = 0;
@@ -225,6 +229,7 @@
     )
   );
   const horizontalDirSign = $derived(isRtl ? 1 : -1);
+  const isHorizontalSeamless = $derived(isHorizontal && hCfg.noGapMode);
   const horizontalTrackTranslateX = $derived(
     horizontalDirSign * activeHorizontalSlideIdx * horizontalTrackMetrics.stride +
       horizontalDragOffsetPx
@@ -236,8 +241,25 @@
         : "transform 320ms cubic-bezier(0.22, 1, 0.36, 1)"
     }; will-change: transform;`
   );
+  const seamlessTrackTranslateX = $derived(
+    seamlessActiveLeft !== null
+      ? computeSeamlessTrackTranslateX(
+          horizontalVpWidth,
+          seamlessActiveLeft,
+          seamlessActiveWidth,
+          horizontalDragOffsetPx
+        )
+      : horizontalDragOffsetPx
+  );
+  const seamlessTrackStyle = $derived(
+    `transform: translate3d(${seamlessTrackTranslateX}px, 0, 0); transition: ${
+      horizontalDragging || suppressTrackTransition
+        ? "none"
+        : "transform 320ms cubic-bezier(0.22, 1, 0.36, 1)"
+    }; will-change: transform;`
+  );
   const visibleHorizontalSlides = $derived.by(() => {
-    if (!isHorizontal || !activeChapter) return [];
+    if (!isHorizontal || isHorizontalSeamless || !activeChapter) return [];
     const endIdx = horizontalEndSlideIdx;
     const minIdx = Math.max(0, activeHorizontalSlideIdx - 2);
     const maxIdx = Math.min(endIdx, activeHorizontalSlideIdx + 2);
@@ -265,12 +287,35 @@
     return slides;
   });
 
+  function recalcSeamlessCenter(instant = false) {
+    if (!isHorizontalSeamless || !seamlessTrackEl) return;
+    const activeEl = seamlessTrackEl.querySelector<HTMLElement>(
+      `[data-hslide-idx="${activeHorizontalSlideIdx}"]`
+    );
+    if (!activeEl) return;
+    if (instant) {
+      suppressTrackTransition = true;
+      seamlessActiveLeft = activeEl.offsetLeft;
+      seamlessActiveWidth = activeEl.offsetWidth;
+      window.requestAnimationFrame(() => {
+        suppressTrackTransition = false;
+      });
+    } else {
+      seamlessActiveLeft = activeEl.offsetLeft;
+      seamlessActiveWidth = activeEl.offsetWidth;
+    }
+  }
+
   function syncHorizontalViewportSize(instant = true) {
     if (!scrollEl) return;
     const w = scrollEl.clientWidth || window.innerWidth;
     const h = scrollEl.clientHeight || window.innerHeight;
     if (w > 0) horizontalVpWidth = w;
     if (h > 0) horizontalVpHeight = h;
+    if (isHorizontalSeamless) {
+      recalcSeamlessCenter(instant);
+      return;
+    }
     if (instant) {
       suppressTrackTransition = true;
       window.requestAnimationFrame(() => {
@@ -501,6 +546,9 @@
     chapUrl: string,
     info: { index: number; width: number; height: number }
   ) {
+    if (isHorizontalSeamless) {
+      window.requestAnimationFrame(() => recalcSeamlessCenter(true));
+    }
     if (normUrl(chapUrl) !== normUrl(activeUrl)) return;
 
     if (
@@ -1027,7 +1075,7 @@
 
   let prevLayoutSig = "";
   $effect(() => {
-    const sig = `${effectiveOrientation}|${hCfg.pagesPerGroup}|${hCfg.direction}`;
+    const sig = `${effectiveOrientation}|${hCfg.pagesPerGroup}|${hCfg.direction}|${hCfg.noGapMode}`;
     if (!prevLayoutSig) {
       prevLayoutSig = sig;
       return;
@@ -1084,6 +1132,38 @@
       scheduleFocusUpdate();
     });
     ro.observe(el);
+    return () => ro.disconnect();
+  });
+
+  let prevSeamlessChapterUrl = "";
+  $effect(() => {
+    const seamless = isHorizontalSeamless;
+    const chapUrl = activeChapter?.url ?? "";
+    const slideIdx = activeHorizontalSlideIdx;
+    const dir = hCfg.direction;
+    const perGroup = hCfg.pagesPerGroup;
+    void slideIdx;
+    void dir;
+    void perGroup;
+    if (!seamless) {
+      seamlessActiveLeft = null;
+      prevSeamlessChapterUrl = "";
+      return;
+    }
+    const chapterSwitched = prevSeamlessChapterUrl !== chapUrl;
+    prevSeamlessChapterUrl = chapUrl;
+    void tick().then(() => {
+      recalcSeamlessCenter(chapterSwitched || seamlessActiveLeft === null);
+    });
+  });
+
+  $effect(() => {
+    const track = seamlessTrackEl;
+    if (!isHorizontalSeamless || !track || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      recalcSeamlessCenter(true);
+    });
+    ro.observe(track);
     return () => ro.disconnect();
   });
 
@@ -2396,7 +2476,7 @@
             <div class="font-semibold">{t.readerCatLayout}</div>
             <div class="truncate text-[10px]" style="color: var(--text-muted);">
               {isHorizontal
-                ? `${t.modeHorizontal} · ${hCfg.direction.toUpperCase()} · ${hCfg.pagesPerGroup}x`
+                ? `${t.modeHorizontal} · ${hCfg.direction.toUpperCase()} · ${hCfg.pagesPerGroup}x${hCfg.noGapMode ? ` · ${t.horizontalNoGapLabel}` : ""}`
                 : `${t.modeVertical} · ${effectiveNoGap ? t.noGapModeLabel : `${effectiveVerticalGapPx}px`}`}
             </div>
           </div>
@@ -2489,6 +2569,19 @@
                     style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
                   />
                 </div>
+              </div>
+
+              <div class="flex items-center justify-between gap-2">
+                <span class="font-medium">{t.horizontalNoGapLabel}</span>
+                <input
+                  type="checkbox"
+                  checked={hCfg.noGapMode}
+                  onchange={(e) => {
+                    const checked = e.currentTarget.checked;
+                    settingsStore.update((d) => (d.reader.horizontal.noGapMode = checked));
+                  }}
+                  class="h-4 w-4 accent-rose-500"
+                />
               </div>
             {:else}
               <div class="flex items-center justify-between gap-2">
@@ -2955,181 +3048,254 @@
         </div>
       </div>
     {:else if isHorizontal && activeChapter}
-      <!-- ISOLATED HORIZONTAL READING MODE: Strict RTL Track + Center-Focus Peek + Snap Physics -->
+      {#snippet endOfChapterCard()}
+        <!-- End-of-Chapter Interstitial Summary Card -->
+        <div
+          class="relative z-20 mx-auto flex max-h-[calc(100%-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 text-center shadow-xl sm:p-6"
+          style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+        >
+          <div class="flex flex-col items-center gap-2">
+            <div
+              class="flex h-11 w-11 items-center justify-center rounded-2xl"
+              style="background-color: var(--accent-soft); color: var(--accent);"
+            >
+              <CheckCircle2 size={24} />
+            </div>
+            <span
+              class="rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide"
+              style="background-color: var(--accent-soft); color: var(--accent);"
+            >
+              {t.endCardFinishedLabel}
+            </span>
+            <h2 class="line-clamp-2 text-base font-bold sm:text-lg">
+              {activeChapter.name}
+            </h2>
+            {#if manga}
+              <div class="line-clamp-1 text-xs font-medium" style="color: var(--text-muted);">
+                {manga.title}
+              </div>
+            {/if}
+            <div class="text-[11px]" style="color: var(--text-muted);">
+              {t.endCardPagesSummary(totalPages)}
+            </div>
+          </div>
+
+          <!-- Generic Metadata & Credits Placeholders -->
+          <div
+            class="flex flex-col gap-1.5 rounded-xl border p-3 text-left text-xs"
+            style="background-color: var(--surface-subtle); border-color: var(--border);"
+          >
+            <div
+              class="text-[10px] font-semibold uppercase tracking-wider"
+              style="color: var(--text-muted);"
+            >
+              {t.endCardMetadataHeading}
+            </div>
+            <div class="flex items-baseline justify-between gap-2">
+              <span style="color: var(--text-muted);">{t.mangaAuthorsLabel}</span>
+              <span class="truncate font-medium">
+                {manga && manga.authors.length > 0 ? manga.authors.join(", ") : "—"}
+              </span>
+            </div>
+            <div class="flex items-baseline justify-between gap-2">
+              <span style="color: var(--text-muted);">{t.endCardSourceLabel}</span>
+              <span class="truncate font-medium">{manga?.site ?? "—"}</span>
+            </div>
+            <div class="flex items-baseline justify-between gap-2">
+              <span style="color: var(--text-muted);">{t.endCardCreditsLabel}</span>
+              <span class="truncate text-right" style="color: var(--text-muted);">
+                {t.endCardCreditsPlaceholder}
+              </span>
+            </div>
+          </div>
+
+          <!-- Prominent Chapter Navigation Actions -->
+          <div class="flex flex-col gap-2">
+            {#if activeChapter.next}
+              <button
+                type="button"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  if (activeChapter?.next) jumpToChapter(activeChapter.next);
+                }}
+                class="inline-flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
+                style="background-color: var(--accent);"
+              >
+                <span>{t.nextChapter}</span>
+                <ChevronRight size={17} />
+              </button>
+            {:else}
+              <div
+                class="rounded-xl border px-4 py-2.5 text-xs font-medium"
+                style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+              >
+                {t.reachedLatest}
+              </div>
+            {/if}
+
+            <div class="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={!activeChapter.prev}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  if (activeChapter?.prev) jumpToChapter(activeChapter.prev);
+                }}
+                class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
+                style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+              >
+                <ChevronLeft size={14} />
+                <span class="truncate">{t.prevChapter}</span>
+              </button>
+
+              <button
+                type="button"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  stepHorizontalGroup(-1, false);
+                }}
+                class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
+                style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+              >
+                <span class="truncate">{t.endCardReturnLastPage}</span>
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        </div>
+      {/snippet}
+
+      <!-- ISOLATED HORIZONTAL READING MODE: LTR/RTL Center-Focus Peek Track + Optional Seamless 0px Join -->
       <div
         bind:this={horizontalStageEl}
         class="relative h-full w-full overflow-hidden"
         style={horizontalZoomStyle}
       >
-        <!-- RTL Snapping Slide Track (Page 1 at far-right; advancing slides track right toward far-left End Card) -->
-        <div class="relative h-full w-full" style={horizontalTrackStyle}>
-          {#each visibleHorizontalSlides as slide (`${activeChapter.url}:hslide:${slide.slideIdx}`)}
-            <div
-              data-hslide-idx={slide.slideIdx}
-              data-hslide-active={slide.isActive ? "true" : "false"}
-              class="absolute top-0 bottom-0 flex items-center justify-center py-2"
-              style="left: {slide.leftCss}; width: {horizontalTrackMetrics.slotWidth}px; opacity: {slide.isActive
-                ? 1
-                : 0.3}; transition: opacity 300ms cubic-bezier(0.22, 1, 0.36, 1);"
-            >
-              {#if slide.isEndCard}
-                <!-- Far-Left End-of-Chapter Interstitial Summary Card -->
-                <div
-                  class="relative z-20 mx-auto flex max-h-[calc(100%-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 text-center shadow-xl sm:p-6"
-                  style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
-                >
-                  <div class="flex flex-col items-center gap-2">
-                    <div
-                      class="flex h-11 w-11 items-center justify-center rounded-2xl"
-                      style="background-color: var(--accent-soft); color: var(--accent);"
-                    >
-                      <CheckCircle2 size={24} />
-                    </div>
+        {#if isHorizontalSeamless}
+          <!-- Seamless Joined Pages Track (True 0px edge-to-edge touching between pages & spreads) -->
+          <div
+            bind:this={seamlessTrackEl}
+            class="flex h-full w-max items-center"
+            style="flex-direction: {isRtl ? 'row-reverse' : 'row'}; gap: 0px; {seamlessTrackStyle}"
+          >
+            {#each horizontalGroups as group (`${activeChapter.url}:hseam:${group.groupIdx}`)}
+              {@const isActive = group.groupIdx === activeHorizontalSlideIdx}
+              <div
+                data-hslide-idx={group.groupIdx}
+                data-hslide-active={isActive ? "true" : "false"}
+                data-group-key={`${activeChapter.url}:hg:${group.groupIdx}`}
+                class="relative flex h-full shrink-0 items-center"
+                style="flex-direction: {isRtl ? 'row-reverse' : 'row'}; gap: 0px; opacity: {isActive
+                  ? 1
+                  : hCfg.dimUnfocused
+                    ? 0.3
+                    : 1}; transition: opacity 300ms cubic-bezier(0.22, 1, 0.36, 1);"
+              >
+                {#each group.items as entry (`${activeChapter.url}:${entry.pageIdx}`)}
+                  <div class="relative flex h-full shrink-0 items-center justify-center">
+                    <PageImage
+                      token={entry.token}
+                      index={entry.pageIdx}
+                      pageKey={`${activeChapter.url}:${entry.pageIdx}`}
+                      loadMode={computePageLoadMode(
+                        entry.pageIdx,
+                        focusedPageIdx,
+                        readerSettings.preloadImages,
+                        true
+                      )}
+                      horizontal={true}
+                      continuousHorizontal={true}
+                      pageGapPx={0}
+                      snapPage={false}
+                      snapStopAlways={false}
+                      groupPageCount={1}
+                      skipBroken={behavior.skipBrokenImages}
+                      onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
+                    />
                     <span
-                      class="rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide"
-                      style="background-color: var(--accent-soft); color: var(--accent);"
+                      class="pointer-events-none absolute left-2.5 z-10 rounded-md px-2 py-0.5 text-[11px] font-medium tabular-nums select-none backdrop-blur-sm"
+                      style="bottom: max(0.75rem, var(--safe-bottom)); background-color: rgba(12, 12, 16, 0.62); color: rgba(255, 255, 255, 0.88);"
                     >
-                      {t.endCardFinishedLabel}
+                      {t.pageAlt(entry.pageIdx + 1)}
                     </span>
-                    <h2 class="line-clamp-2 text-base font-bold sm:text-lg">
-                      {activeChapter.name}
-                    </h2>
-                    {#if manga}
-                      <div class="line-clamp-1 text-xs font-medium" style="color: var(--text-muted);">
-                        {manga.title}
-                      </div>
-                    {/if}
-                    <div class="text-[11px]" style="color: var(--text-muted);">
-                      {t.endCardPagesSummary(totalPages)}
-                    </div>
                   </div>
+                {/each}
+              </div>
+            {/each}
 
-                  <!-- Generic Metadata & Credits Placeholders -->
-                  <div
-                    class="flex flex-col gap-1.5 rounded-xl border p-3 text-left text-xs"
-                    style="background-color: var(--surface-subtle); border-color: var(--border);"
-                  >
-                    <div
-                      class="text-[10px] font-semibold uppercase tracking-wider"
-                      style="color: var(--text-muted);"
-                    >
-                      {t.endCardMetadataHeading}
-                    </div>
-                    <div class="flex items-baseline justify-between gap-2">
-                      <span style="color: var(--text-muted);">{t.mangaAuthorsLabel}</span>
-                      <span class="truncate font-medium">
-                        {manga && manga.authors.length > 0 ? manga.authors.join(", ") : "—"}
-                      </span>
-                    </div>
-                    <div class="flex items-baseline justify-between gap-2">
-                      <span style="color: var(--text-muted);">{t.endCardSourceLabel}</span>
-                      <span class="truncate font-medium">{manga?.site ?? "—"}</span>
-                    </div>
-                    <div class="flex items-baseline justify-between gap-2">
-                      <span style="color: var(--text-muted);">{t.endCardCreditsLabel}</span>
-                      <span class="truncate text-right" style="color: var(--text-muted);">
-                        {t.endCardCreditsPlaceholder}
-                      </span>
-                    </div>
-                  </div>
-
-                  <!-- Prominent Chapter Navigation Actions -->
-                  <div class="flex flex-col gap-2">
-                    {#if activeChapter.next}
-                      <button
-                        type="button"
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          if (activeChapter?.next) jumpToChapter(activeChapter.next);
-                        }}
-                        class="inline-flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-                        style="background-color: var(--accent);"
-                      >
-                        <span>{t.nextChapter}</span>
-                        <ChevronRight size={17} />
-                      </button>
-                    {:else}
-                      <div
-                        class="rounded-xl border px-4 py-2.5 text-xs font-medium"
-                        style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
-                      >
-                        {t.reachedLatest}
-                      </div>
-                    {/if}
-
-                    <div class="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        disabled={!activeChapter.prev}
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          if (activeChapter?.prev) jumpToChapter(activeChapter.prev);
-                        }}
-                        class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
-                        style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
-                      >
-                        <ChevronLeft size={14} />
-                        <span class="truncate">{t.prevChapter}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          stepHorizontalGroup(-1, false);
-                        }}
-                        class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
-                        style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
-                      >
-                        <span class="truncate">{t.endCardReturnLastPage}</span>
-                        <ChevronRight size={14} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              {:else if slide.group}
-                <!-- Page Container (Respects LTR/RTL Spread Order + Subtle Bottom-Left Page Badge) -->
-                <div
-                  dir={isRtl ? "rtl" : "ltr"}
-                  data-group-key={`${activeChapter.url}:hg:${slide.group.groupIdx}`}
-                  class="relative flex h-full w-full items-center justify-center"
-                  style="gap: {hCfg.pageGapPx}px;"
-                >
-                  {#each slide.group.items as entry (`${activeChapter.url}:${entry.pageIdx}`)}
-                    <div
-                      class="relative flex h-full items-center justify-center"
-                      style={slide.group.items.length > 1
-                        ? `max-width: calc((100% - ${(slide.group.items.length - 1) * hCfg.pageGapPx}px) / ${slide.group.items.length});`
-                        : "width: 100%; max-width: 100%;"}
-                    >
-                      <PageImage
-                        token={entry.token}
-                        index={entry.pageIdx}
-                        pageKey={`${activeChapter.url}:${entry.pageIdx}`}
-                        loadMode={slide.isActive ? "high" : "preload"}
-                        horizontal={true}
-                        continuousHorizontal={false}
-                        pageGapPx={hCfg.pageGapPx}
-                        snapPage={false}
-                        snapStopAlways={false}
-                        groupPageCount={1}
-                        skipBroken={behavior.skipBrokenImages}
-                        onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
-                      />
-                      <!-- Subtle Bottom-Left Page Badge -->
-                      <span
-                        class="pointer-events-none absolute left-2.5 z-10 rounded-md px-2 py-0.5 text-[11px] font-medium tabular-nums select-none backdrop-blur-sm"
-                        style="bottom: max(0.75rem, var(--safe-bottom)); background-color: rgba(12, 12, 16, 0.62); color: rgba(255, 255, 255, 0.88);"
-                      >
-                        {t.pageAlt(entry.pageIdx + 1)}
-                      </span>
-                    </div>
-                  {/each}
-                </div>
-              {/if}
+            <div
+              data-hslide-idx={horizontalEndSlideIdx}
+              data-hslide-active={horizontalAtEnd ? "true" : "false"}
+              class="flex h-full shrink-0 items-center justify-center px-6"
+              style="width: min(86vw, 28rem); opacity: {horizontalAtEnd
+                ? 1
+                : hCfg.dimUnfocused
+                  ? 0.3
+                  : 1}; transition: opacity 300ms cubic-bezier(0.22, 1, 0.36, 1);"
+            >
+              {@render endOfChapterCard()}
             </div>
-          {/each}
-        </div>
+          </div>
+        {:else}
+          <!-- Separated Center-Focus Peek Track -->
+          <div class="relative h-full w-full" style={horizontalTrackStyle}>
+            {#each visibleHorizontalSlides as slide (`${activeChapter.url}:hslide:${slide.slideIdx}`)}
+              <div
+                data-hslide-idx={slide.slideIdx}
+                data-hslide-active={slide.isActive ? "true" : "false"}
+                class="absolute top-0 bottom-0 flex items-center justify-center py-2"
+                style="left: {slide.leftCss}; width: {horizontalTrackMetrics.slotWidth}px; opacity: {slide.isActive
+                  ? 1
+                  : hCfg.dimUnfocused
+                    ? 0.3
+                    : 1}; transition: opacity 300ms cubic-bezier(0.22, 1, 0.36, 1);"
+              >
+                {#if slide.isEndCard}
+                  {@render endOfChapterCard()}
+                {:else if slide.group}
+                  <!-- Page Container (Respects LTR/RTL Spread Order + Subtle Bottom-Left Page Badge) -->
+                  <div
+                    dir={isRtl ? "rtl" : "ltr"}
+                    data-group-key={`${activeChapter.url}:hg:${slide.group.groupIdx}`}
+                    class="relative flex h-full w-full items-center justify-center"
+                    style="gap: {hCfg.pageGapPx}px;"
+                  >
+                    {#each slide.group.items as entry (`${activeChapter.url}:${entry.pageIdx}`)}
+                      <div
+                        class="relative flex h-full items-center justify-center"
+                        style={slide.group.items.length > 1
+                          ? `max-width: calc((100% - ${(slide.group.items.length - 1) * hCfg.pageGapPx}px) / ${slide.group.items.length});`
+                          : "width: 100%; max-width: 100%;"}
+                      >
+                        <PageImage
+                          token={entry.token}
+                          index={entry.pageIdx}
+                          pageKey={`${activeChapter.url}:${entry.pageIdx}`}
+                          loadMode={slide.isActive ? "high" : "preload"}
+                          horizontal={true}
+                          continuousHorizontal={false}
+                          pageGapPx={hCfg.pageGapPx}
+                          snapPage={false}
+                          snapStopAlways={false}
+                          groupPageCount={1}
+                          skipBroken={behavior.skipBrokenImages}
+                          onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
+                        />
+                        <!-- Subtle Bottom-Left Page Badge -->
+                        <span
+                          class="pointer-events-none absolute left-2.5 z-10 rounded-md px-2 py-0.5 text-[11px] font-medium tabular-nums select-none backdrop-blur-sm"
+                          style="bottom: max(0.75rem, var(--safe-bottom)); background-color: rgba(12, 12, 16, 0.62); color: rgba(255, 255, 255, 0.88);"
+                        >
+                          {t.pageAlt(entry.pageIdx + 1)}
+                        </span>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
 
       <!-- Scoped 3-Zone Invisible Interactive Hitboxes (Horizontal Mode Only; disabled while zoomed) -->

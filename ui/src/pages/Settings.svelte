@@ -146,11 +146,12 @@
       t.verticalMarginDesc,
       t.horizontalDirLabel,
       t.pagesPerGroupLabel,
-      t.snapModeLabel,
+      t.horizontalNoGapLabel,
+      t.horizontalNoGapDesc,
       t.centerGroupsLabel,
       t.autoAppendNext,
       t.visualPreviewTitle,
-      "layout mode vertical horizontal gap no-gap margin snap group preview cuon doc ngang khoang cach le"
+      "layout mode vertical horizontal gap no-gap seamless joined dinh lien margin group preview cuon doc ngang khoang cach le"
     )
   );
   const matchCatDisplay = $derived(
@@ -207,7 +208,8 @@
   const readerLayoutSummary = $derived(() => {
     if (isHorizontal) {
       const dir = s.reader.horizontal.direction === "rtl" ? "RTL" : "LTR";
-      return `${t.modeHorizontal} · ${dir} · ${s.reader.horizontal.pagesPerGroup}x`;
+      const base = `${t.modeHorizontal} · ${dir} · ${s.reader.horizontal.pagesPerGroup}x`;
+      return s.reader.horizontal.noGapMode ? `${base} · ${t.horizontalNoGapLabel}` : base;
     }
     const gapText = s.reader.vertical.noGapMode
       ? t.noGapModeLabel
@@ -955,41 +957,59 @@
 
                   <div class="row">
                     <div>
-                      <div class="label">{t.pageGapLabel(s.reader.horizontal.pageGapPx)}</div>
-                      <div class="desc">{t.pageGapDesc}</div>
+                      <div class="label">{t.horizontalNoGapLabel}</div>
+                      <div class="desc">{t.horizontalNoGapDesc}</div>
                     </div>
                     <input
-                      type="range"
-                      min="0"
-                      max="48"
-                      step="2"
-                      value={s.reader.horizontal.pageGapPx}
-                      oninput={(e) => {
-                        const v = Number(e.currentTarget.value);
-                        patch((d) => (d.reader.horizontal.pageGapPx = v), 150);
+                      type="checkbox"
+                      checked={s.reader.horizontal.noGapMode}
+                      onchange={(e) => {
+                        const checked = e.currentTarget.checked;
+                        patch((d) => (d.reader.horizontal.noGapMode = checked));
                       }}
-                      class="w-40 accent-rose-500 sm:w-48"
+                      class="h-4 w-4 accent-rose-500"
                     />
                   </div>
 
-                  <div class="row">
-                    <div>
-                      <div class="label">{t.groupGapLabel(s.reader.horizontal.groupGapPx)}</div>
-                      <div class="desc">{t.groupGapDesc}</div>
+                  {#if !s.reader.horizontal.noGapMode}
+                    <div class="row">
+                      <div>
+                        <div class="label">{t.pageGapLabel(s.reader.horizontal.pageGapPx)}</div>
+                        <div class="desc">{t.pageGapDesc}</div>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="48"
+                        step="2"
+                        value={s.reader.horizontal.pageGapPx}
+                        oninput={(e) => {
+                          const v = Number(e.currentTarget.value);
+                          patch((d) => (d.reader.horizontal.pageGapPx = v), 150);
+                        }}
+                        class="w-40 accent-rose-500 sm:w-48"
+                      />
                     </div>
-                    <input
-                      type="range"
-                      min="8"
-                      max="96"
-                      step="4"
-                      value={s.reader.horizontal.groupGapPx}
-                      oninput={(e) => {
-                        const v = Number(e.currentTarget.value);
-                        patch((d) => (d.reader.horizontal.groupGapPx = v), 150);
-                      }}
-                      class="w-40 accent-rose-500 sm:w-48"
-                    />
-                  </div>
+
+                    <div class="row">
+                      <div>
+                        <div class="label">{t.groupGapLabel(s.reader.horizontal.groupGapPx)}</div>
+                        <div class="desc">{t.groupGapDesc}</div>
+                      </div>
+                      <input
+                        type="range"
+                        min="8"
+                        max="96"
+                        step="4"
+                        value={s.reader.horizontal.groupGapPx}
+                        oninput={(e) => {
+                          const v = Number(e.currentTarget.value);
+                          patch((d) => (d.reader.horizontal.groupGapPx = v), 150);
+                        }}
+                        class="w-40 accent-rose-500 sm:w-48"
+                      />
+                    </div>
+                  {/if}
 
                   <div class="row">
                     <div>

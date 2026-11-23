@@ -36,10 +36,14 @@
     Math.max(1, Math.min(4, settings.reader.horizontal.pagesPerGroup))
   );
   const scaledHorizPageGap = $derived(
-    Math.min(14, Math.round(settings.reader.horizontal.pageGapPx * 0.35))
+    settings.reader.horizontal.noGapMode
+      ? 0
+      : Math.min(14, Math.round(settings.reader.horizontal.pageGapPx * 0.35))
   );
   const scaledHorizGroupGap = $derived(
-    Math.min(26, Math.max(6, Math.round(settings.reader.horizontal.groupGapPx * 0.32)))
+    settings.reader.horizontal.noGapMode
+      ? 0
+      : Math.min(26, Math.max(6, Math.round(settings.reader.horizontal.groupGapPx * 0.32)))
   );
   const horizDimOpacity = $derived(
     settings.reader.horizontal.dimUnfocused
@@ -92,6 +96,14 @@
         <span class="rounded-md px-1.5 py-0.5" style="background-color: var(--surface);">
           {settings.reader.horizontal.pagesPerGroup}x
         </span>
+        {#if settings.reader.horizontal.noGapMode}
+          <span
+            class="rounded-md px-1.5 py-0.5 font-medium"
+            style="background-color: var(--accent-soft); color: var(--accent);"
+          >
+            {t.horizontalNoGapLabel}
+          </span>
+        {/if}
         <span class="rounded-md px-1.5 py-0.5" style="background-color: var(--surface);">
           {settings.reader.horizontal.centerGroups ? t.alignCenter : t.alignStart}
         </span>

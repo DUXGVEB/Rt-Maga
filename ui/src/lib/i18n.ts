@@ -3357,6 +3357,8 @@ export interface V5Dictionary {
   zoneNextPageLabel: string;
   zonePrevPageLabel: string;
   zoneToggleHudLabel: string;
+  horizontalNoGapLabel: string;
+  horizontalNoGapDesc: string;
 }
 
 const V5_EN: V5Dictionary = {
@@ -3424,6 +3426,8 @@ const V5_EN: V5Dictionary = {
   zoneNextPageLabel: "Next page",
   zonePrevPageLabel: "Previous page",
   zoneToggleHudLabel: "Toggle reader toolbar",
+  horizontalNoGapLabel: "Join pages seamlessly",
+  horizontalNoGapDesc: "Attach horizontal pages edge-to-edge with zero spacing between pages.",
 };
 
 const V5_VI: V5Dictionary = {
@@ -3491,6 +3495,8 @@ const V5_VI: V5Dictionary = {
   zoneNextPageLabel: "Trang tiếp theo",
   zonePrevPageLabel: "Trang trước",
   zoneToggleHudLabel: "Ẩn/hiện thanh công cụ",
+  horizontalNoGapLabel: "Dính liền các trang",
+  horizontalNoGapDesc: "Nối liền các trang sát mép nhau không có khoảng cách ở chế độ cuộn ngang.",
 };
 
 const V5_DICTIONARIES: Record<Language, V5Dictionary> = {

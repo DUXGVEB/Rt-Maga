@@ -313,3 +313,18 @@ export function computeHorizontalRtlSlideOffset(
 ): number {
   return computeHorizontalSlideOffset(slideIdx, activeSlideIdx, stride, "rtl", dragOffsetPx);
 }
+
+/**
+ * Computes the horizontal `translateX` (in px) for a seamless 0px-gap edge-to-edge track
+ * so that the slide occupying `[activeSlideLeft, activeSlideLeft + activeSlideWidth]` locks
+ * dead-center inside a viewport of width `vpWidth` while tracking live `dragOffsetPx`.
+ */
+export function computeSeamlessTrackTranslateX(
+  vpWidth: number,
+  activeSlideLeft: number,
+  activeSlideWidth: number,
+  dragOffsetPx = 0
+): number {
+  const activeCenter = activeSlideLeft + activeSlideWidth / 2;
+  return Math.round(vpWidth / 2 - activeCenter + dragOffsetPx);
+}

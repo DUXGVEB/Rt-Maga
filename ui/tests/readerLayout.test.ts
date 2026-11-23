@@ -7,6 +7,7 @@ import {
   computeHorizontalSlideOffset,
   computeHorizontalTrackMetrics,
   computeNavStepCooldownMs,
+  computeSeamlessTrackTranslateX,
   computeVerticalSpeedMultiplier,
   detectWebtoonFromDimensions,
   partitionPages,
@@ -161,4 +162,18 @@ test("computeHorizontalSlideOffset enforces symmetric LTR ordering and center sn
   // Advancing to End-of-Chapter Card (idx=3) locks End Card dead center (0) and puts last page on left (-stride).
   assert.equal(computeHorizontalSlideOffset(3, 3, stride, "ltr", 0), 0);
   assert.equal(computeHorizontalSlideOffset(2, 3, stride, "ltr", 0), -820);
+});
+
+test("computeSeamlessTrackTranslateX locks arbitrary-width joined slides dead center at 0px gap", () => {
+  const vpW = 1920;
+  // Seamless strip of 3 joined pages (0px gap): Page 1 [0..720], Page 2 [720..1480], Page 3 [1480..2880].
+  // Centering Page 2 (left=720, width=760 -> center=1100) inside vpW=1920 (center=960) => translateX = -140.
+  const tx = computeSeamlessTrackTranslateX(vpW, 720, 760, 0);
+  assert.equal(tx, -140);
+  // Verify Page 1 right edge (720 + tx = 580) touches Page 2 left edge (720 + tx = 580) with 0px gap!
+  assert.equal(720 + tx, 580);
+  // Verify Page 2 center (1100 + tx = 960) is dead center of 1920px viewport!
+  assert.equal(720 + 760 / 2 + tx, vpW / 2);
+  // Verify dragOffsetPx shifts track 1:1.
+  assert.equal(computeSeamlessTrackTranslateX(vpW, 720, 760, 85), -55);
 });

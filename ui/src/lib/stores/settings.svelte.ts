@@ -49,6 +49,7 @@ export const DEFAULT_SETTINGS: Settings = {
       centerGroups: true,
       dimUnfocused: true,
       dimLevel: 55,
+      noGapMode: false,
     },
     behavior: {
       keepScreenOn: true,

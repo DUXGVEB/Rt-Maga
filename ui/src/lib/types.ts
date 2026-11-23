@@ -87,6 +87,7 @@ export interface HorizontalModeSettings {
   centerGroups: boolean;
   dimUnfocused: boolean;
   dimLevel: number;
+  noGapMode: boolean;
 }
 
 export interface ReaderBehaviorSettings {

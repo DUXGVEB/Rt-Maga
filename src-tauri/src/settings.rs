@@ -195,6 +195,8 @@ pub(crate) struct HorizontalModeSettings {
     pub dim_unfocused: bool,
     /// Dimming strength (`0..=100%`).
     pub dim_level: u8,
+    /// Join horizontal pages seamlessly edge-to-edge with zero spacing (`0px`).
+    pub no_gap_mode: bool,
 }
 
 impl Default for HorizontalModeSettings {
@@ -208,6 +210,7 @@ impl Default for HorizontalModeSettings {
             center_groups: true,
             dim_unfocused: true,
             dim_level: 55,
+            no_gap_mode: false,
         }
     }
 }
@@ -653,6 +656,7 @@ impl Settings {
                 "tapZonesEnabled": self.reader.tap_zones_enabled,
                 "orientationLock": self.reader.orientation_lock,
                 "verticalNoGap": self.reader.vertical.no_gap_mode,
+                "horizontalNoGap": self.reader.horizontal.no_gap_mode,
                 "verticalMarginPx": self.reader.behavior.vertical_margin_px,
                 "navigationSpeed": self.reader.behavior.navigation_speed,
                 "doubleTapAction": self.reader.behavior.double_tap_action,
@@ -754,19 +758,29 @@ mod tests {
         assert!(!s.reader.vertical.no_gap_mode);
         assert!(!s.doh.enabled);
 
-        // Enabling No-Gap must NOT destroy the user's configured vertical page gap.
+        // Enabling No-Gap must NOT destroy the user's configured vertical or horizontal gaps.
         s.reader.vertical.page_gap_px = 16;
         s.reader.vertical.no_gap_mode = true;
+        s.reader.horizontal.page_gap_px = 12;
+        s.reader.horizontal.group_gap_px = 40;
+        s.reader.horizontal.no_gap_mode = true;
         let with_no_gap = s.sanitized();
         assert!(with_no_gap.reader.vertical.no_gap_mode);
         assert_eq!(with_no_gap.reader.vertical.page_gap_px, 16);
+        assert!(with_no_gap.reader.horizontal.no_gap_mode);
+        assert_eq!(with_no_gap.reader.horizontal.page_gap_px, 12);
+        assert_eq!(with_no_gap.reader.horizontal.group_gap_px, 40);
 
-        // Disabling No-Gap immediately retains the preserved 16px page gap.
+        // Disabling No-Gap immediately retains the preserved page gaps.
         let mut disabled = with_no_gap;
         disabled.reader.vertical.no_gap_mode = false;
+        disabled.reader.horizontal.no_gap_mode = false;
         let restored = disabled.sanitized();
         assert!(!restored.reader.vertical.no_gap_mode);
         assert_eq!(restored.reader.vertical.page_gap_px, 16);
+        assert!(!restored.reader.horizontal.no_gap_mode);
+        assert_eq!(restored.reader.horizontal.page_gap_px, 12);
+        assert_eq!(restored.reader.horizontal.group_gap_px, 40);
 
         // Resetting the Network section restores System DNS (disabled) and Direct proxy mode.
         let mut net = restored;
