@@ -236,7 +236,25 @@ pub(crate) async fn get_manga(
 
     if mode == FetchMode::RefreshFromWeb {
         let policy = state.current_settings().await.headless_policy();
-        let resolved = state.registry.resolve(&row.url, policy).await?;
+        let resolved = match state.registry.resolve(&row.url, policy).await {
+            Ok(r) => r,
+            Err(err) => {
+                let app_err = AppError::from(err);
+                let _ = state
+                    .db
+                    .record_diagnostic_log(&NewDiagnosticLog {
+                        level: "error".to_owned(),
+                        category: app_err.category().to_owned(),
+                        message: format!("Failed to refresh chapter list for '{}'", row.title),
+                        detail: Some(app_err.to_string()),
+                        source: Some(row.site.clone()),
+                        chapter_url: Some(row.url.clone()),
+                        stack_trace: None,
+                    })
+                    .await;
+                return Err(app_err);
+            }
+        };
         let _ = state
             .db
             .upsert_manga_with_id(Some(manga_id), resolved.manga())

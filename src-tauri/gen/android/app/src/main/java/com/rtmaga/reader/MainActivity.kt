@@ -184,16 +184,23 @@ class MainActivity : TauriActivity() {
     ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { view, insets ->
       val density = resources.displayMetrics.density.coerceAtLeast(1f)
       val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
+      val statusBars = insets.getInsets(WindowInsetsCompat.Type.statusBars())
+      val navBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
       val gestures = insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemGestures())
       val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
 
       val wasImeVisible = imeVisible
       imeVisible = ime.bottom > 0
 
-      lastCutoutTopDp = (cutout.top / density).roundToInt()
-      lastCutoutBottomDp = (cutout.bottom / density).roundToInt()
-      lastCutoutLeftDp = (cutout.left / density).roundToInt()
-      lastCutoutRightDp = (cutout.right / density).roundToInt()
+      val safeTopPx = maxOf(cutout.top, statusBars.top)
+      val safeBottomPx = maxOf(cutout.bottom, navBars.bottom)
+      val safeLeftPx = maxOf(cutout.left, navBars.left)
+      val safeRightPx = maxOf(cutout.right, navBars.right)
+
+      lastCutoutTopDp = (safeTopPx / density).roundToInt()
+      lastCutoutBottomDp = (safeBottomPx / density).roundToInt()
+      lastCutoutLeftDp = (safeLeftPx / density).roundToInt()
+      lastCutoutRightDp = (safeRightPx / density).roundToInt()
       lastGestureLeftDp = (gestures.left / density).roundToInt().coerceAtMost(36)
       lastGestureRightDp = (gestures.right / density).roundToInt().coerceAtMost(36)
       lastImeBottomDp = (ime.bottom / density).roundToInt()

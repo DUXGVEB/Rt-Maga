@@ -122,7 +122,7 @@ impl Database {
              FROM manga m
              LEFT JOIN history h ON h.manga_id = m.id
              LEFT JOIN bookmark b ON b.manga_id = m.id
-             WHERE h.manga_id IS NOT NULL OR b.manga_id IS NOT NULL
+             WHERE m.hidden = 0 AND (h.manga_id IS NOT NULL OR b.manga_id IS NOT NULL)
              ORDER BY COALESCE(h.read_at, b.created_at, m.updated_at) DESC",
         )
         .fetch_all(self.pool())
@@ -486,23 +486,42 @@ async fn upsert_sync_chapters(
         }
         let clean_num = ch.number.filter(|n| n.is_finite());
         let read_int: i64 = i64::from(ch.read);
-        sqlx::query(
-            "INSERT INTO chapter (manga_id, url, name, number, idx, read)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(manga_id, url) DO UPDATE SET
-                name = excluded.name,
-                number = COALESCE(excluded.number, chapter.number),
-                idx = excluded.idx,
-                read = MAX(chapter.read, excluded.read)",
+        let updated = sqlx::query(
+            "UPDATE chapter
+             SET name = ?,
+                 number = COALESCE(?, chapter.number),
+                 idx = ?,
+                 read = MAX(chapter.read, ?)
+             WHERE manga_id = ? AND RTRIM(url, '/') = RTRIM(?, '/')",
         )
-        .bind(manga_id)
-        .bind(trimmed_url)
         .bind(ch.name.trim())
         .bind(clean_num)
         .bind(ch.idx)
         .bind(read_int)
+        .bind(manga_id)
+        .bind(trimmed_url)
         .execute(&mut **tx)
         .await?;
+
+        if updated.rows_affected() == 0 {
+            sqlx::query(
+                "INSERT INTO chapter (manga_id, url, name, number, idx, read)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(manga_id, url) DO UPDATE SET
+                    name = excluded.name,
+                    number = COALESCE(excluded.number, chapter.number),
+                    idx = excluded.idx,
+                    read = MAX(chapter.read, excluded.read)",
+            )
+            .bind(manga_id)
+            .bind(trimmed_url)
+            .bind(ch.name.trim())
+            .bind(clean_num)
+            .bind(ch.idx)
+            .bind(read_int)
+            .execute(&mut **tx)
+            .await?;
+        }
     }
     Ok(())
 }

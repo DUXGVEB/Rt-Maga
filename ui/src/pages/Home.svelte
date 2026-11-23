@@ -46,6 +46,7 @@
     if (!crashSession) return;
     const s = crashSession;
     crashSession = null;
+    await api.clearReaderSession().catch(() => {});
     router.goReader(s.mangaId, s.chapterUrl, s.scrollRatio, s.pageIndex);
   }
 

@@ -164,7 +164,7 @@ impl Default for VerticalModeSettings {
         Self {
             layout_mode: VerticalLayoutMode::ContinuousStrip,
             pages_per_group: 2,
-            page_gap_px: 0,
+            page_gap_px: 8,
             group_gap_px: 32,
             snap_enabled: true,
             alignment: GroupAlignment::Center,
@@ -409,7 +409,7 @@ impl Default for ReaderSettings {
         Self {
             orientation: ReadingOrientation::Vertical,
             width: ImageWidth::default(),
-            gap_px: 0,
+            gap_px: 8,
             preload_images: 6,
             auto_next_chapter: true,
             auto_webtoon_detect: true,
@@ -548,8 +548,12 @@ impl Settings {
             ImageWidth::Px(px) => ImageWidth::Px(px.clamp(400, 2000)),
         };
 
-        // Reconcile legacy `gap_px` if loaded from pre-2.0 JSON where `vertical.page_gap_px` was default 0.
-        if self.reader.vertical.page_gap_px == 0 && self.reader.gap_px > 0 {
+        // Reconcile legacy `gap_px` if loaded from pre-2.0 JSON where `vertical` was omitted.
+        let default_gap = VerticalModeSettings::default().page_gap_px;
+        if self.reader.vertical.page_gap_px == default_gap
+            && self.reader.gap_px != default_gap
+            && self.reader.gap_px > 0
+        {
             self.reader.vertical.page_gap_px = self.reader.gap_px;
         }
         // Vertical reading always uses continuous vertical scroll (legacy `vertical_grouped` normalizes safely).
@@ -574,10 +578,6 @@ impl Settings {
                 self.reader.behavior.toolbar_auto_hide_secs.clamp(2, 15)
             };
         self.reader.behavior.vertical_margin_px = self.reader.behavior.vertical_margin_px.min(64);
-        if self.reader.vertical.no_gap_mode {
-            self.reader.vertical.page_gap_px = 0;
-            self.reader.gap_px = 0;
-        }
 
         // Sanitize floating controls screens & bounds.
         let mut clean_screens: Vec<String> = Vec::with_capacity(VALID_FLOATING_SCREENS.len());
@@ -737,5 +737,37 @@ mod tests {
         assert_eq!(clamped.reader.horizontal.dim_level, 100);
         assert_eq!(clamped.reader.vertical.pages_per_group, 8);
         assert_eq!(clamped.reader.vertical.group_gap_px, 8);
+    }
+
+    #[test]
+    fn no_gap_mode_preserves_page_gap_and_network_reset_disables_doh() {
+        let mut s = Settings::default();
+        assert_eq!(s.reader.vertical.page_gap_px, 8);
+        assert!(!s.reader.vertical.no_gap_mode);
+        assert!(!s.doh.enabled);
+
+        // Enabling No-Gap must NOT destroy the user's configured vertical page gap.
+        s.reader.vertical.page_gap_px = 16;
+        s.reader.vertical.no_gap_mode = true;
+        let with_no_gap = s.sanitized();
+        assert!(with_no_gap.reader.vertical.no_gap_mode);
+        assert_eq!(with_no_gap.reader.vertical.page_gap_px, 16);
+
+        // Disabling No-Gap immediately retains the preserved 16px page gap.
+        let mut disabled = with_no_gap;
+        disabled.reader.vertical.no_gap_mode = false;
+        let restored = disabled.sanitized();
+        assert!(!restored.reader.vertical.no_gap_mode);
+        assert_eq!(restored.reader.vertical.page_gap_px, 16);
+
+        // Resetting the Network section restores System DNS (disabled) and Direct proxy mode.
+        let mut net = restored;
+        net.doh.enabled = true;
+        net.doh.provider_id = "adguard".to_owned();
+        net.proxy.enabled = true;
+        net.reset_section(SettingsSection::Network);
+        assert!(!net.doh.enabled);
+        assert_eq!(net.doh.provider_id, "cloudflare");
+        assert!(!net.proxy.enabled);
     }
 }

@@ -2,6 +2,8 @@
   import {
     AlertTriangle,
     Bell,
+    ChevronDown,
+    ChevronUp,
     Download,
     Eye,
     EyeOff,
@@ -16,7 +18,7 @@
     Trash2,
     X,
   } from "lucide-svelte";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
   import DiagnosticsPanel from "../lib/components/DiagnosticsPanel.svelte";
   import LanSyncPanel from "../lib/components/LanSyncPanel.svelte";
@@ -25,6 +27,7 @@
   import { LANGUAGE_OPTIONS } from "../lib/i18n";
   import { appReleaseStore } from "../lib/stores/appRelease.svelte";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
+  import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
@@ -47,7 +50,17 @@
     Theme,
   } from "../lib/types";
 
+  let { focusSection }: { focusSection?: SettingsSection } = $props();
+
+  type ReaderCategoryKey = "layout" | "display" | "controls" | "behavior";
+
   let searchQuery = $state("");
+  let expandedReaderCats = $state<Record<ReaderCategoryKey, boolean>>({
+    layout: false,
+    display: false,
+    controls: false,
+    behavior: false,
+  });
   let cache = $state<CacheInfo | null>(null);
   let cacheBySource = $state<CacheSourceStats[]>([]);
   let cacheByManga = $state<CacheMangaStats[]>([]);
@@ -112,32 +125,134 @@
       "device identity name lan sync thiet bi ten"
     )
   );
-  const showReader = $derived(
+  function toggleReaderCat(cat: ReaderCategoryKey) {
+    expandedReaderCats = {
+      ...expandedReaderCats,
+      [cat]: !expandedReaderCats[cat],
+    };
+  }
+
+  const matchCatLayout = $derived(
     matchesSearch(
-      t.readerSection,
+      t.readerCatLayout,
       t.readingModeLabel,
       t.readingModeDesc,
       t.noGapModeLabel,
       t.noGapModeDesc,
+      t.gapDesc,
       t.verticalMarginLabel(s.reader.behavior.verticalMarginPx),
       t.verticalMarginDesc,
+      t.horizontalDirLabel,
+      t.pagesPerGroupLabel,
+      t.snapModeLabel,
+      t.centerGroupsLabel,
+      t.autoAppendNext,
+      t.visualPreviewTitle,
+      "layout mode vertical horizontal gap no-gap margin snap group preview cuon doc ngang khoang cach le"
+    )
+  );
+  const matchCatDisplay = $derived(
+    matchesSearch(
+      t.readerCatDisplay,
+      t.readerBg,
+      t.readerBgDesc,
+      t.dimUnfocusedLabel,
+      t.dimUnfocusedDesc,
+      t.autoWebtoonLabel,
+      t.autoWebtoonDesc,
+      "display background theme dark light dim unfocused webtoon hien thi nen lam toi"
+    )
+  );
+  const matchCatControls = $derived(
+    matchesSearch(
+      t.readerCatControls,
       t.doubleTapActionLabel,
       t.doubleTapActionDesc,
+      t.tapZonesLabel,
+      t.tapZonesDesc,
       t.toolbarAutoHideLabel,
       t.toolbarAutoHideDesc,
       t.keepScreenOnLabel,
       t.keepScreenOnDesc,
-      t.skipBrokenImagesLabel,
-      t.skipBrokenImagesDesc,
+      "controls gestures double tap zoom toolbar auto hide screen awake dieu khien cham dup thanh cong cu man hinh"
+    )
+  );
+  const matchCatBehavior = $derived(
+    matchesSearch(
+      t.readerCatBehavior,
       t.autoMarkReadLabel,
       t.autoMarkReadDesc,
-      t.autoWebtoonLabel,
-      t.tapZonesLabel,
+      t.skipBrokenImagesLabel,
+      t.skipBrokenImagesDesc,
+      t.preloadLabel(s.reader.preloadImages),
       t.preloadDesc,
-      t.readerBg,
-      t.visualPreviewTitle,
-      "reader vertical horizontal webtoon gap margin zoom double tap toolbar screen awake broken image mark read preload background preview trinh doc cuon doc ngang khoang cach le man hinh"
+      "behavior performance mark read broken image skip preload doc truyen hieu nang da doc anh hong"
     )
+  );
+
+  function isReaderCatOpen(cat: ReaderCategoryKey): boolean {
+    if (normalizedQuery) {
+      if (cat === "layout") return matchCatLayout;
+      if (cat === "display") return matchCatDisplay;
+      if (cat === "controls") return matchCatControls;
+      return matchCatBehavior;
+    }
+    return expandedReaderCats[cat];
+  }
+
+  const readerLayoutSummary = $derived(() => {
+    if (isHorizontal) {
+      const dir = s.reader.horizontal.direction === "rtl" ? "RTL" : "LTR";
+      return `${t.modeHorizontal} · ${dir} · ${s.reader.horizontal.pagesPerGroup}x`;
+    }
+    const gapText = s.reader.vertical.noGapMode
+      ? t.noGapModeLabel
+      : `${t.previewGapChip}: ${s.reader.vertical.pageGapPx}px`;
+    return `${t.modeVertical} · ${gapText}`;
+  });
+
+  const readerDisplaySummary = $derived(() => {
+    const bgLabel =
+      s.reader.readerBg === "dark"
+        ? t.bgDark
+        : s.reader.readerBg === "light"
+          ? t.bgLight
+          : t.bgAppTheme;
+    return s.reader.autoWebtoonDetect ? `${bgLabel} · Webtoon` : bgLabel;
+  });
+
+  const readerControlsSummary = $derived(() => {
+    const dt =
+      s.reader.behavior.doubleTapAction === "zoom"
+        ? t.doubleTapZoom
+        : s.reader.behavior.doubleTapAction === "toggle_toolbar"
+          ? t.doubleTapToggleToolbar
+          : s.reader.behavior.doubleTapAction === "next_page"
+            ? t.doubleTapNextPage
+            : t.doubleTapDisabled;
+    return dt;
+  });
+
+  const readerBehaviorSummary = $derived(
+    () => `${t.preloadLabel(s.reader.preloadImages)}`
+  );
+
+  $effect(() => {
+    const target = focusSection;
+    if (!target) return;
+    void (async () => {
+      await tick();
+      const el = document.getElementById(`settings-${target}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    })();
+  });
+
+  const showReader = $derived(
+    matchesSearch(t.readerSection, "reader trinh doc") ||
+      matchCatLayout ||
+      matchCatDisplay ||
+      matchCatControls ||
+      matchCatBehavior
   );
   const showFloating = $derived(
     matchesSearch(
@@ -410,6 +525,7 @@
     try {
       await api.setMangaHidden(item.id, "unhide");
       hiddenManga = hiddenManga.filter((m) => m.id !== item.id);
+      void notificationsStore.refresh();
       toasts.push(t.toastMangaUnhidden(item.title), "success", 2200);
     } catch (err) {
       const f = formatAppError(err, settingsStore.value.language);
@@ -425,6 +541,7 @@
       await api.deleteMangaPermanently(target.id);
       hiddenManga = hiddenManga.filter((m) => m.id !== target.id);
       pendingDeleteHidden = null;
+      void notificationsStore.refresh();
       void loadCacheInfo();
       toasts.push(t.toastMangaDeleted, "info", 2400);
     } catch (err) {
@@ -627,9 +744,9 @@
     </section>
   {/if}
 
-  <!-- Reader -->
+  <!-- Reader (Collapsible Categories, Collapsed by Default) -->
   {#if showReader}
-    <section class="settings-card">
+    <section id="settings-reader" class="settings-card">
       <div class="section-header">
         <h2 class="section-title">{t.readerSection}</h2>
         <button
@@ -644,480 +761,600 @@
         </button>
       </div>
 
-      <!-- Live Visual Preview for Margins, Gaps, No-Gap & Alignment -->
-      <SettingsVisualPreview settings={s} {t} />
-
-      <!-- Orientation -->
-      <div class="row">
-        <div>
-          <div class="label">{t.readingModeLabel}</div>
-          <div class="desc">{t.readingModeDesc}</div>
-        </div>
-        <div class="flex gap-1.5">
-          {#each [["vertical", t.modeVertical], ["horizontal", t.modeHorizontal]] as [val, label] (val)}
+      <div class="flex flex-col gap-2">
+        <!-- Category 1: Layout & Spacing -->
+        {#if !normalizedQuery || matchCatLayout}
+          {@const openLayout = isReaderCatOpen("layout")}
+          <div class="cat-box">
             <button
               type="button"
-              onclick={() => patch((d) => (d.reader.orientation = val as ReadingOrientation))}
-              class="pill"
-              class:pill-active={s.reader.orientation === val}
+              onclick={() => toggleReaderCat("layout")}
+              aria-expanded={openLayout}
+              class="cat-trigger"
             >
-              {label}
+              <div class="min-w-0 text-left">
+                <div class="text-xs font-semibold sm:text-sm">{t.readerCatLayout}</div>
+                <div class="truncate text-[11px]" style="color: var(--text-muted);">
+                  {readerLayoutSummary()}
+                </div>
+              </div>
+              {#if openLayout}
+                <ChevronUp size={16} class="shrink-0 opacity-70" />
+              {:else}
+                <ChevronDown size={16} class="shrink-0 opacity-70" />
+              {/if}
             </button>
-          {/each}
-        </div>
-      </div>
 
-      {#if !isHorizontal}
-        <!-- No-Gap Mode -->
-        <div class="row">
-          <div>
-            <div class="label">{t.noGapModeLabel}</div>
-            <div class="desc">{t.noGapModeDesc}</div>
-          </div>
-          <input
-            type="checkbox"
-            checked={s.reader.vertical.noGapMode}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
-              patch((d) => (d.reader.vertical.noGapMode = checked));
-            }}
-            class="h-4 w-4 accent-rose-500"
-          />
-        </div>
+            {#if openLayout}
+              <div class="cat-body">
+                <!-- Live Visual Preview for Margins, Gaps, No-Gap & Alignment -->
+                <SettingsVisualPreview settings={s} {t} />
 
-        <!-- Continuous vertical strip page gap -->
-        {#if !s.reader.vertical.noGapMode}
-          <div class="row">
-            <div>
-              <div class="label">{t.gapLabel(s.reader.vertical.pageGapPx)}</div>
-              <div class="desc">{t.gapDesc}</div>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="48"
-              step="2"
-              value={s.reader.vertical.pageGapPx}
-              oninput={(e) => {
-                const v = Number(e.currentTarget.value);
-                patch((d) => {
-                  d.reader.vertical.pageGapPx = v;
-                  d.reader.gapPx = v;
-                }, 150);
-              }}
-              class="w-40 accent-rose-500 sm:w-48"
-            />
+                <!-- Orientation -->
+                <div class="row">
+                  <div>
+                    <div class="label">{t.readingModeLabel}</div>
+                    <div class="desc">{t.readingModeDesc}</div>
+                  </div>
+                  <div class="flex gap-1.5">
+                    {#each [["vertical", t.modeVertical], ["horizontal", t.modeHorizontal]] as [val, label] (val)}
+                      <button
+                        type="button"
+                        onclick={() => patch((d) => (d.reader.orientation = val as ReadingOrientation))}
+                        class="pill"
+                        class:pill-active={s.reader.orientation === val}
+                      >
+                        {label}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+
+                {#if !isHorizontal}
+                  <!-- No-Gap Mode -->
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.noGapModeLabel}</div>
+                      <div class="desc">{t.noGapModeDesc}</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={s.reader.vertical.noGapMode}
+                      onchange={(e) => {
+                        const checked = e.currentTarget.checked;
+                        patch((d) => {
+                          d.reader.vertical.noGapMode = checked;
+                          if (!checked && d.reader.vertical.pageGapPx === 0) {
+                            d.reader.vertical.pageGapPx = 12;
+                            d.reader.gapPx = 12;
+                          }
+                        });
+                      }}
+                      class="h-4 w-4 accent-rose-500"
+                    />
+                  </div>
+
+                  <!-- Continuous vertical strip page gap -->
+                  {#if !s.reader.vertical.noGapMode}
+                    <div class="row">
+                      <div>
+                        <div class="label">{t.gapLabel(s.reader.vertical.pageGapPx)}</div>
+                        <div class="desc">{t.gapDesc}</div>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="48"
+                        step="2"
+                        value={s.reader.vertical.pageGapPx}
+                        oninput={(e) => {
+                          const v = Number(e.currentTarget.value);
+                          patch((d) => {
+                            d.reader.vertical.pageGapPx = v;
+                            d.reader.gapPx = v;
+                          }, 150);
+                        }}
+                        class="w-40 accent-rose-500 sm:w-48"
+                      />
+                    </div>
+                  {/if}
+
+                  <!-- Vertical side margin -->
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.verticalMarginLabel(s.reader.behavior.verticalMarginPx)}</div>
+                      <div class="desc">{t.verticalMarginDesc}</div>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="64"
+                      step="2"
+                      value={s.reader.behavior.verticalMarginPx}
+                      oninput={(e) => {
+                        const v = Number(e.currentTarget.value);
+                        patch((d) => (d.reader.behavior.verticalMarginPx = v), 150);
+                      }}
+                      class="w-40 accent-rose-500 sm:w-48"
+                    />
+                  </div>
+
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.autoAppendNext}</div>
+                      <div class="desc">{t.autoAppendDesc}</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={s.reader.autoNextChapter}
+                      onchange={(e) => {
+                        const checked = e.currentTarget.checked;
+                        patch((d) => (d.reader.autoNextChapter = checked));
+                      }}
+                      class="h-4 w-4 accent-rose-500"
+                    />
+                  </div>
+                {:else}
+                  <!-- Horizontal Mode Controls -->
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.horizontalDirLabel}</div>
+                      <div class="desc">{t.horizontalDirDesc}</div>
+                    </div>
+                    <div class="flex flex-wrap gap-1.5">
+                      {#each [["ltr", t.dirLtr], ["rtl", t.dirRtl]] as [val, label] (val)}
+                        <button
+                          type="button"
+                          onclick={() =>
+                            patch((d) => (d.reader.horizontal.direction = val as HorizontalDirection))}
+                          class="pill"
+                          class:pill-active={s.reader.horizontal.direction === val}
+                        >
+                          {label}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.pagesPerGroupLabel}</div>
+                      <div class="desc">{t.pagesPerGroupDesc}</div>
+                    </div>
+                    <div class="flex items-center gap-1.5">
+                      {#each [1, 2, 3] as n (n)}
+                        <button
+                          type="button"
+                          onclick={() => patch((d) => (d.reader.horizontal.pagesPerGroup = n))}
+                          class="pill"
+                          class:pill-active={s.reader.horizontal.pagesPerGroup === n}
+                        >
+                          {n}
+                        </button>
+                      {/each}
+                      <input
+                        type="number"
+                        min="1"
+                        max="8"
+                        value={s.reader.horizontal.pagesPerGroup}
+                        onchange={(e) => {
+                          const v = Math.max(1, Math.min(8, Math.round(Number(e.currentTarget.value) || 1)));
+                          patch((d) => (d.reader.horizontal.pagesPerGroup = v));
+                        }}
+                        class="w-14 rounded-lg border px-2 py-1 text-center text-xs"
+                        style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.pageGapLabel(s.reader.horizontal.pageGapPx)}</div>
+                      <div class="desc">{t.pageGapDesc}</div>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="48"
+                      step="2"
+                      value={s.reader.horizontal.pageGapPx}
+                      oninput={(e) => {
+                        const v = Number(e.currentTarget.value);
+                        patch((d) => (d.reader.horizontal.pageGapPx = v), 150);
+                      }}
+                      class="w-40 accent-rose-500 sm:w-48"
+                    />
+                  </div>
+
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.groupGapLabel(s.reader.horizontal.groupGapPx)}</div>
+                      <div class="desc">{t.groupGapDesc}</div>
+                    </div>
+                    <input
+                      type="range"
+                      min="8"
+                      max="96"
+                      step="4"
+                      value={s.reader.horizontal.groupGapPx}
+                      oninput={(e) => {
+                        const v = Number(e.currentTarget.value);
+                        patch((d) => (d.reader.horizontal.groupGapPx = v), 150);
+                      }}
+                      class="w-40 accent-rose-500 sm:w-48"
+                    />
+                  </div>
+
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.snapModeLabel}</div>
+                      <div class="desc">{t.snapModeDesc}</div>
+                    </div>
+                    <div class="flex gap-1.5">
+                      {#each [["none", t.snapNone], ["page", t.snapPage], ["group", t.snapGroup]] as [val, label] (val)}
+                        <button
+                          type="button"
+                          onclick={() =>
+                            patch((d) => (d.reader.horizontal.snapMode = val as HorizontalSnapMode))}
+                          class="pill"
+                          class:pill-active={s.reader.horizontal.snapMode === val}
+                        >
+                          {label}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.centerGroupsLabel}</div>
+                      <div class="desc">{t.centerGroupsDesc}</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={s.reader.horizontal.centerGroups}
+                      onchange={(e) => {
+                        const checked = e.currentTarget.checked;
+                        patch((d) => (d.reader.horizontal.centerGroups = checked));
+                      }}
+                      class="h-4 w-4 accent-rose-500"
+                    />
+                  </div>
+                {/if}
+              </div>
+            {/if}
           </div>
         {/if}
 
-        <!-- Vertical side margin -->
-        <div class="row">
-          <div>
-            <div class="label">{t.verticalMarginLabel(s.reader.behavior.verticalMarginPx)}</div>
-            <div class="desc">{t.verticalMarginDesc}</div>
-          </div>
-          <input
-            type="range"
-            min="0"
-            max="64"
-            step="2"
-            value={s.reader.behavior.verticalMarginPx}
-            oninput={(e) => {
-              const v = Number(e.currentTarget.value);
-              patch((d) => (d.reader.behavior.verticalMarginPx = v), 150);
-            }}
-            class="w-40 accent-rose-500 sm:w-48"
-          />
-        </div>
-
-        <!-- Vertical focus dimming -->
-        <div class="row">
-          <div>
-            <div class="label">{t.dimUnfocusedLabel}</div>
-            <div class="desc">{t.dimUnfocusedDesc}</div>
-          </div>
-          <input
-            type="checkbox"
-            checked={s.reader.vertical.dimUnfocused}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
-              patch((d) => (d.reader.vertical.dimUnfocused = checked));
-            }}
-            class="h-4 w-4 accent-rose-500"
-          />
-        </div>
-
-        {#if s.reader.vertical.dimUnfocused}
-          <div class="row">
-            <div>
-              <div class="label">{t.dimLevelLabel(s.reader.vertical.dimLevel)}</div>
-              <div class="desc">{t.dimLevelDesc}</div>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="5"
-              value={s.reader.vertical.dimLevel}
-              oninput={(e) => {
-                const v = Number(e.currentTarget.value);
-                patch((d) => (d.reader.vertical.dimLevel = v), 120);
-              }}
-              class="w-40 accent-rose-500 sm:w-48"
-            />
-          </div>
-        {/if}
-
-        <div class="row">
-          <div>
-            <div class="label">{t.autoAppendNext}</div>
-            <div class="desc">{t.autoAppendDesc}</div>
-          </div>
-          <input
-            type="checkbox"
-            checked={s.reader.autoNextChapter}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
-              patch((d) => (d.reader.autoNextChapter = checked));
-            }}
-            class="h-4 w-4 accent-rose-500"
-          />
-        </div>
-      {:else}
-        <!-- Horizontal Mode Controls -->
-        <div class="row">
-          <div>
-            <div class="label">{t.horizontalDirLabel}</div>
-            <div class="desc">{t.horizontalDirDesc}</div>
-          </div>
-          <div class="flex flex-wrap gap-1.5">
-            {#each [["ltr", t.dirLtr], ["rtl", t.dirRtl]] as [val, label] (val)}
-              <button
-                type="button"
-                onclick={() =>
-                  patch((d) => (d.reader.horizontal.direction = val as HorizontalDirection))}
-                class="pill"
-                class:pill-active={s.reader.horizontal.direction === val}
-              >
-                {label}
-              </button>
-            {/each}
-          </div>
-        </div>
-
-        <div class="row">
-          <div>
-            <div class="label">{t.pagesPerGroupLabel}</div>
-            <div class="desc">{t.pagesPerGroupDesc}</div>
-          </div>
-          <div class="flex items-center gap-1.5">
-            {#each [1, 2, 3] as n (n)}
-              <button
-                type="button"
-                onclick={() => patch((d) => (d.reader.horizontal.pagesPerGroup = n))}
-                class="pill"
-                class:pill-active={s.reader.horizontal.pagesPerGroup === n}
-              >
-                {n}
-              </button>
-            {/each}
-            <input
-              type="number"
-              min="1"
-              max="8"
-              value={s.reader.horizontal.pagesPerGroup}
-              onchange={(e) => {
-                const v = Math.max(1, Math.min(8, Math.round(Number(e.currentTarget.value) || 1)));
-                patch((d) => (d.reader.horizontal.pagesPerGroup = v));
-              }}
-              class="w-14 rounded-lg border px-2 py-1 text-center text-xs"
-              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
-            />
-          </div>
-        </div>
-
-        <div class="row">
-          <div>
-            <div class="label">{t.pageGapLabel(s.reader.horizontal.pageGapPx)}</div>
-            <div class="desc">{t.pageGapDesc}</div>
-          </div>
-          <input
-            type="range"
-            min="0"
-            max="48"
-            step="2"
-            value={s.reader.horizontal.pageGapPx}
-            oninput={(e) => {
-              const v = Number(e.currentTarget.value);
-              patch((d) => (d.reader.horizontal.pageGapPx = v), 150);
-            }}
-            class="w-40 accent-rose-500 sm:w-48"
-          />
-        </div>
-
-        <div class="row">
-          <div>
-            <div class="label">{t.groupGapLabel(s.reader.horizontal.groupGapPx)}</div>
-            <div class="desc">{t.groupGapDesc}</div>
-          </div>
-          <input
-            type="range"
-            min="8"
-            max="96"
-            step="4"
-            value={s.reader.horizontal.groupGapPx}
-            oninput={(e) => {
-              const v = Number(e.currentTarget.value);
-              patch((d) => (d.reader.horizontal.groupGapPx = v), 150);
-            }}
-            class="w-40 accent-rose-500 sm:w-48"
-          />
-        </div>
-
-        <div class="row">
-          <div>
-            <div class="label">{t.snapModeLabel}</div>
-            <div class="desc">{t.snapModeDesc}</div>
-          </div>
-          <div class="flex gap-1.5">
-            {#each [["none", t.snapNone], ["page", t.snapPage], ["group", t.snapGroup]] as [val, label] (val)}
-              <button
-                type="button"
-                onclick={() =>
-                  patch((d) => (d.reader.horizontal.snapMode = val as HorizontalSnapMode))}
-                class="pill"
-                class:pill-active={s.reader.horizontal.snapMode === val}
-              >
-                {label}
-              </button>
-            {/each}
-          </div>
-        </div>
-
-        <div class="row">
-          <div>
-            <div class="label">{t.centerGroupsLabel}</div>
-            <div class="desc">{t.centerGroupsDesc}</div>
-          </div>
-          <input
-            type="checkbox"
-            checked={s.reader.horizontal.centerGroups}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
-              patch((d) => (d.reader.horizontal.centerGroups = checked));
-            }}
-            class="h-4 w-4 accent-rose-500"
-          />
-        </div>
-
-        <div class="row">
-          <div>
-            <div class="label">{t.dimUnfocusedLabel}</div>
-            <div class="desc">{t.dimUnfocusedDesc}</div>
-          </div>
-          <input
-            type="checkbox"
-            checked={s.reader.horizontal.dimUnfocused}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
-              patch((d) => (d.reader.horizontal.dimUnfocused = checked));
-            }}
-            class="h-4 w-4 accent-rose-500"
-          />
-        </div>
-
-        {#if s.reader.horizontal.dimUnfocused}
-          <div class="row">
-            <div>
-              <div class="label">{t.dimLevelLabel(s.reader.horizontal.dimLevel)}</div>
-              <div class="desc">{t.dimLevelDesc}</div>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="5"
-              value={s.reader.horizontal.dimLevel}
-              oninput={(e) => {
-                const v = Number(e.currentTarget.value);
-                patch((d) => (d.reader.horizontal.dimLevel = v), 120);
-              }}
-              class="w-40 accent-rose-500 sm:w-48"
-            />
-          </div>
-        {/if}
-      {/if}
-
-      <!-- Reader Interactions & Behavior -->
-      <div class="border-t pt-3" style="border-color: var(--border);">
-        <div class="flex flex-col gap-4">
-          <div class="row">
-            <div>
-              <div class="label">{t.doubleTapActionLabel}</div>
-              <div class="desc">{t.doubleTapActionDesc}</div>
-            </div>
-            <select
-              value={s.reader.behavior.doubleTapAction}
-              onchange={(e) => {
-                const action = e.currentTarget.value as DoubleTapAction;
-                patch((d) => (d.reader.behavior.doubleTapAction = action));
-              }}
-              class="rounded-lg border px-3 py-1.5 text-xs font-medium"
-              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+        <!-- Category 2: Display & Visuals -->
+        {#if !normalizedQuery || matchCatDisplay}
+          {@const openDisplay = isReaderCatOpen("display")}
+          <div class="cat-box">
+            <button
+              type="button"
+              onclick={() => toggleReaderCat("display")}
+              aria-expanded={openDisplay}
+              class="cat-trigger"
             >
-              <option value="zoom">{t.doubleTapZoom}</option>
-              <option value="toggle_toolbar">{t.doubleTapToggleToolbar}</option>
-              <option value="next_page">{t.doubleTapNextPage}</option>
-              <option value="disabled">{t.doubleTapDisabled}</option>
-            </select>
-          </div>
+              <div class="min-w-0 text-left">
+                <div class="text-xs font-semibold sm:text-sm">{t.readerCatDisplay}</div>
+                <div class="truncate text-[11px]" style="color: var(--text-muted);">
+                  {readerDisplaySummary()}
+                </div>
+              </div>
+              {#if openDisplay}
+                <ChevronUp size={16} class="shrink-0 opacity-70" />
+              {:else}
+                <ChevronDown size={16} class="shrink-0 opacity-70" />
+              {/if}
+            </button>
 
-          <div class="row">
-            <div>
-              <div class="label">{t.toolbarAutoHideLabel}</div>
-              <div class="desc">{t.toolbarAutoHideDesc}</div>
-            </div>
-            <select
-              value={s.reader.behavior.toolbarAutoHideSecs}
-              onchange={(e) => {
-                const secs = Number(e.currentTarget.value);
-                patch((d) => (d.reader.behavior.toolbarAutoHideSecs = secs));
-              }}
-              class="rounded-lg border px-3 py-1.5 text-xs font-medium"
-              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+            {#if openDisplay}
+              <div class="cat-body">
+                <div class="row">
+                  <div>
+                    <div class="label">{t.readerBg}</div>
+                    <div class="desc">{t.readerBgDesc}</div>
+                  </div>
+                  <div class="flex gap-1.5">
+                    {#each [["dark", t.bgDark], ["light", t.bgLight], ["follow_theme", t.bgAppTheme]] as [val, label] (val)}
+                      <button
+                        type="button"
+                        onclick={() => patch((d) => (d.reader.readerBg = val as ReaderBg))}
+                        class="pill"
+                        class:pill-active={s.reader.readerBg === val}
+                      >
+                        {label}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+
+                {#if !isHorizontal}
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.dimUnfocusedLabel}</div>
+                      <div class="desc">{t.dimUnfocusedDesc}</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={s.reader.vertical.dimUnfocused}
+                      onchange={(e) => {
+                        const checked = e.currentTarget.checked;
+                        patch((d) => (d.reader.vertical.dimUnfocused = checked));
+                      }}
+                      class="h-4 w-4 accent-rose-500"
+                    />
+                  </div>
+
+                  {#if s.reader.vertical.dimUnfocused}
+                    <div class="row">
+                      <div>
+                        <div class="label">{t.dimLevelLabel(s.reader.vertical.dimLevel)}</div>
+                        <div class="desc">{t.dimLevelDesc}</div>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="5"
+                        value={s.reader.vertical.dimLevel}
+                        oninput={(e) => {
+                          const v = Number(e.currentTarget.value);
+                          patch((d) => (d.reader.vertical.dimLevel = v), 120);
+                        }}
+                        class="w-40 accent-rose-500 sm:w-48"
+                      />
+                    </div>
+                  {/if}
+                {:else}
+                  <div class="row">
+                    <div>
+                      <div class="label">{t.dimUnfocusedLabel}</div>
+                      <div class="desc">{t.dimUnfocusedDesc}</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={s.reader.horizontal.dimUnfocused}
+                      onchange={(e) => {
+                        const checked = e.currentTarget.checked;
+                        patch((d) => (d.reader.horizontal.dimUnfocused = checked));
+                      }}
+                      class="h-4 w-4 accent-rose-500"
+                    />
+                  </div>
+
+                  {#if s.reader.horizontal.dimUnfocused}
+                    <div class="row">
+                      <div>
+                        <div class="label">{t.dimLevelLabel(s.reader.horizontal.dimLevel)}</div>
+                        <div class="desc">{t.dimLevelDesc}</div>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="5"
+                        value={s.reader.horizontal.dimLevel}
+                        oninput={(e) => {
+                          const v = Number(e.currentTarget.value);
+                          patch((d) => (d.reader.horizontal.dimLevel = v), 120);
+                        }}
+                        class="w-40 accent-rose-500 sm:w-48"
+                      />
+                    </div>
+                  {/if}
+                {/if}
+
+                <div class="row">
+                  <div>
+                    <div class="label">{t.autoWebtoonLabel}</div>
+                    <div class="desc">{t.autoWebtoonDesc}</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={s.reader.autoWebtoonDetect}
+                    onchange={(e) => {
+                      const checked = e.currentTarget.checked;
+                      patch((d) => (d.reader.autoWebtoonDetect = checked));
+                    }}
+                    class="h-4 w-4 accent-rose-500"
+                  />
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- Category 3: Controls & Gestures -->
+        {#if !normalizedQuery || matchCatControls}
+          {@const openControls = isReaderCatOpen("controls")}
+          <div class="cat-box">
+            <button
+              type="button"
+              onclick={() => toggleReaderCat("controls")}
+              aria-expanded={openControls}
+              class="cat-trigger"
             >
-              <option value={0}>{t.toolbarAutoHideOff}</option>
-              {#each [2, 3, 5, 8, 12] as sec (sec)}
-                <option value={sec}>{t.secondsOption(sec)}</option>
-              {/each}
-            </select>
-          </div>
+              <div class="min-w-0 text-left">
+                <div class="text-xs font-semibold sm:text-sm">{t.readerCatControls}</div>
+                <div class="truncate text-[11px]" style="color: var(--text-muted);">
+                  {readerControlsSummary()}
+                </div>
+              </div>
+              {#if openControls}
+                <ChevronUp size={16} class="shrink-0 opacity-70" />
+              {:else}
+                <ChevronDown size={16} class="shrink-0 opacity-70" />
+              {/if}
+            </button>
 
-          <div class="row">
-            <div>
-              <div class="label">{t.keepScreenOnLabel}</div>
-              <div class="desc">{t.keepScreenOnDesc}</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={s.reader.behavior.keepScreenOn}
-              onchange={(e) => {
-                const checked = e.currentTarget.checked;
-                patch((d) => (d.reader.behavior.keepScreenOn = checked));
-              }}
-              class="h-4 w-4 accent-rose-500"
-            />
-          </div>
+            {#if openControls}
+              <div class="cat-body">
+                <div class="row">
+                  <div>
+                    <div class="label">{t.doubleTapActionLabel}</div>
+                    <div class="desc">{t.doubleTapActionDesc}</div>
+                  </div>
+                  <select
+                    value={s.reader.behavior.doubleTapAction}
+                    onchange={(e) => {
+                      const action = e.currentTarget.value as DoubleTapAction;
+                      patch((d) => (d.reader.behavior.doubleTapAction = action));
+                    }}
+                    class="rounded-lg border px-3 py-1.5 text-xs font-medium"
+                    style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+                  >
+                    <option value="zoom">{t.doubleTapZoom}</option>
+                    <option value="toggle_toolbar">{t.doubleTapToggleToolbar}</option>
+                    <option value="next_page">{t.doubleTapNextPage}</option>
+                    <option value="disabled">{t.doubleTapDisabled}</option>
+                  </select>
+                </div>
 
-          <div class="row">
-            <div>
-              <div class="label">{t.skipBrokenImagesLabel}</div>
-              <div class="desc">{t.skipBrokenImagesDesc}</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={s.reader.behavior.skipBrokenImages}
-              onchange={(e) => {
-                const checked = e.currentTarget.checked;
-                patch((d) => (d.reader.behavior.skipBrokenImages = checked));
-              }}
-              class="h-4 w-4 accent-rose-500"
-            />
-          </div>
+                <div class="row">
+                  <div>
+                    <div class="label">{t.tapZonesLabel}</div>
+                    <div class="desc">{t.tapZonesDesc}</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={s.reader.tapZonesEnabled}
+                    onchange={(e) => {
+                      const checked = e.currentTarget.checked;
+                      patch((d) => (d.reader.tapZonesEnabled = checked));
+                    }}
+                    class="h-4 w-4 accent-rose-500"
+                  />
+                </div>
 
-          <div class="row">
-            <div>
-              <div class="label">{t.autoMarkReadLabel}</div>
-              <div class="desc">{t.autoMarkReadDesc}</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={s.reader.behavior.autoMarkReadOnOpen}
-              onchange={(e) => {
-                const checked = e.currentTarget.checked;
-                patch((d) => (d.reader.behavior.autoMarkReadOnOpen = checked));
-              }}
-              class="h-4 w-4 accent-rose-500"
-            />
-          </div>
+                <div class="row">
+                  <div>
+                    <div class="label">{t.toolbarAutoHideLabel}</div>
+                    <div class="desc">{t.toolbarAutoHideDesc}</div>
+                  </div>
+                  <select
+                    value={s.reader.behavior.toolbarAutoHideSecs}
+                    onchange={(e) => {
+                      const secs = Number(e.currentTarget.value);
+                      patch((d) => (d.reader.behavior.toolbarAutoHideSecs = secs));
+                    }}
+                    class="rounded-lg border px-3 py-1.5 text-xs font-medium"
+                    style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+                  >
+                    <option value={0}>{t.toolbarAutoHideOff}</option>
+                    {#each [2, 3, 5, 8, 12] as sec (sec)}
+                      <option value={sec}>{t.secondsOption(sec)}</option>
+                    {/each}
+                  </select>
+                </div>
 
-          <div class="row">
-            <div>
-              <div class="label">{t.autoWebtoonLabel}</div>
-              <div class="desc">{t.autoWebtoonDesc}</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={s.reader.autoWebtoonDetect}
-              onchange={(e) => {
-                const checked = e.currentTarget.checked;
-                patch((d) => (d.reader.autoWebtoonDetect = checked));
-              }}
-              class="h-4 w-4 accent-rose-500"
-            />
+                <div class="row">
+                  <div>
+                    <div class="label">{t.keepScreenOnLabel}</div>
+                    <div class="desc">{t.keepScreenOnDesc}</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={s.reader.behavior.keepScreenOn}
+                    onchange={(e) => {
+                      const checked = e.currentTarget.checked;
+                      patch((d) => (d.reader.behavior.keepScreenOn = checked));
+                    }}
+                    class="h-4 w-4 accent-rose-500"
+                  />
+                </div>
+              </div>
+            {/if}
           </div>
+        {/if}
 
-          <div class="row">
-            <div>
-              <div class="label">{t.tapZonesLabel}</div>
-              <div class="desc">{t.tapZonesDesc}</div>
-            </div>
-            <input
-              type="checkbox"
-              checked={s.reader.tapZonesEnabled}
-              onchange={(e) => {
-                const checked = e.currentTarget.checked;
-                patch((d) => (d.reader.tapZonesEnabled = checked));
-              }}
-              class="h-4 w-4 accent-rose-500"
-            />
-          </div>
+        <!-- Category 4: Reading & Performance -->
+        {#if !normalizedQuery || matchCatBehavior}
+          {@const openBehavior = isReaderCatOpen("behavior")}
+          <div class="cat-box">
+            <button
+              type="button"
+              onclick={() => toggleReaderCat("behavior")}
+              aria-expanded={openBehavior}
+              class="cat-trigger"
+            >
+              <div class="min-w-0 text-left">
+                <div class="text-xs font-semibold sm:text-sm">{t.readerCatBehavior}</div>
+                <div class="truncate text-[11px]" style="color: var(--text-muted);">
+                  {readerBehaviorSummary()}
+                </div>
+              </div>
+              {#if openBehavior}
+                <ChevronUp size={16} class="shrink-0 opacity-70" />
+              {:else}
+                <ChevronDown size={16} class="shrink-0 opacity-70" />
+              {/if}
+            </button>
 
-          <div class="row">
-            <div>
-              <div class="label">{t.preloadLabel(s.reader.preloadImages)}</div>
-              <div class="desc">{t.preloadDesc}</div>
-            </div>
-            <input
-              type="range"
-              min="5"
-              max="8"
-              step="1"
-              value={s.reader.preloadImages}
-              oninput={(e) => {
-                const v = Number(e.currentTarget.value);
-                patch((d) => (d.reader.preloadImages = v), 150);
-              }}
-              class="w-40 accent-rose-500 sm:w-48"
-            />
-          </div>
+            {#if openBehavior}
+              <div class="cat-body">
+                <div class="row">
+                  <div>
+                    <div class="label">{t.autoMarkReadLabel}</div>
+                    <div class="desc">{t.autoMarkReadDesc}</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={s.reader.behavior.autoMarkReadOnOpen}
+                    onchange={(e) => {
+                      const checked = e.currentTarget.checked;
+                      patch((d) => (d.reader.behavior.autoMarkReadOnOpen = checked));
+                    }}
+                    class="h-4 w-4 accent-rose-500"
+                  />
+                </div>
 
-          <div class="row">
-            <div>
-              <div class="label">{t.readerBg}</div>
-              <div class="desc">{t.readerBgDesc}</div>
-            </div>
-            <div class="flex gap-1.5">
-              {#each [["dark", t.bgDark], ["light", t.bgLight], ["follow_theme", t.bgAppTheme]] as [val, label] (val)}
-                <button
-                  type="button"
-                  onclick={() => patch((d) => (d.reader.readerBg = val as ReaderBg))}
-                  class="pill"
-                  class:pill-active={s.reader.readerBg === val}
-                >
-                  {label}
-                </button>
-              {/each}
-            </div>
+                <div class="row">
+                  <div>
+                    <div class="label">{t.skipBrokenImagesLabel}</div>
+                    <div class="desc">{t.skipBrokenImagesDesc}</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={s.reader.behavior.skipBrokenImages}
+                    onchange={(e) => {
+                      const checked = e.currentTarget.checked;
+                      patch((d) => (d.reader.behavior.skipBrokenImages = checked));
+                    }}
+                    class="h-4 w-4 accent-rose-500"
+                  />
+                </div>
+
+                <div class="row">
+                  <div>
+                    <div class="label">{t.preloadLabel(s.reader.preloadImages)}</div>
+                    <div class="desc">{t.preloadDesc}</div>
+                  </div>
+                  <input
+                    type="range"
+                    min="5"
+                    max="8"
+                    step="1"
+                    value={s.reader.preloadImages}
+                    oninput={(e) => {
+                      const v = Number(e.currentTarget.value);
+                      patch((d) => (d.reader.preloadImages = v), 150);
+                    }}
+                    class="w-40 accent-rose-500 sm:w-48"
+                  />
+                </div>
+              </div>
+            {/if}
           </div>
-        </div>
+        {/if}
       </div>
     </section>
   {/if}
 
   <!-- Floating Controls Customization -->
   {#if showFloating}
-    <section class="settings-card">
+    <section id="settings-floating" class="settings-card">
       <div class="section-header">
         <div>
           <h2 class="section-title">{t.floatingSection}</h2>
@@ -1310,7 +1547,9 @@
 
   <!-- Provider-Based Network Protection (Encrypted DNS + Advanced Proxy) -->
   {#if showNetwork}
-    <NetworkProtectionPanel />
+    <div id="settings-network">
+      <NetworkProtectionPanel />
+    </div>
   {/if}
 
   <!-- Updates -->
@@ -2060,5 +2299,39 @@
     border-color: var(--accent);
     background-color: var(--accent-soft);
     color: var(--accent);
+  }
+
+  .cat-box {
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background-color: var(--surface-subtle);
+    overflow: hidden;
+  }
+
+  .cat-trigger {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.75rem 0.9rem;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    cursor: pointer;
+    transition: background-color 140ms ease;
+  }
+
+  .cat-trigger:hover {
+    background-color: var(--surface-hover);
+  }
+
+  .cat-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.95rem;
+    padding: 0.9rem;
+    border-top: 1px solid var(--border);
+    background-color: var(--surface);
   }
 </style>

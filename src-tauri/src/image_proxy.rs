@@ -73,7 +73,7 @@ pub(crate) fn encode_cover_token(
     let derived_site = site.map(str::to_owned).or_else(|| {
         Url::parse(referer_url).ok().and_then(|u| {
             u.host_str()
-                .map(|h| h.trim_start_matches("www.").to_owned())
+                .map(|h| h.trim_start_matches("www.").to_ascii_lowercase())
         })
     });
     let payload = TokenPayload {
@@ -125,8 +125,12 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
     };
 
     let cache_key = ImageCache::key_for_url(&payload.u);
+    let meta = CacheEntryMeta {
+        site: payload.s.as_deref(),
+        manga_id: payload.m,
+    };
 
-    if !bypass_cache && let Some(hit) = state.images.get(&cache_key).await {
+    if !bypass_cache && let Some(hit) = state.images.get(&cache_key, meta.clone()).await {
         return image_ok_response(hit.bytes.to_vec(), &hit.content_type);
     }
 
@@ -136,7 +140,7 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
     } else {
         let guard = state.images.begin_single_flight(&cache_key).await;
         if guard.is_none()
-            && let Some(hit) = state.images.get(&cache_key).await
+            && let Some(hit) = state.images.get(&cache_key, meta.clone()).await
         {
             return image_ok_response(hit.bytes.to_vec(), &hit.content_type);
         }

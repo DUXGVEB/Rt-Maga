@@ -17,8 +17,8 @@
 </script>
 
 <aside
-  class="hidden h-full w-56 shrink-0 flex-col justify-between border-r px-3 py-5 select-none md:flex"
-  style="background-color: var(--surface); border-color: var(--border);"
+  class="hidden h-full w-56 shrink-0 flex-col justify-between overflow-y-auto border-r select-none md:flex"
+  style="padding-top: calc(1.25rem + var(--safe-top)); padding-bottom: calc(1.25rem + var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: 0.75rem; background-color: var(--surface); border-color: var(--border);"
 >
   <div class="flex flex-col gap-6">
     <!-- Brand + Bell Notification Center -->

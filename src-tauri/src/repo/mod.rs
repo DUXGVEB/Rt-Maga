@@ -889,6 +889,222 @@ mod tests {
         assert_eq!(s.sources.speed_limit_kbps, 0);
         assert_eq!(s.theme, Theme::Dark);
 
+        // Pre-existing cache row with NULL site/manga_id must be backfilled on cache hit.
+        let unattributed_key = ImageCache::key_for_url("https://cdn.example.com/unattributed.png");
+        cache
+            .put(
+                &unattributed_key,
+                &payload,
+                "image/png",
+                512,
+                CacheEntryMeta::default(),
+            )
+            .await;
+        let hit = cache
+            .get(
+                &unattributed_key,
+                CacheEntryMeta {
+                    site: Some("example.com"),
+                    manga_id: Some(id),
+                },
+            )
+            .await;
+        assert!(hit.is_some());
+        assert_eq!(cache.list_by_manga().await.unwrap().len(), 1);
+
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn single_chapter_fallback_preserves_multi_chapter_metadata_and_read_flags() {
+        let db = Database::open_in_memory().await.unwrap();
+        let multi = Manga {
+            url: Url::parse("https://example.com/series/multi-guard").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Original Series Title".to_owned(),
+            cover: None,
+            chapters: vec![
+                ChapterRef {
+                    url: Url::parse("https://example.com/series/multi-guard/chap-1").unwrap(),
+                    name: "Chapter 1".to_owned(),
+                    number: Some(1.0),
+                },
+                ChapterRef {
+                    url: Url::parse("https://example.com/series/multi-guard/chap-2").unwrap(),
+                    name: "Chapter 2".to_owned(),
+                    number: Some(2.0),
+                },
+            ],
+        };
+        let id = db.upsert_manga(&multi).await.unwrap();
+        db.mark_chapter_read(id, "https://example.com/series/multi-guard/chap-1")
+            .await
+            .unwrap();
+
+        let single_fallback = Manga {
+            url: Url::parse("https://example.com/series/multi-guard").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Original Series Title - Chapter 1".to_owned(),
+            cover: None,
+            chapters: vec![ChapterRef {
+                url: Url::parse("https://example.com/series/multi-guard/chap-1/").unwrap(),
+                name: "Chapter 1".to_owned(),
+                number: Some(1.0),
+            }],
+        };
+        db.upsert_manga_with_id(Some(id), &single_fallback)
+            .await
+            .unwrap();
+        let row = db.get_manga_by_id(id).await.unwrap().unwrap();
+        assert_eq!(row.title, "Original Series Title");
+        assert_eq!(row.latest_chapter_name.as_deref(), Some("Chapter 2"));
+        let chaps = db.list_chapters(id).await.unwrap();
+        assert_eq!(chaps.len(), 2);
+        assert_eq!(
+            chaps[0].read, 1,
+            "trailing-slash variant must preserve read=1"
+        );
+    }
+
+    #[tokio::test]
+    async fn hidden_isolation_and_last_reading_skip_completed() {
+        use crate::repo::manga::HideAction;
+
+        let db = Database::open_in_memory().await.unwrap();
+        let active_series = Manga {
+            url: Url::parse("https://example.com/series/active-guard").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Active Guard".to_owned(),
+            cover: None,
+            chapters: vec![
+                ChapterRef {
+                    url: Url::parse("https://example.com/series/active-guard/chap-1").unwrap(),
+                    name: "Chapter 1".to_owned(),
+                    number: Some(1.0),
+                },
+                ChapterRef {
+                    url: Url::parse("https://example.com/series/active-guard/chap-2").unwrap(),
+                    name: "Chapter 2".to_owned(),
+                    number: Some(2.0),
+                },
+            ],
+        };
+        let id = db.upsert_manga(&active_series).await.unwrap();
+        db.save_history(
+            id,
+            "https://example.com/series/active-guard/chap-1",
+            "Chapter 1",
+            0.4,
+            2,
+        )
+        .await
+        .unwrap();
+
+        let completed_series = Manga {
+            url: Url::parse("https://example.com/series/done-series").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Done Series".to_owned(),
+            cover: None,
+            chapters: vec![ChapterRef {
+                url: Url::parse("https://example.com/series/done-series/chap-1").unwrap(),
+                name: "Chapter 1".to_owned(),
+                number: Some(1.0),
+            }],
+        };
+        let done_id = db.upsert_manga(&completed_series).await.unwrap();
+        db.save_history(
+            done_id,
+            "https://example.com/series/done-series/chap-1",
+            "Chapter 1",
+            1.0,
+            10,
+        )
+        .await
+        .unwrap();
+        db.mark_chapter_read(done_id, "https://example.com/series/done-series/chap-1")
+            .await
+            .unwrap();
+
+        let dest = db.get_last_reading_destination().await.unwrap().unwrap();
+        assert_eq!(dest.manga_id, id);
+
+        let row = db.get_manga_by_id(id).await.unwrap().unwrap();
+        db.record_chapter_notification(&row, &active_series.chapters[1..])
+            .await
+            .unwrap();
+        db.upsert_reader_session(
+            id,
+            "https://example.com/series/active-guard/chap-1",
+            "Chapter 1",
+            0.4,
+            2,
+            "vertical",
+        )
+        .await
+        .unwrap();
+        db.set_manga_hidden(id, HideAction::Hide).await.unwrap();
+        assert!(db.get_crash_recovery_session().await.unwrap().is_none());
+        assert!(
+            db.list_targets_for_updates()
+                .await
+                .unwrap()
+                .iter()
+                .all(|m| m.id != id)
+        );
+        assert!(db.list_notifications().await.unwrap().is_empty());
+        assert!(
+            db.export_sync_bundle("PC")
+                .await
+                .unwrap()
+                .manga
+                .iter()
+                .all(|m| m.title != "Active Guard")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_last_reading_destination_ignores_removed_history() {
+        let db = Database::open_in_memory().await.unwrap();
+        let manga = Manga {
+            url: Url::parse("https://example.com/series/removed-hist").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Removed History Series".to_owned(),
+            cover: None,
+            chapters: vec![
+                ChapterRef {
+                    url: Url::parse("https://example.com/series/removed-hist/chap-1").unwrap(),
+                    name: "Chapter 1".to_owned(),
+                    number: Some(1.0),
+                },
+                ChapterRef {
+                    url: Url::parse("https://example.com/series/removed-hist/chap-2").unwrap(),
+                    name: "Chapter 2".to_owned(),
+                    number: Some(2.0),
+                },
+            ],
+        };
+        let id = db.upsert_manga(&manga).await.unwrap();
+        db.save_history(
+            id,
+            "https://example.com/series/removed-hist/chap-1",
+            "Chapter 1",
+            0.3,
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.get_last_reading_destination()
+                .await
+                .unwrap()
+                .map(|d| d.manga_id),
+            Some(id)
+        );
+
+        db.remove_history(id).await.unwrap();
+        assert!(
+            db.get_last_reading_destination().await.unwrap().is_none(),
+            "removed history item must not be resurrected by LAST_READING_KEY"
+        );
     }
 }

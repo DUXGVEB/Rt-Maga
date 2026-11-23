@@ -76,3 +76,12 @@ body,
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
+
+/* On desktop/landscape viewports where the mobile Top App Bar is hidden and Sidebar is shown,
+   preserve top safe-area clearance inside <main>. On mobile (<768px), the Top App Bar itself
+   paints seamlessly behind --safe-top so <main> needs zero extra top padding. */
+@media (min-width: 768px) {
+  .main-desktop-safe-top {
+    padding-top: var(--safe-top);
+  }
+}

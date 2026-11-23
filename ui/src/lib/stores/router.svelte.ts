@@ -1,4 +1,5 @@
 import { api } from "../api";
+import type { SettingsSection } from "../types";
 import { settingsStore } from "./settings.svelte";
 import { toasts } from "./toast.svelte";
 
@@ -14,7 +15,7 @@ export type Route =
       pageIndex?: number;
     }
   | { name: "history" }
-  | { name: "settings" };
+  | { name: "settings"; section?: SettingsSection };
 
 type BackInterceptor = () => boolean;
 
@@ -26,6 +27,9 @@ function routesEqual(a: Route, b: Route): boolean {
   if (a.name === "manga" && b.name === "manga") return a.id === b.id;
   if (a.name === "reader" && b.name === "reader") {
     return a.mangaId === b.mangaId && a.chapterUrl === b.chapterUrl;
+  }
+  if (a.name === "settings" && b.name === "settings") {
+    return a.section === b.section;
   }
   return true;
 }
@@ -126,8 +130,19 @@ class RouterStore {
     toasts.push(settingsStore.t.historyNoResumeTarget, "info", 2200);
   }
 
-  goSettings() {
-    this.pushAndSet({ name: "settings" });
+  updateCurrentReaderPosition(chapterUrl: string, scrollRatio: number, pageIndex: number) {
+    if (this.current.name === "reader") {
+      this.current = {
+        ...this.current,
+        chapterUrl,
+        scrollRatio,
+        pageIndex,
+      };
+    }
+  }
+
+  goSettings(section?: SettingsSection) {
+    this.pushAndSet({ name: "settings", section });
   }
 
   /**

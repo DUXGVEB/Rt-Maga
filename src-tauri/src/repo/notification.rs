@@ -206,14 +206,19 @@ impl Database {
         }))
     }
 
-    /// Lists stored notifications newest first.
+    /// Lists stored notifications newest first (excluding hidden manga).
     ///
     /// # Errors
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
     pub(crate) async fn list_notifications(&self) -> Result<Vec<NotificationRow>, AppError> {
         let rows = sqlx::query_as::<_, NotificationRow>(
-            "SELECT * FROM notification ORDER BY created_at DESC, id DESC LIMIT ?",
+            "SELECT n.*
+             FROM notification n
+             INNER JOIN manga m ON m.id = n.manga_id
+             WHERE m.hidden = 0
+             ORDER BY n.created_at DESC, n.id DESC
+             LIMIT ?",
         )
         .bind(MAX_STORED_NOTIFICATIONS)
         .fetch_all(self.pool())

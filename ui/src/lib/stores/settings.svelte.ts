@@ -21,7 +21,7 @@ export const DEFAULT_SETTINGS: Settings = {
   reader: {
     orientation: "vertical",
     width: { mode: "px", value: 800 },
-    gapPx: 0,
+    gapPx: 8,
     preloadImages: 6,
     autoNextChapter: true,
     autoWebtoonDetect: true,
@@ -31,7 +31,7 @@ export const DEFAULT_SETTINGS: Settings = {
     vertical: {
       layoutMode: "continuous_strip",
       pagesPerGroup: 2,
-      pageGapPx: 0,
+      pageGapPx: 8,
       groupGapPx: 32,
       snapEnabled: true,
       alignment: "center",
@@ -261,10 +261,17 @@ class SettingsStore {
   }
 
   async resetSection(section: SettingsSection) {
+    if (this.saveTimer !== null) {
+      window.clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    const version = ++this.saveVersion;
     try {
       const saved = await api.resetSettingsSection(section);
-      this.value = mergeSettings(saved);
-      this.applyAppearance(this.value.theme, this.value.language);
+      if (version === this.saveVersion && this.saveTimer === null) {
+        this.value = mergeSettings(saved);
+        this.applyAppearance(this.value.theme, this.value.language);
+      }
       toasts.push(this.t.toastSectionReset, "success", 2000);
     } catch {
       toasts.push(this.t.toastSettingsSaveFailed, "error");
@@ -272,10 +279,17 @@ class SettingsStore {
   }
 
   async resetAll() {
+    if (this.saveTimer !== null) {
+      window.clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    const version = ++this.saveVersion;
     try {
       const saved = await api.resetAllSettings();
-      this.value = mergeSettings(saved);
-      this.applyAppearance(this.value.theme, this.value.language);
+      if (version === this.saveVersion && this.saveTimer === null) {
+        this.value = mergeSettings(saved);
+        this.applyAppearance(this.value.theme, this.value.language);
+      }
       toasts.push(this.t.toastAllSettingsReset, "success", 2400);
     } catch {
       toasts.push(this.t.toastSettingsSaveFailed, "error");

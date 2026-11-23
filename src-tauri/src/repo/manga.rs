@@ -89,24 +89,49 @@ impl Database {
             .map(|(found,)| found)
         };
 
+        let stored_urls: Vec<(String,)> = if let Some(id) = existing_id {
+            sqlx::query_as("SELECT url FROM chapter WHERE manga_id = ?")
+                .bind(id)
+                .fetch_all(&mut *tx)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let is_single_chapter_fallback =
+            existing_id.is_some() && manga.chapters.len() == 1 && stored_urls.len() > 1;
+
         let manga_id = if let Some(id) = existing_id {
-            sqlx::query(
-                "UPDATE manga
-                 SET site = ?, title = ?, cover_url = COALESCE(?, cover_url),
-                     latest_chapter_url = COALESCE(?, latest_chapter_url),
-                     latest_chapter_name = COALESCE(?, latest_chapter_name),
-                     updated_at = ?
-                 WHERE id = ?",
-            )
-            .bind(&site)
-            .bind(&manga.title)
-            .bind(cover)
-            .bind(latest_url)
-            .bind(latest_name)
-            .bind(now)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+            if is_single_chapter_fallback {
+                sqlx::query(
+                    "UPDATE manga
+                     SET cover_url = COALESCE(?, cover_url),
+                         updated_at = ?
+                     WHERE id = ?",
+                )
+                .bind(cover)
+                .bind(now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query(
+                    "UPDATE manga
+                     SET site = ?, title = ?, cover_url = COALESCE(?, cover_url),
+                         latest_chapter_url = COALESCE(?, latest_chapter_url),
+                         latest_chapter_name = COALESCE(?, latest_chapter_name),
+                         updated_at = ?
+                     WHERE id = ?",
+                )
+                .bind(&site)
+                .bind(&manga.title)
+                .bind(cover)
+                .bind(latest_url)
+                .bind(latest_name)
+                .bind(now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            }
             id
         } else {
             let res = sqlx::query(
@@ -126,47 +151,108 @@ impl Database {
             res.last_insert_rowid()
         };
 
+        Self::sync_upserted_chapters(&mut tx, manga_id, existing_id, manga, &stored_urls).await?;
+
+        tx.commit().await?;
+        Ok(manga_id)
+    }
+
+    async fn sync_upserted_chapters(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        manga_id: i64,
+        existing_id: Option<i64>,
+        manga: &Manga,
+        stored_urls: &[(String,)],
+    ) -> Result<(), AppError> {
+        let is_single_chapter_fallback =
+            existing_id.is_some() && manga.chapters.len() == 1 && stored_urls.len() > 1;
+
+        if is_single_chapter_fallback {
+            if let Some(ch) = manga.chapters.first() {
+                let norm = ch.url.as_str().trim_end_matches('/');
+                let already = stored_urls
+                    .iter()
+                    .any(|(u,)| u.trim_end_matches('/') == norm);
+                if !already {
+                    let next_idx = i64::try_from(stored_urls.len()).unwrap_or(i64::MAX);
+                    sqlx::query(
+                        "INSERT INTO chapter (manga_id, url, name, number, idx, read)
+                         VALUES (?, ?, ?, ?, ?, 0)
+                         ON CONFLICT(manga_id, url) DO NOTHING",
+                    )
+                    .bind(manga_id)
+                    .bind(ch.url.as_str())
+                    .bind(&ch.name)
+                    .bind(ch.number.map(f64::from))
+                    .bind(next_idx)
+                    .execute(&mut **tx)
+                    .await?;
+                }
+            }
+            return Ok(());
+        }
+
         for (i, ch) in manga.chapters.iter().enumerate() {
             let idx = i64::try_from(i).unwrap_or(i64::MAX);
             let num = ch.number.map(f64::from);
-            sqlx::query(
-                "INSERT INTO chapter (manga_id, url, name, number, idx, read)
-                 VALUES (?, ?, ?, ?, ?, 0)
-                 ON CONFLICT(manga_id, url) DO UPDATE SET
-                    name = excluded.name,
-                    number = excluded.number,
-                    idx = excluded.idx",
+            // Update in-place if a trailing-slash variant already exists so `read` flag is preserved.
+            let updated = sqlx::query(
+                "UPDATE chapter
+                 SET url = ?, name = ?, number = ?, idx = ?
+                 WHERE manga_id = ? AND RTRIM(url, '/') = RTRIM(?, '/')",
             )
-            .bind(manga_id)
             .bind(ch.url.as_str())
             .bind(&ch.name)
             .bind(num)
             .bind(idx)
-            .execute(&mut *tx)
+            .bind(manga_id)
+            .bind(ch.url.as_str())
+            .execute(&mut **tx)
             .await?;
+
+            if updated.rows_affected() == 0 {
+                sqlx::query(
+                    "INSERT INTO chapter (manga_id, url, name, number, idx, read)
+                     VALUES (?, ?, ?, ?, ?, 0)
+                     ON CONFLICT(manga_id, url) DO UPDATE SET
+                        name = excluded.name,
+                        number = excluded.number,
+                        idx = excluded.idx",
+                )
+                .bind(manga_id)
+                .bind(ch.url.as_str())
+                .bind(&ch.name)
+                .bind(num)
+                .bind(idx)
+                .execute(&mut **tx)
+                .await?;
+            }
         }
 
         // Prune stale chapter rows if a site renamed or removed old chapter slugs on a full listing.
         if manga.chapters.len() > 1 {
-            let valid_urls: HashSet<&str> = manga.chapters.iter().map(|c| c.url.as_str()).collect();
-            let stored_urls: Vec<(String,)> =
+            let valid_norms: HashSet<&str> = manga
+                .chapters
+                .iter()
+                .map(|c| c.url.as_str().trim_end_matches('/'))
+                .collect();
+            let current_urls: Vec<(String,)> =
                 sqlx::query_as("SELECT url FROM chapter WHERE manga_id = ?")
                     .bind(manga_id)
-                    .fetch_all(&mut *tx)
+                    .fetch_all(&mut **tx)
                     .await?;
-            for (stored_url,) in stored_urls {
-                if !valid_urls.contains(stored_url.as_str()) {
+            for (stored_url,) in current_urls {
+                if !valid_norms.contains(stored_url.trim_end_matches('/')) {
                     sqlx::query("DELETE FROM chapter WHERE manga_id = ? AND url = ?")
                         .bind(manga_id)
                         .bind(&stored_url)
-                        .execute(&mut *tx)
+                        .execute(&mut **tx)
                         .await?;
                 }
             }
         }
 
-        tx.commit().await?;
-        Ok(manga_id)
+        Ok(())
     }
 
     /// Loads a manga row by its numeric primary key.
@@ -304,7 +390,7 @@ impl Database {
              FROM manga m
              LEFT JOIN bookmark b ON b.manga_id = m.id
              LEFT JOIN history h ON h.manga_id = m.id
-             WHERE b.manga_id IS NOT NULL OR h.manga_id IS NOT NULL
+             WHERE m.hidden = 0 AND (b.manga_id IS NOT NULL OR h.manga_id IS NOT NULL)
              ORDER BY
                 CASE WHEN b.manga_id IS NOT NULL THEN 0 ELSE 1 END ASC,
                 COALESCE(h.read_at, b.created_at, m.updated_at) DESC",
@@ -384,6 +470,12 @@ impl Database {
             .bind(manga_id)
             .execute(self.pool())
             .await?;
+        if action == HideAction::Hide {
+            sqlx::query("UPDATE reader_session SET active = 0 WHERE id = 1 AND manga_id = ?")
+                .bind(manga_id)
+                .execute(self.pool())
+                .await?;
+        }
         Ok(val == 1)
     }
 
@@ -451,14 +543,29 @@ impl Database {
     }
 
     /// Deletes cached manga records that are NOT in reading history, bookmarks, or hidden
-    /// and haven't been updated for `max_age_days`.
+    /// and haven't been updated for `max_age_days`, returning their IDs for disk cache cleanup.
     ///
     /// # Errors
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
-    pub(crate) async fn prune_stale_manga(&self, max_age_days: i64) -> Result<u64, AppError> {
+    pub(crate) async fn prune_stale_manga(&self, max_age_days: i64) -> Result<Vec<i64>, AppError> {
         let cutoff = now_unix_secs().saturating_sub(max_age_days.saturating_mul(86_400));
-        let res = sqlx::query(
+        let stale_ids: Vec<(i64,)> = sqlx::query_as(
+            "SELECT id FROM manga
+             WHERE updated_at < ?
+               AND hidden = 0
+               AND id NOT IN (SELECT manga_id FROM history)
+               AND id NOT IN (SELECT manga_id FROM bookmark)",
+        )
+        .bind(cutoff)
+        .fetch_all(self.pool())
+        .await?;
+
+        if stale_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        sqlx::query(
             "DELETE FROM manga
              WHERE updated_at < ?
                AND hidden = 0
@@ -468,6 +575,7 @@ impl Database {
         .bind(cutoff)
         .execute(self.pool())
         .await?;
-        Ok(res.rows_affected())
+
+        Ok(stale_ids.into_iter().map(|(id,)| id).collect())
     }
 }

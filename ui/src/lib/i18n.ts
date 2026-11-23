@@ -2831,6 +2831,21 @@ export interface V4Dictionary {
   resetAllBtn: string;
   resetAllConfirmTitle: string;
   resetAllConfirmDesc: string;
+
+  // Second-pass polish: DNS disabled banner, collapsible reader categories, floating long-press
+  netSystemDnsActiveNote: string;
+  netMissingAccountIdWarn: string;
+  readerCatLayout: string;
+  readerCatDisplay: string;
+  readerCatControls: string;
+  readerCatBehavior: string;
+  openFullSettingsBtn: string;
+  longPressConfigHint: string;
+  scrollTopQuickConfigTitle: string;
+  orientationQuickConfigTitle: string;
+  orientationCurrentMode: string;
+  buttonVisibilityLabel: string;
+  noGapWebtoonHint: string;
 }
 
 const V4_EN: V4Dictionary = {
@@ -2943,6 +2958,22 @@ const V4_EN: V4Dictionary = {
   resetAllConfirmTitle: "Reset all settings to defaults?",
   resetAllConfirmDesc:
     "All appearance, reader, floating controls, network, and source preferences will be reset to defaults. Your manga library, chapters, reading history, bookmarks, and image cache will NOT be deleted.",
+
+  netSystemDnsActiveNote:
+    "System DNS is active — custom encrypted DNS is disabled. Switch to Encrypted DNS to choose a provider.",
+  netMissingAccountIdWarn:
+    "Enter your Profile ID above before enabling this provider, or allow system DNS fallback.",
+  readerCatLayout: "Layout & Spacing",
+  readerCatDisplay: "Display & Visuals",
+  readerCatControls: "Controls & Gestures",
+  readerCatBehavior: "Reading & Performance",
+  openFullSettingsBtn: "Open full settings",
+  longPressConfigHint: "Hold to configure",
+  scrollTopQuickConfigTitle: "Scroll-to-Top Button",
+  orientationQuickConfigTitle: "Screen Rotation",
+  orientationCurrentMode: "Screen orientation",
+  buttonVisibilityLabel: "Show floating button",
+  noGapWebtoonHint: "Auto Webtoon",
 };
 
 const V4_VI: V4Dictionary = {
@@ -3055,6 +3086,22 @@ const V4_VI: V4Dictionary = {
   resetAllConfirmTitle: "Khôi phục toàn bộ cài đặt về mặc định?",
   resetAllConfirmDesc:
     "Mọi tùy chọn giao diện, trình đọc, nút nổi, mạng và nguồn sẽ trở về mặc định. Thư viện truyện, danh sách chương, lịch sử đọc, đánh dấu và cache ảnh sẽ KHÔNG bị xóa.",
+
+  netSystemDnsActiveNote:
+    "Đang dùng DNS hệ thống — DNS mã hóa tùy chỉnh đang tắt. Chuyển sang DNS mã hóa để chọn nhà cung cấp.",
+  netMissingAccountIdWarn:
+    "Hãy nhập Profile ID ở trên trước khi bật nhà cung cấp này, hoặc cho phép dự phòng DNS hệ thống.",
+  readerCatLayout: "Bố cục & Khoảng cách",
+  readerCatDisplay: "Hiển thị & Giao diện",
+  readerCatControls: "Điều khiển & Cử chỉ",
+  readerCatBehavior: "Đọc truyện & Hiệu năng",
+  openFullSettingsBtn: "Mở cài đặt đầy đủ",
+  longPressConfigHint: "Nhấn giữ để cấu hình",
+  scrollTopQuickConfigTitle: "Nút Cuộn lên đầu trang",
+  orientationQuickConfigTitle: "Xoay màn hình",
+  orientationCurrentMode: "Hướng màn hình",
+  buttonVisibilityLabel: "Hiển thị nút nổi",
+  noGapWebtoonHint: "Tự động Webtoon",
 };
 
 const V4_ZH: V4Dictionary = {

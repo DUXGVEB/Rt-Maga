@@ -4,8 +4,11 @@
     ArrowLeft,
     Bookmark,
     Check,
+    ChevronDown,
     ChevronLeft,
     ChevronRight,
+    ChevronUp,
+    ExternalLink,
     List,
     Loader2,
     Maximize,
@@ -14,6 +17,7 @@
     Search,
     SlidersHorizontal,
     Sparkles,
+    X,
     ZoomOut,
   } from "lucide-svelte";
   import { tick, untrack } from "svelte";
@@ -33,6 +37,8 @@
   import { toasts } from "../lib/stores/toast.svelte";
   import type {
     ChapterView,
+    FloatingEdge,
+    FloatingScreenKey,
     HorizontalDirection,
     HorizontalSnapMode,
     MangaView,
@@ -40,6 +46,7 @@
     ReaderBg,
     ReaderModeOverride,
     ReadingOrientation,
+    SettingsSection,
   } from "../lib/types";
 
   let {
@@ -63,6 +70,8 @@
   let errorState = $state<{ title: string; detail: string; blockedUrl?: string } | null>(null);
   let toolbarVisible = $state(true);
   let quickSettingsOpen = $state(false);
+  let openQuickCat = $state<"layout" | "display" | "controls" | null>(null);
+  let quickFloatConfig = $state<"scrollToTop" | "orientationLock" | null>(null);
   let chapterJumpOpen = $state(false);
   let chapterJumpQuery = $state("");
   let isFullscreen = $state(false);
@@ -86,9 +95,12 @@
   let idleDimTimer: number | null = null;
   let toolbarAutoHideTimer: number | null = null;
   let singleTapTimer: number | null = null;
+  let orientationRestoreTimer: number | null = null;
   let lastTapAt = 0;
   let pointerDownX = 0;
   let pointerDownY = 0;
+  let lastViewportW = typeof window !== "undefined" ? window.innerWidth : 0;
+  let lastViewportH = typeof window !== "undefined" ? window.innerHeight : 0;
   let wakeLockSentinel: { release: () => Promise<void> } | null = null;
 
   let pendingProgress: {
@@ -107,6 +119,7 @@
   let isUserScrollingBeforeRestore = false;
   let suppressAutoHideUntil = 0;
   let scrubbing = false;
+  let closingReader = false;
   let loadSeq = 0;
 
   function normUrl(u: string): string {
@@ -137,11 +150,12 @@
           : readerSettings.orientation
   );
 
-  const effectiveVerticalGapPx = $derived(
-    isAutoWebtoonActive || vCfg.noGapMode ? 0 : vCfg.pageGapPx
-  );
+  const effectiveNoGap = $derived(isAutoWebtoonActive || vCfg.noGapMode);
+
+  const effectiveVerticalGapPx = $derived(effectiveNoGap ? 0 : vCfg.pageGapPx);
 
   const isHorizontal = $derived(effectiveOrientation === "horizontal");
+  const isContinuousHorizontal = $derived(isHorizontal && hCfg.snapMode === "none");
   const isRtl = $derived(isHorizontal && hCfg.direction === "rtl");
 
   const activeChapter = $derived(
@@ -197,12 +211,25 @@
       toolbarAutoHideTimer = null;
     }
     const secs = behavior.toolbarAutoHideSecs;
-    if (!toolbarVisible || secs <= 0 || quickSettingsOpen || chapterJumpOpen || scrubbing) {
+    if (
+      !toolbarVisible ||
+      secs <= 0 ||
+      quickSettingsOpen ||
+      quickFloatConfig !== null ||
+      chapterJumpOpen ||
+      scrubbing
+    ) {
       return;
     }
     toolbarAutoHideTimer = window.setTimeout(() => {
       toolbarAutoHideTimer = null;
-      if (!quickSettingsOpen && !chapterJumpOpen && !scrubbing && Date.now() >= suppressAutoHideUntil) {
+      if (
+        !quickSettingsOpen &&
+        quickFloatConfig === null &&
+        !chapterJumpOpen &&
+        !scrubbing &&
+        Date.now() >= suppressAutoHideUntil
+      ) {
         toolbarVisible = false;
       }
     }, secs * 1000);
@@ -216,7 +243,7 @@
     if (settingsStore.value.floating.autoDimInReader) {
       idleDimTimer = window.setTimeout(() => {
         idleDimTimer = null;
-        if (!quickSettingsOpen && !chapterJumpOpen) {
+        if (!quickSettingsOpen && quickFloatConfig === null && !chapterJumpOpen) {
           controlsDimmed = true;
         }
       }, 2400);
@@ -253,6 +280,7 @@
   $effect(() => {
     void toolbarVisible;
     void quickSettingsOpen;
+    void quickFloatConfig;
     void chapterJumpOpen;
     void behavior.toolbarAutoHideSecs;
     scheduleToolbarAutoHide();
@@ -332,9 +360,24 @@
       }
       if (best?.dataset.groupKey) {
         nextFocused.add(best.dataset.groupKey);
-        const firstPage = best.querySelector<HTMLElement>("[data-page-idx]");
-        if (firstPage?.dataset.pageIdx) {
-          focusedPageIdx = Number(firstPage.dataset.pageIdx) || 0;
+        const pagesInGroup = Array.from(best.querySelectorAll<HTMLElement>("[data-page-idx]"));
+        let pageForIdx: HTMLElement | null = pagesInGroup[0] ?? null;
+        if (pagesInGroup.length > 1 && (hCfg.snapMode === "none" || hCfg.snapMode === "page")) {
+          const centerX = scrollRect.left + scrollRect.width / 2;
+          let bestPageDist = Number.POSITIVE_INFINITY;
+          for (const p of pagesInGroup) {
+            const pr = p.getBoundingClientRect();
+            const d = Math.abs(pr.left + pr.width / 2 - centerX);
+            if (d < bestPageDist) {
+              bestPageDist = d;
+              pageForIdx = p;
+            }
+          }
+        }
+        if (pageForIdx?.dataset.pageIdx) {
+          const rawIdx = Number(pageForIdx.dataset.pageIdx) || 0;
+          focusedPageIdx =
+            totalPages > 0 ? Math.max(0, Math.min(totalPages - 1, rawIdx)) : Math.max(0, rawIdx);
         }
       }
     } else {
@@ -342,6 +385,9 @@
       const pages = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-page-key]"));
       let best: HTMLElement | null = null;
       let bestDist = Number.POSITIVE_INFINITY;
+      let bestInActive: HTMLElement | null = null;
+      let bestInActiveDist = Number.POSITIVE_INFINITY;
+      const normActive = normUrl(activeUrl);
 
       for (const el of pages) {
         const r = el.getBoundingClientRect();
@@ -354,12 +400,20 @@
           bestDist = dist;
           best = el;
         }
+        const secUrl = el.closest<HTMLElement>("[data-chapter-url]")?.dataset.chapterUrl;
+        if (secUrl && normUrl(secUrl) === normActive && dist < bestInActiveDist) {
+          bestInActiveDist = dist;
+          bestInActive = el;
+        }
       }
       if (best?.dataset.pageKey) {
         nextFocused.add(best.dataset.pageKey);
-        if (best.dataset.pageIdx) {
-          focusedPageIdx = Number(best.dataset.pageIdx) || 0;
-        }
+      }
+      const pageForIdx = bestInActive ?? best;
+      if (pageForIdx?.dataset.pageIdx) {
+        const rawIdx = Number(pageForIdx.dataset.pageIdx) || 0;
+        focusedPageIdx =
+          totalPages > 0 ? Math.max(0, Math.min(totalPages - 1, rawIdx)) : Math.max(0, rawIdx);
       }
     }
 
@@ -379,7 +433,7 @@
     });
   }
 
-  function flushPendingProgress(): Promise<void> {
+  function flushPendingProgress(keepSessionActive = !closingReader): Promise<void> {
     if (saveTimer !== null) {
       window.clearTimeout(saveTimer);
       saveTimer = null;
@@ -387,10 +441,12 @@
     if (pendingProgress) {
       const snap = pendingProgress;
       pendingProgress = null;
-      const mode = isHorizontal ? "horizontal" : "vertical";
-      void api
-        .upsertReaderSession(snap.mangaId, snap.url, snap.name, snap.ratio, snap.pageIndex, mode)
-        .catch(() => {});
+      if (keepSessionActive) {
+        const mode = isHorizontal ? "horizontal" : "vertical";
+        void api
+          .upsertReaderSession(snap.mangaId, snap.url, snap.name, snap.ratio, snap.pageIndex, mode)
+          .catch(() => {});
+      }
       return api
         .saveProgress(snap.mangaId, snap.url, snap.name, snap.ratio, snap.pageIndex)
         .catch(() => {});
@@ -398,7 +454,7 @@
     return Promise.resolve();
   }
 
-  function captureCurrentProgressNow() {
+  function captureCurrentProgressNow(keepSessionActive = !closingReader) {
     if (!scrollEl || !activeChapter || loadingInitial) return;
     let ratio = 0;
     if (isHorizontal) {
@@ -415,12 +471,12 @@
       ratio,
       pageIndex: focusedPageIdx,
     };
-    void flushPendingProgress();
+    void flushPendingProgress(keepSessionActive);
   }
 
-  function clearPendingTimers(flush = false) {
+  function clearPendingTimers(flush = false, keepSessionActive = !closingReader) {
     if (flush) {
-      void flushPendingProgress();
+      void flushPendingProgress(keepSessionActive);
     } else {
       if (saveTimer !== null) {
         window.clearTimeout(saveTimer);
@@ -428,13 +484,20 @@
       }
       pendingProgress = null;
     }
-    for (const timer of [restoreTimer, idleDimTimer, toolbarAutoHideTimer, singleTapTimer]) {
+    for (const timer of [
+      restoreTimer,
+      idleDimTimer,
+      toolbarAutoHideTimer,
+      singleTapTimer,
+      orientationRestoreTimer,
+    ]) {
       if (timer !== null) window.clearTimeout(timer);
     }
     restoreTimer = null;
     idleDimTimer = null;
     toolbarAutoHideTimer = null;
     singleTapTimer = null;
+    orientationRestoreTimer = null;
     if (focusRaf !== null) {
       window.cancelAnimationFrame(focusRaf);
       focusRaf = null;
@@ -469,12 +532,17 @@
     if (!scrollEl || !activeChapter) return;
     const clamped = Math.max(0, Math.min(Math.max(0, activeChapter.images.length - 1), pageIndex));
     focusedPageIdx = clamped;
+    suppressAutoHideUntil = Date.now() + 450;
     resetZoom();
     const pageEl = scrollEl.querySelector<HTMLElement>(
       `[data-page-key="${CSS.escape(`${activeChapter.url}:${clamped}`)}"]`
     );
     if (pageEl) {
-      pageEl.scrollIntoView({ behavior: "instant", block: "start", inline: "center" });
+      pageEl.scrollIntoView({
+        behavior: "instant",
+        block: isHorizontal ? "nearest" : "start",
+        inline: "center",
+      });
       lastScrollOffset = isHorizontal ? Math.abs(scrollEl.scrollLeft) : scrollEl.scrollTop;
       updateFocusNow();
       captureCurrentProgressNow();
@@ -509,6 +577,7 @@
 
   async function loadInitial(targetUrl: string, scrollRatio: number, pageIndex: number) {
     const seq = ++loadSeq;
+    closingReader = false;
     clearPendingTimers(true);
     resetZoom();
     loadingInitial = true;
@@ -603,8 +672,13 @@
         chapterJumpOpen = false;
         return true;
       }
+      if (quickFloatConfig !== null) {
+        quickFloatConfig = null;
+        return true;
+      }
       if (quickSettingsOpen) {
         quickSettingsOpen = false;
+        openQuickCat = null;
         return true;
       }
       if (zoomScale > 1.01) {
@@ -626,35 +700,93 @@
       }
     };
 
-    const onOrientationChanged = () => {
+    const scheduleViewportAnchorRestore = () => {
+      if (!scrollEl || loadingInitial || strip.length === 0) return;
       resetZoom();
-      suppressAutoHideUntil = Date.now() + 600;
-      toolbarVisible = true;
+      suppressAutoHideUntil = Date.now() + 650;
       wakeFloatingControls();
       captureCurrentProgressNow();
 
       const anchorChap = activeUrl;
       const anchorPage = focusedPageIdx;
-      window.setTimeout(() => {
+      const wasHorizontal = isHorizontal;
+      let intraPageRatio = 0.25;
+      if (!wasHorizontal && anchorChap) {
+        const curEl = scrollEl.querySelector<HTMLElement>(
+          `[data-page-key="${CSS.escape(`${anchorChap}:${anchorPage}`)}"]`
+        );
+        if (curEl) {
+          const sRect = scrollEl.getBoundingClientRect();
+          const pRect = curEl.getBoundingClientRect();
+          const focusY = sRect.top + sRect.height * 0.45;
+          intraPageRatio = Math.max(0, Math.min(1, (focusY - pRect.top) / Math.max(1, pRect.height)));
+        }
+      }
+
+      if (orientationRestoreTimer !== null) {
+        window.clearTimeout(orientationRestoreTimer);
+        orientationRestoreTimer = null;
+      }
+
+      const restoreNow = () => {
         if (!scrollEl || !anchorChap) return;
         const pageEl = scrollEl.querySelector<HTMLElement>(
           `[data-page-key="${CSS.escape(`${anchorChap}:${anchorPage}`)}"]`
         );
         if (pageEl) {
-          pageEl.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
-          lastScrollOffset = isHorizontal ? Math.abs(scrollEl.scrollLeft) : scrollEl.scrollTop;
+          if (isHorizontal) {
+            pageEl.scrollIntoView({ behavior: "instant", block: "nearest", inline: "center" });
+            lastScrollOffset = Math.abs(scrollEl.scrollLeft);
+          } else {
+            const sRect = scrollEl.getBoundingClientRect();
+            const pRect = pageEl.getBoundingClientRect();
+            const pageTopInScroll = scrollEl.scrollTop + (pRect.top - sRect.top);
+            const targetTop = Math.max(
+              0,
+              Math.round(pageTopInScroll + intraPageRatio * pRect.height - scrollEl.clientHeight * 0.45)
+            );
+            scrollEl.scrollTop = targetTop;
+            lastScrollOffset = targetTop;
+          }
         }
         updateFocusNow();
+      };
+
+      orientationRestoreTimer = window.setTimeout(() => {
+        orientationRestoreTimer = null;
+        restoreNow();
       }, 220);
+    };
+
+    const onOrientationChanged = () => {
+      toolbarVisible = true;
+      lastViewportW = window.innerWidth;
+      lastViewportH = window.innerHeight;
+      scheduleViewportAnchorRestore();
+    };
+
+    const onWindowResize = () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      if (Math.abs(w - lastViewportW) < 24 && Math.abs(h - lastViewportH) < 24) return;
+      lastViewportW = w;
+      lastViewportH = h;
+      scheduleViewportAnchorRestore();
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("rtmaga:orientation-changed", onOrientationChanged);
+    window.addEventListener("resize", onWindowResize);
 
     return () => {
+      closingReader = true;
+      captureCurrentProgressNow(false);
+      clearPendingTimers(true, false);
+      void api.clearReaderSession().catch(() => {});
       unregisterBack();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("rtmaga:orientation-changed", onOrientationChanged);
+      window.removeEventListener("resize", onWindowResize);
       void applyKeepScreenOn(false);
       if (deviceEnv.isAndroid) {
         void deviceEnv.setOrientationLock("auto");
@@ -673,7 +805,7 @@
     });
     return () => {
       loadSeq += 1;
-      clearPendingTimers(true);
+      clearPendingTimers(true, !closingReader);
     };
   });
 
@@ -895,8 +1027,13 @@
 
   function handleViewportClick(e: MouseEvent) {
     wakeFloatingControls();
+    if (quickFloatConfig !== null) {
+      quickFloatConfig = null;
+      return;
+    }
     if (quickSettingsOpen) {
       quickSettingsOpen = false;
+      openQuickCat = null;
       return;
     }
     if (chapterJumpOpen) {
@@ -969,7 +1106,7 @@
     wakeFloatingControls();
     scheduleFocusUpdate();
 
-    const suppressHide = Date.now() < suppressAutoHideUntil;
+    const suppressHide = scrubbing || Date.now() < suppressAutoHideUntil;
 
     if (isHorizontal) {
       const absLeft = Math.abs(scrollEl.scrollLeft);
@@ -987,6 +1124,8 @@
         if (delta > 20 && absLeft > 80) {
           toolbarVisible = false;
           quickSettingsOpen = false;
+          openQuickCat = null;
+          quickFloatConfig = null;
           chapterJumpOpen = false;
         } else if (delta < -20 || absLeft < 40) {
           toolbarVisible = true;
@@ -1023,6 +1162,8 @@
       if (delta > 16 && top > 80) {
         toolbarVisible = false;
         quickSettingsOpen = false;
+        openQuickCat = null;
+        quickFloatConfig = null;
         chapterJumpOpen = false;
       } else if (delta < -16 || top < 60) {
         toolbarVisible = true;
@@ -1053,8 +1194,11 @@
       if (chap) {
         const chapterChanged = normUrl(activeUrl) !== normUrl(chap.url);
         activeUrl = chap.url;
-        if (chapterChanged && behavior.autoMarkReadOnOpen) {
-          markChapterReadLocalAndRemote(chap.url);
+        if (chapterChanged) {
+          updateFocusNow();
+          if (behavior.autoMarkReadOnOpen) {
+            markChapterReadLocalAndRemote(chap.url);
+          }
         }
         const secHeight = Math.max(1, currentSection.offsetHeight - scrollEl.clientHeight);
         const ratio = Math.min(1, Math.max(0, (top - currentSection.offsetTop) / secHeight));
@@ -1113,10 +1257,7 @@
     }
   }
 
-  async function cycleOrientationLock() {
-    const order: OrientationLockMode[] = ["auto", "portrait", "landscape"];
-    const curr = readerSettings.orientationLock;
-    const next = order[(order.indexOf(curr) + 1) % order.length];
+  async function setOrientationLockDirect(next: OrientationLockMode) {
     settingsStore.update((d) => {
       d.reader.orientationLock = next;
     });
@@ -1130,9 +1271,85 @@
     toasts.push(label, "info", 1600);
   }
 
+  async function cycleOrientationLock() {
+    const order: OrientationLockMode[] = ["auto", "portrait", "landscape"];
+    const curr = readerSettings.orientationLock;
+    const next = order[(order.indexOf(curr) + 1) % order.length];
+    await setOrientationLockDirect(next);
+  }
+
+  function toggleQuickSettings() {
+    const opening = !quickSettingsOpen;
+    quickSettingsOpen = opening;
+    openQuickCat = null;
+    if (opening) {
+      chapterJumpOpen = false;
+      quickFloatConfig = null;
+    }
+    wakeFloatingControls();
+  }
+
+  function openFullSettings(section: SettingsSection) {
+    quickSettingsOpen = false;
+    openQuickCat = null;
+    quickFloatConfig = null;
+    chapterJumpOpen = false;
+    if (scrollEl && activeChapter && !loadingInitial) {
+      let ratio = 0;
+      if (isHorizontal) {
+        const maxScroll = Math.max(1, scrollEl.scrollWidth - scrollEl.clientWidth);
+        ratio = Math.min(1, Math.max(0, Math.abs(scrollEl.scrollLeft) / maxScroll));
+      } else {
+        const maxScroll = Math.max(1, scrollEl.scrollHeight - scrollEl.clientHeight);
+        ratio = Math.min(1, Math.max(0, scrollEl.scrollTop / maxScroll));
+      }
+      router.updateCurrentReaderPosition(activeChapter.url, ratio, focusedPageIdx);
+    }
+    captureCurrentProgressNow(false);
+    router.goSettings(section);
+  }
+
+  const allFloatingScreens: FloatingScreenKey[] = [
+    "home",
+    "bookmarks",
+    "history",
+    "manga",
+    "reader",
+    "settings",
+  ];
+
+  function floatingScreenLabel(key: FloatingScreenKey): string {
+    switch (key) {
+      case "home":
+        return t.navHome;
+      case "bookmarks":
+        return t.navBookmarks;
+      case "history":
+        return t.navHistory;
+      case "manga":
+        return t.floatingScreenManga;
+      case "reader":
+        return t.floatingScreenReader;
+      case "settings":
+        return t.navSettings;
+    }
+  }
+
+  function toggleScrollTopScreen(screen: FloatingScreenKey) {
+    settingsStore.update((d) => {
+      const list = d.floating.scrollToTopScreens;
+      if (list.includes(screen)) {
+        d.floating.scrollToTopScreens = list.filter((x) => x !== screen);
+      } else {
+        d.floating.scrollToTopScreens = [...list, screen];
+      }
+    });
+  }
+
   async function exitReader() {
-    captureCurrentProgressNow();
-    await flushPendingProgress();
+    closingReader = true;
+    captureCurrentProgressNow(false);
+    await flushPendingProgress(false);
     await api.clearReaderSession().catch(() => {});
     await applyKeepScreenOn(false);
     try {
@@ -1174,7 +1391,11 @@
       } else if (e.key === "Escape") {
         e.preventDefault();
         if (chapterJumpOpen) chapterJumpOpen = false;
-        else if (quickSettingsOpen) quickSettingsOpen = false;
+        else if (quickFloatConfig !== null) quickFloatConfig = null;
+        else if (quickSettingsOpen) {
+          quickSettingsOpen = false;
+          openQuickCat = null;
+        }
         else if (zoomScale > 1.01) resetZoom();
         else if (isFullscreen) void toggleFullscreen();
         else void exitReader();
@@ -1198,7 +1419,11 @@
     } else if (e.key === "Escape") {
       e.preventDefault();
       if (chapterJumpOpen) chapterJumpOpen = false;
-      else if (quickSettingsOpen) quickSettingsOpen = false;
+      else if (quickFloatConfig !== null) quickFloatConfig = null;
+      else if (quickSettingsOpen) {
+        quickSettingsOpen = false;
+        openQuickCat = null;
+      }
       else if (zoomScale > 1.01) resetZoom();
       else if (isFullscreen) void toggleFullscreen();
       else void exitReader();
@@ -1275,13 +1500,35 @@
   }
 
   function toggleNoGap() {
-    settingsStore.update((d) => {
-      d.reader.vertical.noGapMode = !d.reader.vertical.noGapMode;
-      if (d.reader.vertical.noGapMode) {
-        d.reader.vertical.pageGapPx = 0;
-        d.reader.gapPx = 0;
+    const turningOff = effectiveNoGap;
+    if (turningOff) {
+      settingsStore.update((d) => {
+        d.reader.vertical.noGapMode = false;
+        if (d.reader.vertical.pageGapPx === 0) {
+          d.reader.vertical.pageGapPx = 12;
+          d.reader.gapPx = 12;
+        }
+      });
+      if (isAutoWebtoonActive) {
+        void applyPerMangaOverride("vertical_strip");
       }
-    });
+    } else {
+      settingsStore.update((d) => {
+        d.reader.vertical.noGapMode = true;
+      });
+    }
+  }
+
+  function setVerticalGapPx(val: number) {
+    const clamped = Math.max(0, Math.min(48, Math.round(val)));
+    settingsStore.update((d) => {
+      d.reader.vertical.noGapMode = false;
+      d.reader.vertical.pageGapPx = clamped;
+      d.reader.gapPx = clamped;
+    }, 100);
+    if (isAutoWebtoonActive && clamped > 0) {
+      void applyPerMangaOverride("vertical_strip");
+    }
   }
 
   function setReaderBg(bg: ReaderBg) {
@@ -1307,7 +1554,7 @@
   <!-- Top Auto-Hide Toolbar -->
   <header
     class="fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 backdrop-blur-md transition-transform duration-200 sm:px-4"
-    style="padding-top: max(0.5rem, var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 88%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
+    style="padding-top: calc(0.5rem + var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 88%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
       ? '0%'
       : '-115%'});"
   >
@@ -1365,6 +1612,8 @@
           onclick={() => {
             chapterJumpOpen = !chapterJumpOpen;
             quickSettingsOpen = false;
+            openQuickCat = null;
+            quickFloatConfig = null;
             wakeFloatingControls();
           }}
           class="inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium"
@@ -1396,11 +1645,7 @@
 
       <button
         type="button"
-        onclick={() => {
-          quickSettingsOpen = !quickSettingsOpen;
-          chapterJumpOpen = false;
-          wakeFloatingControls();
-        }}
+        onclick={toggleQuickSettings}
         class="rounded-lg border p-1.5"
         style="border-color: var(--border); background-color: {quickSettingsOpen
           ? 'var(--accent-soft)'
@@ -1475,12 +1720,25 @@
     </div>
   {/if}
 
-  <!-- Quick Reader Settings Popover -->
+  <!-- Quick Reader Settings Popover (Collapsible Categories, Collapsed by Default) -->
   {#if quickSettingsOpen}
     <div
-      class="fixed right-4 z-40 flex max-h-[78dvh] w-80 max-w-[calc(100vw-2rem)] flex-col gap-3.5 overflow-y-auto rounded-2xl border p-4 text-xs shadow-xl"
+      class="fixed right-4 z-40 flex max-h-[78dvh] w-80 max-w-[calc(100vw-2rem)] flex-col gap-2.5 overflow-y-auto rounded-2xl border p-3.5 text-xs shadow-xl"
       style="top: calc(3.5rem + var(--safe-top)); background-color: var(--surface); border-color: var(--border);"
     >
+      <div class="flex items-center justify-between gap-2 pb-0.5">
+        <span class="font-semibold">{t.readerSection}</span>
+        <button
+          type="button"
+          onclick={() => openFullSettings("reader")}
+          class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium hover:opacity-85"
+          style="background-color: var(--accent-soft); color: var(--accent);"
+        >
+          <ExternalLink size={11} />
+          <span>{t.openFullSettingsBtn}</span>
+        </button>
+      </div>
+
       {#if isAutoWebtoonActive || effectiveOverride !== null}
         <div
           class="flex items-center justify-between gap-2 rounded-xl border px-3 py-2"
@@ -1503,98 +1761,361 @@
         </div>
       {/if}
 
-      <div class="flex flex-col gap-1.5">
-        <span class="font-medium">{t.readingModeLabel}</span>
-        <div class="grid grid-cols-2 gap-1.5">
-          {#each [["vertical", t.modeVertical], ["horizontal", t.modeHorizontal]] as [val, label] (val)}
-            <button
-              type="button"
-              onclick={() => setOrientation(val as ReadingOrientation)}
-              class="rounded-lg border py-1.5 font-medium"
-              style="border-color: {effectiveOrientation === val
-                ? 'var(--accent)'
-                : 'var(--border)'}; background-color: {effectiveOrientation === val
-                ? 'var(--accent-soft)'
-                : 'var(--surface-subtle)'}; color: {effectiveOrientation === val
-                ? 'var(--accent)'
-                : 'var(--text)'};"
-            >
-              {label}
-            </button>
-          {/each}
-        </div>
+      <!-- Category 1: Layout & Spacing -->
+      <div class="overflow-hidden rounded-xl border" style="border-color: var(--border); background-color: var(--surface-subtle);">
+        <button
+          type="button"
+          onclick={() => (openQuickCat = openQuickCat === "layout" ? null : "layout")}
+          aria-expanded={openQuickCat === "layout"}
+          class="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-medium"
+        >
+          <div class="min-w-0">
+            <div class="font-semibold">{t.readerCatLayout}</div>
+            <div class="truncate text-[10px]" style="color: var(--text-muted);">
+              {isHorizontal
+                ? `${t.modeHorizontal} · ${hCfg.direction.toUpperCase()} · ${hCfg.pagesPerGroup}x`
+                : `${t.modeVertical} · ${effectiveNoGap ? t.noGapModeLabel : `${effectiveVerticalGapPx}px`}`}
+            </div>
+          </div>
+          {#if openQuickCat === "layout"}
+            <ChevronUp size={15} class="shrink-0 opacity-70" />
+          {:else}
+            <ChevronDown size={15} class="shrink-0 opacity-70" />
+          {/if}
+        </button>
+
+        {#if openQuickCat === "layout"}
+          <div
+            class="flex flex-col gap-3 border-t p-3"
+            style="border-color: var(--border); background-color: var(--surface);"
+          >
+            <div class="flex flex-col gap-1.5">
+              <span class="font-medium">{t.readingModeLabel}</span>
+              <div class="grid grid-cols-2 gap-1.5">
+                {#each [["vertical", t.modeVertical], ["horizontal", t.modeHorizontal]] as [val, label] (val)}
+                  <button
+                    type="button"
+                    onclick={() => setOrientation(val as ReadingOrientation)}
+                    class="rounded-lg border py-1.5 font-medium"
+                    style="border-color: {effectiveOrientation === val
+                      ? 'var(--accent)'
+                      : 'var(--border)'}; background-color: {effectiveOrientation === val
+                      ? 'var(--accent-soft)'
+                      : 'var(--surface-subtle)'}; color: {effectiveOrientation === val
+                      ? 'var(--accent)'
+                      : 'var(--text)'};"
+                  >
+                    {label}
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            {#if isHorizontal}
+              <div class="flex flex-col gap-1.5">
+                <span class="font-medium">{t.horizontalDirLabel}</span>
+                <div class="grid grid-cols-2 gap-1.5">
+                  {#each [["ltr", t.dirLtr], ["rtl", t.dirRtl]] as [val, label] (val)}
+                    <button
+                      type="button"
+                      onclick={() => setHorizontalDirection(val as HorizontalDirection)}
+                      class="rounded-lg border py-1.5 font-medium"
+                      style="border-color: {hCfg.direction === val
+                        ? 'var(--accent)'
+                        : 'var(--border)'}; background-color: {hCfg.direction === val
+                        ? 'var(--accent-soft)'
+                        : 'var(--surface-subtle)'}; color: {hCfg.direction === val
+                        ? 'var(--accent)'
+                        : 'var(--text)'};"
+                    >
+                      {label}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+
+              <div class="flex flex-col gap-1.5">
+                <div class="flex items-center justify-between font-medium">
+                  <span>{t.pagesPerGroupLabel}</span>
+                  <span style="color: var(--text-muted);">{hCfg.pagesPerGroup}</span>
+                </div>
+                <div class="grid grid-cols-4 gap-1.5">
+                  {#each [1, 2, 3] as n (n)}
+                    <button
+                      type="button"
+                      onclick={() => setPagesPerGroup(n)}
+                      class="rounded-lg border py-1 font-medium"
+                      style="border-color: {hCfg.pagesPerGroup === n
+                        ? 'var(--accent)'
+                        : 'var(--border)'}; background-color: {hCfg.pagesPerGroup === n
+                        ? 'var(--accent-soft)'
+                        : 'var(--surface-subtle)'}; color: {hCfg.pagesPerGroup === n
+                        ? 'var(--accent)'
+                        : 'var(--text)'};"
+                    >
+                      {n}
+                    </button>
+                  {/each}
+                  <input
+                    type="number"
+                    min="1"
+                    max="8"
+                    value={hCfg.pagesPerGroup}
+                    onchange={(e) => setPagesPerGroup(Number(e.currentTarget.value))}
+                    class="rounded-lg border px-2 py-1 text-center text-xs outline-none"
+                    style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+                  />
+                </div>
+              </div>
+
+              <div class="flex flex-col gap-1.5">
+                <span class="font-medium">{t.snapModeLabel}</span>
+                <div class="grid grid-cols-3 gap-1.5">
+                  {#each [["none", t.snapNone], ["page", t.snapPage], ["group", t.snapGroup]] as [val, label] (val)}
+                    <button
+                      type="button"
+                      onclick={() => setHorizontalSnap(val as HorizontalSnapMode)}
+                      class="rounded-lg border py-1 font-medium"
+                      style="border-color: {hCfg.snapMode === val
+                        ? 'var(--accent)'
+                        : 'var(--border)'}; background-color: {hCfg.snapMode === val
+                        ? 'var(--accent-soft)'
+                        : 'var(--surface-subtle)'}; color: {hCfg.snapMode === val
+                        ? 'var(--accent)'
+                        : 'var(--text)'};"
+                    >
+                      {label}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {:else}
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-1.5">
+                  <span class="font-medium">{t.noGapModeLabel}</span>
+                  {#if isAutoWebtoonActive && !vCfg.noGapMode}
+                    <span
+                      class="rounded px-1.5 py-0.5 text-[10px] font-medium"
+                      style="background-color: var(--accent-soft); color: var(--accent);"
+                    >
+                      {t.noGapWebtoonHint}
+                    </span>
+                  {/if}
+                </div>
+                <input
+                  type="checkbox"
+                  checked={effectiveNoGap}
+                  onchange={toggleNoGap}
+                  class="h-4 w-4 accent-rose-500"
+                />
+              </div>
+
+              {#if !effectiveNoGap}
+                <div class="flex flex-col gap-1">
+                  <div class="flex items-center justify-between">
+                    <span class="font-medium">{t.gapLabel(vCfg.pageGapPx)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="48"
+                    step="2"
+                    value={vCfg.pageGapPx}
+                    oninput={(e) => setVerticalGapPx(Number(e.currentTarget.value))}
+                    class="w-full accent-rose-500"
+                  />
+                </div>
+              {/if}
+
+              <div class="flex items-center justify-between">
+                <span class="font-medium">{t.autoAppendNext}</span>
+                <input
+                  type="checkbox"
+                  checked={readerSettings.autoNextChapter}
+                  onchange={toggleAutoNext}
+                  class="h-4 w-4 accent-rose-500"
+                />
+              </div>
+            {/if}
+          </div>
+        {/if}
       </div>
 
-      {#if isHorizontal}
-        <div class="flex flex-col gap-1.5">
-          <span class="font-medium">{t.horizontalDirLabel}</span>
-          <div class="grid grid-cols-2 gap-1.5">
-            {#each [["ltr", t.dirLtr], ["rtl", t.dirRtl]] as [val, label] (val)}
-              <button
-                type="button"
-                onclick={() => setHorizontalDirection(val as HorizontalDirection)}
-                class="rounded-lg border py-1.5 font-medium"
-                style="border-color: {hCfg.direction === val
-                  ? 'var(--accent)'
-                  : 'var(--border)'}; background-color: {hCfg.direction === val
-                  ? 'var(--accent-soft)'
-                  : 'var(--surface-subtle)'}; color: {hCfg.direction === val
-                  ? 'var(--accent)'
-                  : 'var(--text)'};"
-              >
-                {label}
-              </button>
-            {/each}
+      <!-- Category 2: Display & Visuals -->
+      <div class="overflow-hidden rounded-xl border" style="border-color: var(--border); background-color: var(--surface-subtle);">
+        <button
+          type="button"
+          onclick={() => (openQuickCat = openQuickCat === "display" ? null : "display")}
+          aria-expanded={openQuickCat === "display"}
+          class="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-medium"
+        >
+          <div class="min-w-0">
+            <div class="font-semibold">{t.readerCatDisplay}</div>
+            <div class="truncate text-[10px]" style="color: var(--text-muted);">
+              {readerSettings.readerBg === "dark"
+                ? t.bgDark
+                : readerSettings.readerBg === "light"
+                  ? t.bgLight
+                  : t.bgAppTheme}
+            </div>
           </div>
-        </div>
+          {#if openQuickCat === "display"}
+            <ChevronUp size={15} class="shrink-0 opacity-70" />
+          {:else}
+            <ChevronDown size={15} class="shrink-0 opacity-70" />
+          {/if}
+        </button>
 
-        <div class="flex flex-col gap-1.5">
-          <div class="flex items-center justify-between font-medium">
-            <span>{t.pagesPerGroupLabel}</span>
-            <span style="color: var(--text-muted);">{hCfg.pagesPerGroup}</span>
-          </div>
-          <div class="grid grid-cols-4 gap-1.5">
-            {#each [1, 2, 3] as n (n)}
-              <button
-                type="button"
-                onclick={() => setPagesPerGroup(n)}
-                class="rounded-lg border py-1 font-medium"
-                style="border-color: {hCfg.pagesPerGroup === n
-                  ? 'var(--accent)'
-                  : 'var(--border)'}; background-color: {hCfg.pagesPerGroup === n
-                  ? 'var(--accent-soft)'
-                  : 'var(--surface-subtle)'}; color: {hCfg.pagesPerGroup === n
-                  ? 'var(--accent)'
-                  : 'var(--text)'};"
-              >
-                {n}
-              </button>
-            {/each}
-            <input
-              type="number"
-              min="1"
-              max="8"
-              value={hCfg.pagesPerGroup}
-              onchange={(e) => setPagesPerGroup(Number(e.currentTarget.value))}
-              class="rounded-lg border px-2 py-1 text-center text-xs outline-none"
-              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
-            />
-          </div>
-        </div>
+        {#if openQuickCat === "display"}
+          <div
+            class="flex flex-col gap-3 border-t p-3"
+            style="border-color: var(--border); background-color: var(--surface);"
+          >
+            <div class="flex flex-col gap-1.5">
+              <span class="font-medium">{t.readerBg}</span>
+              <div class="grid grid-cols-3 gap-1.5">
+                {#each [["dark", t.bgDark], ["light", t.bgLight], ["follow_theme", t.bgAppTheme]] as [val, label] (val)}
+                  <button
+                    type="button"
+                    onclick={() => setReaderBg(val as ReaderBg)}
+                    class="rounded-lg border py-1.5 font-medium"
+                    style="border-color: {readerSettings.readerBg === val
+                      ? 'var(--accent)'
+                      : 'var(--border)'}; background-color: {readerSettings.readerBg === val
+                      ? 'var(--accent-soft)'
+                      : 'var(--surface-subtle)'}; color: {readerSettings.readerBg === val
+                      ? 'var(--accent)'
+                      : 'var(--text)'};"
+                  >
+                    {label}
+                  </button>
+                {/each}
+              </div>
+            </div>
 
+            <div class="flex flex-col gap-1.5">
+              <div class="flex items-center justify-between">
+                <span class="font-medium">{t.dimUnfocusedLabel}</span>
+                <input
+                  type="checkbox"
+                  checked={isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
+                  onchange={toggleDim}
+                  class="h-4 w-4 accent-rose-500"
+                />
+              </div>
+              {#if isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
+                {@const dimPct = isHorizontal ? hCfg.dimLevel : vCfg.dimLevel}
+                <div class="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={dimPct}
+                    oninput={(e) => setDimLevel(Number(e.currentTarget.value))}
+                    class="w-full accent-rose-500"
+                  />
+                  <span class="w-9 text-right" style="color: var(--text-muted);">{dimPct}%</span>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Category 3: Controls & Behavior -->
+      <div class="overflow-hidden rounded-xl border" style="border-color: var(--border); background-color: var(--surface-subtle);">
+        <button
+          type="button"
+          onclick={() => (openQuickCat = openQuickCat === "controls" ? null : "controls")}
+          aria-expanded={openQuickCat === "controls"}
+          class="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-medium"
+        >
+          <div class="min-w-0">
+            <div class="font-semibold">{t.readerCatControls}</div>
+            <div class="truncate text-[10px]" style="color: var(--text-muted);">
+              {behavior.keepScreenOn ? t.keepScreenOnLabel : t.skipBrokenImagesLabel}
+            </div>
+          </div>
+          {#if openQuickCat === "controls"}
+            <ChevronUp size={15} class="shrink-0 opacity-70" />
+          {:else}
+            <ChevronDown size={15} class="shrink-0 opacity-70" />
+          {/if}
+        </button>
+
+        {#if openQuickCat === "controls"}
+          <div
+            class="flex flex-col gap-3 border-t p-3"
+            style="border-color: var(--border); background-color: var(--surface);"
+          >
+            <div class="flex items-center justify-between">
+              <span class="font-medium">{t.keepScreenOnLabel}</span>
+              <input
+                type="checkbox"
+                checked={behavior.keepScreenOn}
+                onchange={(e) => {
+                  const checked = e.currentTarget.checked;
+                  settingsStore.update((d) => (d.reader.behavior.keepScreenOn = checked));
+                }}
+                class="h-4 w-4 accent-rose-500"
+              />
+            </div>
+
+            <div class="flex items-center justify-between">
+              <span class="font-medium">{t.skipBrokenImagesLabel}</span>
+              <input
+                type="checkbox"
+                checked={behavior.skipBrokenImages}
+                onchange={(e) => {
+                  const checked = e.currentTarget.checked;
+                  settingsStore.update((d) => (d.reader.behavior.skipBrokenImages = checked));
+                }}
+                class="h-4 w-4 accent-rose-500"
+              />
+            </div>
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  <!-- Long-Press Contextual Configuration Panel (Scroll-to-Top / Screen Rotation) -->
+  {#if quickFloatConfig !== null}
+    <div
+      class="fixed right-4 z-40 flex max-h-[78dvh] w-80 max-w-[calc(100vw-2rem)] flex-col gap-3 overflow-y-auto rounded-2xl border p-4 text-xs shadow-xl"
+      style="top: calc(3.5rem + var(--safe-top)); background-color: var(--surface); border-color: var(--border);"
+    >
+      <div class="flex items-center justify-between gap-2">
+        <span class="font-semibold">
+          {quickFloatConfig === "scrollToTop"
+            ? t.scrollTopQuickConfigTitle
+            : t.orientationQuickConfigTitle}
+        </span>
+        <button
+          type="button"
+          onclick={() => (quickFloatConfig = null)}
+          class="rounded-lg p-1 opacity-70 hover:opacity-100"
+          aria-label={t.cancel}
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      {#if quickFloatConfig === "orientationLock"}
         <div class="flex flex-col gap-1.5">
-          <span class="font-medium">{t.snapModeLabel}</span>
+          <span class="font-medium">{t.orientationCurrentMode}</span>
           <div class="grid grid-cols-3 gap-1.5">
-            {#each [["none", t.snapNone], ["page", t.snapPage], ["group", t.snapGroup]] as [val, label] (val)}
+            {#each [["auto", t.orientationAuto], ["portrait", t.orientationPortrait], ["landscape", t.orientationLandscape]] as [val, label] (val)}
               <button
                 type="button"
-                onclick={() => setHorizontalSnap(val as HorizontalSnapMode)}
-                class="rounded-lg border py-1 font-medium"
-                style="border-color: {hCfg.snapMode === val
+                onclick={() => void setOrientationLockDirect(val as OrientationLockMode)}
+                class="rounded-lg border py-1.5 font-medium"
+                style="border-color: {readerSettings.orientationLock === val
                   ? 'var(--accent)'
-                  : 'var(--border)'}; background-color: {hCfg.snapMode === val
+                  : 'var(--border)'}; background-color: {readerSettings.orientationLock === val
                   ? 'var(--accent-soft)'
-                  : 'var(--surface-subtle)'}; color: {hCfg.snapMode === val
+                  : 'var(--surface-subtle)'}; color: {readerSettings.orientationLock === val
                   ? 'var(--accent)'
                   : 'var(--text)'};"
               >
@@ -1603,102 +2124,140 @@
             {/each}
           </div>
         </div>
-      {:else}
+
         <div class="flex items-center justify-between">
-          <span class="font-medium">{t.noGapModeLabel}</span>
+          <span class="font-medium">{t.buttonVisibilityLabel}</span>
           <input
             type="checkbox"
-            checked={vCfg.noGapMode}
-            onchange={toggleNoGap}
+            checked={settingsStore.value.floating.showOrientationLock}
+            onchange={(e) => {
+              const checked = e.currentTarget.checked;
+              settingsStore.update((d) => (d.floating.showOrientationLock = checked));
+            }}
             class="h-4 w-4 accent-rose-500"
           />
         </div>
 
+        <div class="flex flex-col gap-1.5">
+          <span class="font-medium">{t.floatingPositionLabel}</span>
+          <div class="flex items-center gap-2">
+            {#each [["left", t.floatingEdgeLeft], ["right", t.floatingEdgeRight]] as [edge, label] (edge)}
+              <button
+                type="button"
+                onclick={() =>
+                  settingsStore.update((d) => (d.floating.orientationLock.edge = edge as FloatingEdge))}
+                class="rounded-lg border px-2.5 py-1 font-medium"
+                style="border-color: {settingsStore.value.floating.orientationLock.edge === edge
+                  ? 'var(--accent)'
+                  : 'var(--border)'}; background-color: {settingsStore.value.floating.orientationLock.edge === edge
+                  ? 'var(--accent-soft)'
+                  : 'var(--surface-subtle)'}; color: {settingsStore.value.floating.orientationLock.edge === edge
+                  ? 'var(--accent)'
+                  : 'var(--text)'};"
+              >
+                {label}
+              </button>
+            {/each}
+            <input
+              type="range"
+              min="15"
+              max="88"
+              step="1"
+              value={settingsStore.value.floating.orientationLock.verticalPercent}
+              oninput={(e) => {
+                const v = Number(e.currentTarget.value);
+                settingsStore.update((d) => (d.floating.orientationLock.verticalPercent = v), 100);
+              }}
+              class="w-full accent-rose-500"
+            />
+            <span class="w-8 text-right tabular-nums" style="color: var(--text-muted);">
+              {settingsStore.value.floating.orientationLock.verticalPercent}%
+            </span>
+          </div>
+        </div>
+      {:else}
+        <div class="flex flex-col gap-1.5">
+          <span class="font-medium">{t.floatingScrollTopScreens}</span>
+          <div class="flex flex-wrap gap-1.5">
+            {#each allFloatingScreens as screen (screen)}
+              {@const active = settingsStore.value.floating.scrollToTopScreens.includes(screen)}
+              <button
+                type="button"
+                onclick={() => toggleScrollTopScreen(screen)}
+                class="rounded-lg border px-2.5 py-1 font-medium"
+                style="border-color: {active
+                  ? 'var(--accent)'
+                  : 'var(--border)'}; background-color: {active
+                  ? 'var(--accent-soft)'
+                  : 'var(--surface-subtle)'}; color: {active ? 'var(--accent)' : 'var(--text)'};"
+              >
+                {floatingScreenLabel(screen)}
+              </button>
+            {/each}
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <span class="font-medium">{t.floatingPositionLabel}</span>
+          <div class="flex items-center gap-2">
+            {#each [["left", t.floatingEdgeLeft], ["right", t.floatingEdgeRight]] as [edge, label] (edge)}
+              <button
+                type="button"
+                onclick={() =>
+                  settingsStore.update((d) => (d.floating.scrollToTop.edge = edge as FloatingEdge))}
+                class="rounded-lg border px-2.5 py-1 font-medium"
+                style="border-color: {settingsStore.value.floating.scrollToTop.edge === edge
+                  ? 'var(--accent)'
+                  : 'var(--border)'}; background-color: {settingsStore.value.floating.scrollToTop.edge === edge
+                  ? 'var(--accent-soft)'
+                  : 'var(--surface-subtle)'}; color: {settingsStore.value.floating.scrollToTop.edge === edge
+                  ? 'var(--accent)'
+                  : 'var(--text)'};"
+              >
+                {label}
+              </button>
+            {/each}
+            <input
+              type="range"
+              min="15"
+              max="88"
+              step="1"
+              value={settingsStore.value.floating.scrollToTop.verticalPercent}
+              oninput={(e) => {
+                const v = Number(e.currentTarget.value);
+                settingsStore.update((d) => (d.floating.scrollToTop.verticalPercent = v), 100);
+              }}
+              class="w-full accent-rose-500"
+            />
+            <span class="w-8 text-right tabular-nums" style="color: var(--text-muted);">
+              {settingsStore.value.floating.scrollToTop.verticalPercent}%
+            </span>
+          </div>
+        </div>
+
         <div class="flex items-center justify-between">
-          <span class="font-medium">{t.autoAppendNext}</span>
+          <span class="font-medium">{t.floatingAutoDimLabel}</span>
           <input
             type="checkbox"
-            checked={readerSettings.autoNextChapter}
-            onchange={toggleAutoNext}
+            checked={settingsStore.value.floating.autoDimInReader}
+            onchange={(e) => {
+              const checked = e.currentTarget.checked;
+              settingsStore.update((d) => (d.floating.autoDimInReader = checked));
+            }}
             class="h-4 w-4 accent-rose-500"
           />
         </div>
       {/if}
 
-      <div class="flex items-center justify-between">
-        <span class="font-medium">{t.keepScreenOnLabel}</span>
-        <input
-          type="checkbox"
-          checked={behavior.keepScreenOn}
-          onchange={(e) => {
-            const checked = e.currentTarget.checked;
-            settingsStore.update((d) => (d.reader.behavior.keepScreenOn = checked));
-          }}
-          class="h-4 w-4 accent-rose-500"
-        />
-      </div>
-
-      <div class="flex items-center justify-between">
-        <span class="font-medium">{t.skipBrokenImagesLabel}</span>
-        <input
-          type="checkbox"
-          checked={behavior.skipBrokenImages}
-          onchange={(e) => {
-            const checked = e.currentTarget.checked;
-            settingsStore.update((d) => (d.reader.behavior.skipBrokenImages = checked));
-          }}
-          class="h-4 w-4 accent-rose-500"
-        />
-      </div>
-
-      <div class="flex flex-col gap-1.5">
-        <div class="flex items-center justify-between">
-          <span class="font-medium">{t.dimUnfocusedLabel}</span>
-          <input
-            type="checkbox"
-            checked={isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
-            onchange={toggleDim}
-            class="h-4 w-4 accent-rose-500"
-          />
-        </div>
-        {#if isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
-          {@const dimPct = isHorizontal ? hCfg.dimLevel : vCfg.dimLevel}
-          <div class="flex items-center gap-2">
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="5"
-              value={dimPct}
-              oninput={(e) => setDimLevel(Number(e.currentTarget.value))}
-              class="w-full accent-rose-500"
-            />
-            <span class="w-9 text-right" style="color: var(--text-muted);">{dimPct}%</span>
-          </div>
-        {/if}
-      </div>
-
-      <div class="flex flex-col gap-1.5">
-        <span class="font-medium">{t.readerBg}</span>
-        <div class="grid grid-cols-3 gap-1.5">
-          {#each [["dark", t.bgDark], ["light", t.bgLight], ["follow_theme", t.bgAppTheme]] as [val, label] (val)}
-            <button
-              type="button"
-              onclick={() => setReaderBg(val as ReaderBg)}
-              class="rounded-lg border py-1.5 font-medium"
-              style="border-color: {readerSettings.readerBg === val
-                ? 'var(--accent)'
-                : 'var(--border)'}; background-color: {readerSettings.readerBg === val
-                ? 'var(--accent-soft)'
-                : 'var(--surface-subtle)'}; color: {readerSettings.readerBg === val
-                ? 'var(--accent)'
-                : 'var(--text)'};"
-            >
-              {label}
-            </button>
-          {/each}
-        </div>
-      </div>
+      <button
+        type="button"
+        onclick={() => openFullSettings("floating")}
+        class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 font-medium transition-opacity hover:opacity-85"
+        style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--accent);"
+      >
+        <ExternalLink size={12} />
+        <span>{t.openFullSettingsBtn}</span>
+      </button>
     </div>
   {/if}
 
@@ -1769,17 +2328,27 @@
       {@const groups = partitionPages(activeChapter.images, hCfg.pagesPerGroup)}
       <div
         class="flex h-full w-max items-center"
-        style="gap: {hCfg.pagesPerGroup === 1 ? 0 : hCfg.groupGapPx}px; {zoomTransformStyle}"
+        style="gap: {isContinuousHorizontal
+          ? hCfg.pagesPerGroup === 1
+            ? hCfg.pageGapPx
+            : hCfg.groupGapPx
+          : hCfg.pagesPerGroup === 1
+            ? 0
+            : hCfg.groupGapPx}px; {isContinuousHorizontal
+          ? 'padding-left: var(--safe-left); padding-right: var(--safe-right);'
+          : ''} {zoomTransformStyle}"
       >
         {#each groups as group (`${activeChapter.url}:hg:${group.groupIdx}`)}
           {@const gKey = `${activeChapter.url}:hg:${group.groupIdx}`}
           {@const gBright = groupDimBrightness(gKey, hCfg.dimUnfocused, hCfg.dimLevel)}
           <div
             data-group-key={gKey}
-            class="flex h-full shrink-0 items-center justify-center {group.items.length === 1
-              ? 'w-screen'
-              : 'min-w-[92vw] px-2'}"
-            style="gap: {hCfg.pageGapPx}px; {hCfg.snapMode !== 'none'
+            class="box-border flex h-full shrink-0 items-center {isContinuousHorizontal
+              ? 'w-max'
+              : `w-screen ${hCfg.centerGroups ? 'justify-center' : 'justify-start'}`}"
+            style="{isContinuousHorizontal
+              ? ''
+              : 'padding-left: max(0.5rem, var(--safe-left)); padding-right: max(0.5rem, var(--safe-right));'} gap: {hCfg.pageGapPx}px; {hCfg.snapMode !== 'none'
               ? 'scroll-snap-align: center; scroll-snap-stop: always;'
               : ''} {gBright < 0.999
               ? `filter: brightness(${gBright}); transition: filter 160ms ease;`
@@ -1797,6 +2366,8 @@
                   true
                 )}
                 horizontal={true}
+                continuousHorizontal={isContinuousHorizontal}
+                pageGapPx={hCfg.pageGapPx}
                 snapPage={hCfg.snapMode === "page"}
                 snapStopAlways={hCfg.snapMode !== "none"}
                 groupPageCount={group.items.length}
@@ -1838,7 +2409,7 @@
       <!-- VERTICAL READING MODE (Continuous Vertical Scroll + Chapter Dividers) -->
       <div
         class="mx-auto flex w-full max-w-[900px] flex-col items-center pt-14 pb-28"
-        style="padding-left: {behavior.verticalMarginPx}px; padding-right: {behavior.verticalMarginPx}px; {zoomTransformStyle}"
+        style="padding-left: max({behavior.verticalMarginPx}px, var(--safe-left)); padding-right: max({behavior.verticalMarginPx}px, var(--safe-right)); {zoomTransformStyle}"
       >
         {#each strip as chap, chapIdx (chap.url)}
           {@const isActiveChap = normUrl(chap.url) === normUrl(activeUrl)}
@@ -1922,7 +2493,7 @@
   {#if !loadingInitial && !errorState && activeChapter && totalPages > 0}
     <footer
       class="fixed right-0 bottom-0 left-0 z-30 flex items-center gap-3 border-t px-3 py-2.5 backdrop-blur-md transition-transform duration-200 sm:px-5"
-      style="padding-bottom: max(0.625rem, var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 90%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
+      style="padding-bottom: calc(0.625rem + var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 90%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
         ? '0%'
         : '115%'});"
     >
@@ -1954,8 +2525,16 @@
             scrubbing = false;
             scheduleToolbarAutoHide();
           }}
+          onpointercancel={() => {
+            scrubbing = false;
+            scheduleToolbarAutoHide();
+          }}
           oninput={(e) => {
             seekToPage(Number(e.currentTarget.value) - 1);
+          }}
+          onchange={() => {
+            scrubbing = false;
+            scheduleToolbarAutoHide();
           }}
           class="h-1.5 w-full cursor-pointer accent-rose-500"
           aria-label={t.readerProgressSeek}
@@ -1983,13 +2562,24 @@
     inReader={true}
     showScrollTop={showScrollTopBtn}
     onScrollTop={() => scrollToStartOfContainer(true)}
-    onToggleReaderSettings={() => {
-      quickSettingsOpen = !quickSettingsOpen;
+    onLongPressScrollTop={() => {
+      quickFloatConfig = "scrollToTop";
+      quickSettingsOpen = false;
+      openQuickCat = null;
       chapterJumpOpen = false;
       wakeFloatingControls();
     }}
-    readerSettingsActive={quickSettingsOpen}
+    onToggleReaderSettings={toggleQuickSettings}
+    onLongPressReaderSettings={() => openFullSettings("reader")}
+    readerSettingsActive={quickSettingsOpen || quickFloatConfig !== null}
     onCycleOrientationLock={cycleOrientationLock}
+    onLongPressOrientationLock={() => {
+      quickFloatConfig = "orientationLock";
+      quickSettingsOpen = false;
+      openQuickCat = null;
+      chapterJumpOpen = false;
+      wakeFloatingControls();
+    }}
     orientationLock={readerSettings.orientationLock}
     dimmed={controlsDimmed}
   />

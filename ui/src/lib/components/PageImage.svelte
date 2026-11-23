@@ -12,6 +12,8 @@
     pageKey = "",
     loadMode = "idle",
     horizontal = false,
+    continuousHorizontal = false,
+    pageGapPx = 8,
     dimBrightness = 1,
     snapPage = false,
     snapStopAlways = false,
@@ -24,6 +26,8 @@
     pageKey?: string;
     loadMode?: PageLoadMode;
     horizontal?: boolean;
+    continuousHorizontal?: boolean;
+    pageGapPx?: number;
     dimBrightness?: number;
     snapPage?: boolean;
     snapStopAlways?: boolean;
@@ -110,11 +114,14 @@
 
   const horizontalBoxStyle = $derived(() => {
     if (!horizontal) return "";
-    if (groupPageCount <= 1) {
-      return "width: 100vw; max-width: 100vw;";
+    if (continuousHorizontal) {
+      return "width: auto; max-width: calc(100vw - var(--safe-left) - var(--safe-right));";
     }
-    const pct = Math.max(12, Math.floor(96 / Math.max(1, groupPageCount)));
-    return `max-width: ${pct}vw;`;
+    if (groupPageCount <= 1) {
+      return "width: 100%; max-width: 100%;";
+    }
+    const totalGap = Math.max(0, (groupPageCount - 1) * pageGapPx);
+    return `max-width: calc((100% - ${totalGap}px) / ${groupPageCount});`;
   });
 
   const snapStyle = $derived(() => {
@@ -233,7 +240,7 @@
     {#if !loaded}
       <div
         class="flex flex-col items-center justify-center gap-2 {horizontal
-          ? 'h-[78dvh] aspect-[5/7] max-w-full rounded'
+          ? 'h-full max-h-full aspect-[5/7] max-w-full rounded'
           : 'aspect-[5/7] w-full'}"
         style={placeholderStyle()}
       >
@@ -253,14 +260,14 @@
       onload={handleLoad}
       onerror={handleError}
       class={horizontal
-        ? "block max-h-[calc(100dvh-2.5rem)] w-auto max-w-full object-contain select-none"
+        ? "block max-h-full w-auto max-w-full object-contain select-none"
         : "block h-auto w-full select-none"}
       class:hidden={!loaded}
     />
   {:else}
     <div
       class={horizontal
-        ? "h-[78dvh] aspect-[5/7] max-w-full rounded"
+        ? "h-full max-h-full aspect-[5/7] max-w-full rounded"
         : "aspect-[5/7] w-full"}
       style={placeholderStyle()}
     ></div>

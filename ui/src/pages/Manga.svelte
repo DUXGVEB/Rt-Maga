@@ -17,6 +17,7 @@
     Trash2,
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
+  import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
@@ -182,6 +183,7 @@
     hiding = true;
     try {
       await api.setMangaHidden(manga.id, "hide");
+      void notificationsStore.refresh();
       toasts.push(t.toastMangaHidden, "info", 2800);
       router.goHome();
     } catch (err) {
@@ -197,6 +199,7 @@
     deleting = true;
     try {
       await api.deleteMangaPermanently(manga.id);
+      void notificationsStore.refresh();
       showDeleteModal = false;
       toasts.push(t.toastMangaDeleted, "info", 2800);
       router.goHome();

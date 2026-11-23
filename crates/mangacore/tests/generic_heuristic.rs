@@ -233,3 +233,61 @@ fn generic_deduplicates_fragment_chapter_links() {
         "https://example.com/series/demo/chapter-2"
     );
 }
+
+#[test]
+fn generic_preserves_chapter_images_when_series_slug_contains_avatar_icon_or_banner() {
+    let html = r#"
+    <!doctype html>
+    <html>
+    <head><title>Avatar of the Iconic Banner Chapter 1</title></head>
+    <body>
+      <header>
+        <img src="https://cdn.example.com/assets/icons/site-icon.png" />
+        <img src="https://cdn.example.com/images/avatar.jpg" />
+      </header>
+      <main class="reading-content">
+        <img src="https://cdn.example.com/manga/avatar-of-stars/chapter-1/01.jpg" />
+        <img src="https://cdn.example.com/manga/iconic-hero/chapter-1/02.webp" />
+        <img src="https://cdn.example.com/manga/banner-of-war/chapter-1/03.png" />
+      </main>
+    </body>
+    </html>"#;
+    let url = Url::parse("https://example.com/manga/avatar-of-stars/chapter-1").unwrap();
+    let chapter = GenericSource::parse_chapter_html(html, &url).unwrap();
+    let urls: Vec<&str> = chapter.images.iter().map(|i| i.url.as_str()).collect();
+    assert_eq!(
+        urls,
+        vec![
+            "https://cdn.example.com/manga/avatar-of-stars/chapter-1/01.jpg",
+            "https://cdn.example.com/manga/iconic-hero/chapter-1/02.webp",
+            "https://cdn.example.com/manga/banner-of-war/chapter-1/03.png",
+        ],
+        "series slugs starting with avatar-/icon/banner- must not be filtered out as UI icons"
+    );
+}
+
+#[test]
+fn generic_extracts_query_parameter_chapters_on_same_path() {
+    let html = r#"
+    <!doctype html>
+    <html>
+    <head><title>Query Chronicle</title></head>
+    <body>
+      <h1>Query Chronicle</h1>
+      <div class="chapter-list">
+        <a href="/read?series=42&chapter=3">Chapter 3</a>
+        <a href="/read?series=42&chapter=2">Chapter 2</a>
+        <a href="/read?series=42&chapter=1">Chapter 1</a>
+      </div>
+    </body>
+    </html>"#;
+    let url = Url::parse("https://example.com/read?series=42").unwrap();
+    let manga = GenericSource::parse_manga_html(html, &url).unwrap();
+    assert_eq!(manga.chapters.len(), 3);
+    assert_eq!(manga.chapters[0].number, Some(1.0));
+    assert_eq!(
+        manga.chapters[0].url.as_str(),
+        "https://example.com/read?series=42&chapter=1"
+    );
+    assert_eq!(manga.chapters[2].number, Some(3.0));
+}

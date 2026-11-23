@@ -29,16 +29,29 @@ const AD_HOST_FRAGMENTS: &[&str] = &[
     "analytics.",
 ];
 
-/// Path/filename fragments strongly indicating non-manga UI or promotional images.
-const IGNORED_PATH_FRAGMENTS: &[&str] = &[
-    "/favicon",
-    "/logo",
-    "/avatar",
-    "/icon",
-    "/emoji",
-    "/sticker",
-    "/banner",
-    "/ads/",
+/// Directory or filename fragments strongly indicating non-manga UI or promotional images.
+/// Checked against the filename or full directory segments so manga title slugs like
+/// `/series/avatar-of-stars/ch-1/01.jpg` or `/manga/iconic-hero/01.jpg` are never falsely rejected.
+const IGNORED_DIR_SEGMENTS: &[&str] = &[
+    "ads", "ad", "banners", "avatars", "icons", "emojis", "stickers",
+];
+
+const IGNORED_FILENAME_FRAGMENTS: &[&str] = &[
+    "favicon",
+    "logo.",
+    "logo-",
+    "logo_",
+    "avatar.",
+    "avatar-",
+    "avatar_",
+    "icon.",
+    "icon-",
+    "icon_",
+    "emoji",
+    "sticker",
+    "banner.",
+    "banner-",
+    "banner_",
     "loading.",
     "loader.",
     "placeholder",
@@ -151,7 +164,6 @@ pub fn is_ignored_image_url(url: &Url) -> bool {
     {
         return true;
     }
-    let lower_path = url.path().to_ascii_lowercase();
     if let Some(host) = url.host_str() {
         let lower_host = host.to_ascii_lowercase();
         if AD_HOST_FRAGMENTS
@@ -161,9 +173,29 @@ pub fn is_ignored_image_url(url: &Url) -> bool {
             return true;
         }
     }
-    IGNORED_PATH_FRAGMENTS
+    let segments: Vec<String> = url
+        .path_segments()
+        .map(|it| {
+            it.filter(|s| !s.is_empty())
+                .map(str::to_ascii_lowercase)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let Some((filename, dirs)) = segments.split_last() else {
+        return false;
+    };
+
+    if dirs
         .iter()
-        .any(|frag| lower_path.contains(frag))
+        .any(|dir| IGNORED_DIR_SEGMENTS.contains(&dir.as_str()))
+    {
+        return true;
+    }
+
+    IGNORED_FILENAME_FRAGMENTS
+        .iter()
+        .any(|frag| filename.contains(frag))
 }
 
 /// Returns `true` if the `<img>` declares an explicit width or height strictly smaller than `min_px`.

@@ -45,12 +45,14 @@ pub fn extract_chapters(doc: &Html, base: &Url) -> Vec<ChapterRef> {
         if url.host_str().unwrap_or("").to_ascii_lowercase() != page_host {
             continue;
         }
-        if url.path() == base.path() {
+        if url.path() == base.path() && url.query() == base.query() {
             continue;
         }
 
         let text = clean_text(&link.text().collect::<String>());
-        let number = extract_chapter_number(&text).or_else(|| extract_chapter_number(url.path()));
+        let number = extract_chapter_number(&text)
+            .or_else(|| extract_chapter_number(url.path()))
+            .or_else(|| url.query().and_then(extract_chapter_number));
         if number.is_none() {
             continue;
         }

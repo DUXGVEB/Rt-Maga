@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::error::AppError;
 use crate::image_proxy::encode_page_token;
+use crate::repo::diagnostics::NewDiagnosticLog;
 use crate::state::AppState;
 
 /// Resolved chapter payload delivered to the Svelte vertical reader.
@@ -38,7 +39,28 @@ pub(crate) async fn get_chapter(
         cached
     } else {
         let policy = state.current_settings().await.headless_policy();
-        let fetched = Arc::new(state.registry.chapter(&url, policy).await?);
+        let fetched = match state.registry.chapter(&url, policy).await {
+            Ok(c) => Arc::new(c),
+            Err(err) => {
+                let app_err = AppError::from(err);
+                let src = url
+                    .host_str()
+                    .map(|h| h.trim_start_matches("www.").to_ascii_lowercase());
+                let _ = state
+                    .db
+                    .record_diagnostic_log(&NewDiagnosticLog {
+                        level: "error".to_owned(),
+                        category: app_err.category().to_owned(),
+                        message: "Failed to load chapter pages".to_owned(),
+                        detail: Some(app_err.to_string()),
+                        source: src,
+                        chapter_url: Some(url.as_str().to_owned()),
+                        stack_trace: None,
+                    })
+                    .await;
+                return Err(app_err);
+            }
+        };
         state
             .chapters
             .insert(url.clone(), Arc::clone(&fetched))

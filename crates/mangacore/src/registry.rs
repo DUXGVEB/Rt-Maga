@@ -95,7 +95,7 @@ impl Registry {
         }
 
         // Tier 2: generic heuristic on static HTML.
-        match self.generic.resolve(&self.http, &url).await {
+        let static_err = match self.generic.resolve(&self.http, &url).await {
             Ok(resolved) => return Ok(resolved),
             Err(err) if is_terminal_scrape_error(&err) => return Err(err),
             Err(err) => {
@@ -103,11 +103,16 @@ impl Registry {
                     return Err(err);
                 }
                 debug!(%err, %url, "generic static resolve failed, trying headless");
+                err
             }
-        }
+        };
 
-        // Tier 3: headless browser fallback.
-        self.resolve_headless(&url).await
+        // Tier 3: headless browser fallback (preserve original static parse error if headless is unavailable).
+        match self.resolve_headless(&url).await {
+            Ok(resolved) => Ok(resolved),
+            Err(ScrapeError::Headless(_)) => Err(static_err),
+            Err(other) => Err(other),
+        }
     }
 
     /// Fetches ordered images and neighbor navigation for a specific chapter URL.
@@ -131,7 +136,7 @@ impl Registry {
             }
         }
 
-        match self.generic.chapter(&self.http, url).await {
+        let static_err = match self.generic.chapter(&self.http, url).await {
             Ok(chapter) => return Ok(chapter),
             Err(err) if is_terminal_scrape_error(&err) => return Err(err),
             Err(err) => {
@@ -139,10 +144,15 @@ impl Registry {
                     return Err(err);
                 }
                 debug!(%err, %url, "generic chapter failed, trying headless");
+                err
             }
-        }
+        };
 
-        self.chapter_headless(url).await
+        match self.chapter_headless(url).await {
+            Ok(chapter) => Ok(chapter),
+            Err(ScrapeError::Headless(_)) => Err(static_err),
+            Err(other) => Err(other),
+        }
     }
 
     /// Opens a visible browser window so the user can manually complete a bot-verification check,
@@ -182,10 +192,10 @@ impl Registry {
         }
         #[cfg(not(feature = "headless"))]
         {
-            Err(ScrapeError::NotRecognized {
-                url: url.clone(),
-                reason: "headless fallback unavailable",
-            })
+            let _ = url;
+            Err(ScrapeError::Headless(
+                "headless fallback unavailable".to_owned(),
+            ))
         }
     }
 
@@ -197,22 +207,21 @@ impl Registry {
         }
         #[cfg(not(feature = "headless"))]
         {
-            Err(ScrapeError::NotRecognized {
-                url: url.clone(),
-                reason: "headless fallback unavailable",
-            })
+            let _ = url;
+            Err(ScrapeError::Headless(
+                "headless fallback unavailable".to_owned(),
+            ))
         }
     }
 }
 
-/// Errors that represent policy/security/proxy enforcement and must never fall through to headless.
+/// Errors that represent transport, HTTP status, policy, security, or proxy failures and must
+/// never fall through to launching a headless browser. Only content-recognition failures on
+/// successfully fetched HTML (`NotRecognized` or `MissingImages`) may attempt headless rendering.
 const fn is_terminal_scrape_error(err: &ScrapeError) -> bool {
-    matches!(
+    !matches!(
         err,
-        ScrapeError::Blocked { .. }
-            | ScrapeError::Proxy(_)
-            | ScrapeError::DisallowedHost(_)
-            | ScrapeError::InvalidUrl(_)
+        ScrapeError::NotRecognized { .. } | ScrapeError::MissingImages { .. }
     )
 }
 

@@ -122,19 +122,12 @@
     <Sidebar />
   {/if}
 
-  <main
-    bind:this={mainEl}
-    onscroll={handleMainScroll}
-    class="relative flex-1 {isReader ? 'overflow-hidden' : 'overflow-y-auto pb-20 md:pb-0'}"
-    style={isReader
-      ? ""
-      : "padding-top: var(--safe-top); padding-left: var(--safe-left); padding-right: var(--safe-right);"}
-  >
-    <!-- Mobile compact top bar with Bell Notification Center -->
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <!-- Mobile Top App Bar: seamlessly anchored at y=0 and paints behind status bar / cutout -->
     {#if !isReader}
-      <div
-        class="sticky top-0 z-20 flex items-center justify-between border-b px-4 py-2.5 backdrop-blur-md md:hidden"
-        style="background-color: color-mix(in srgb, var(--surface) 92%, transparent); border-color: var(--border);"
+      <header
+        class="z-20 flex shrink-0 items-center justify-between border-b md:hidden"
+        style="padding-top: calc(0.625rem + var(--safe-top)); padding-bottom: 0.625rem; padding-left: max(1rem, var(--safe-left)); padding-right: max(1rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border);"
       >
         <button
           type="button"
@@ -163,72 +156,83 @@
             </span>
           {/if}
         </button>
-      </div>
+      </header>
     {/if}
 
-    {#if !isReader && !appReleaseStore.promptOpen && appReleaseStore.shouldShowBanner && appReleaseStore.release}
-      <div
-        class="sticky top-11 z-20 flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2.5 text-xs backdrop-blur-md md:top-0"
-        style="background-color: color-mix(in srgb, var(--surface) 92%, var(--accent-soft)); border-color: var(--border);"
-      >
-        <div class="flex min-w-0 items-center gap-2 font-medium">
-          <Sparkles size={15} class="shrink-0" style="color: var(--accent);" />
-          <span class="truncate">
-            {t.releaseAvailableBanner(appReleaseStore.release.latestVersion)}
-          </span>
+    <main
+      bind:this={mainEl}
+      onscroll={handleMainScroll}
+      class="relative min-h-0 flex-1 {isReader
+        ? 'overflow-hidden'
+        : 'main-desktop-safe-top overflow-y-auto pb-20 md:pb-0'}"
+      style={isReader
+        ? ""
+        : "padding-left: var(--safe-left); padding-right: var(--safe-right);"}
+    >
+      {#if !isReader && !appReleaseStore.promptOpen && appReleaseStore.shouldShowBanner && appReleaseStore.release}
+        <div
+          class="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2.5 text-xs backdrop-blur-md"
+          style="background-color: color-mix(in srgb, var(--surface) 92%, var(--accent-soft)); border-color: var(--border);"
+        >
+          <div class="flex min-w-0 items-center gap-2 font-medium">
+            <Sparkles size={15} class="shrink-0" style="color: var(--accent);" />
+            <span class="truncate">
+              {t.releaseAvailableBanner(appReleaseStore.release.latestVersion)}
+            </span>
+          </div>
+
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onclick={() => appReleaseStore.openPrompt()}
+              class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1 font-semibold text-white transition-opacity hover:opacity-90"
+              style="background-color: var(--accent);"
+            >
+              <Download size={13} />
+              <span>{t.updateDownloadAndInstall}</span>
+            </button>
+            <button
+              type="button"
+              onclick={() => appReleaseStore.openReleasePage()}
+              class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 font-medium transition-opacity hover:opacity-85"
+              style="border-color: var(--border); background-color: var(--surface);"
+            >
+              <ExternalLink size={12} />
+              <span>{t.viewRelease}</span>
+            </button>
+            <button
+              type="button"
+              onclick={() => appReleaseStore.dismissPrompt()}
+              class="rounded-lg p-1 opacity-70 transition-opacity hover:opacity-100"
+              aria-label={t.dismissUpdate}
+              title={t.dismissUpdate}
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
+      {/if}
 
-        <div class="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            onclick={() => appReleaseStore.openPrompt()}
-            class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1 font-semibold text-white transition-opacity hover:opacity-90"
-            style="background-color: var(--accent);"
-          >
-            <Download size={13} />
-            <span>{t.updateDownloadAndInstall}</span>
-          </button>
-          <button
-            type="button"
-            onclick={() => appReleaseStore.openReleasePage()}
-            class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 font-medium transition-opacity hover:opacity-85"
-            style="border-color: var(--border); background-color: var(--surface);"
-          >
-            <ExternalLink size={12} />
-            <span>{t.viewRelease}</span>
-          </button>
-          <button
-            type="button"
-            onclick={() => appReleaseStore.dismissPrompt()}
-            class="rounded-lg p-1 opacity-70 transition-opacity hover:opacity-100"
-            aria-label={t.dismissUpdate}
-            title={t.dismissUpdate}
-          >
-            <X size={14} />
-          </button>
-        </div>
-      </div>
-    {/if}
-
-    {#if router.current.name === "home"}
-      <Home />
-    {:else if router.current.name === "bookmarks"}
-      <Bookmarks />
-    {:else if router.current.name === "manga"}
-      <Manga id={router.current.id} />
-    {:else if router.current.name === "reader"}
-      <Reader
-        mangaId={router.current.mangaId}
-        chapterUrl={router.current.chapterUrl}
-        initialScrollRatio={router.current.scrollRatio ?? 0}
-        initialPageIndex={router.current.pageIndex ?? 0}
-      />
-    {:else if router.current.name === "history"}
-      <History />
-    {:else if router.current.name === "settings"}
-      <Settings />
-    {/if}
-  </main>
+      {#if router.current.name === "home"}
+        <Home />
+      {:else if router.current.name === "bookmarks"}
+        <Bookmarks />
+      {:else if router.current.name === "manga"}
+        <Manga id={router.current.id} />
+      {:else if router.current.name === "reader"}
+        <Reader
+          mangaId={router.current.mangaId}
+          chapterUrl={router.current.chapterUrl}
+          initialScrollRatio={router.current.scrollRatio ?? 0}
+          initialPageIndex={router.current.pageIndex ?? 0}
+        />
+      {:else if router.current.name === "history"}
+        <History />
+      {:else if router.current.name === "settings"}
+        <Settings focusSection={router.current.section} />
+      {/if}
+    </main>
+  </div>
 
   {#if !isReader}
     <!-- Floating Scroll-to-Top for non-reader screens -->
@@ -236,13 +240,14 @@
       screen={activeScreen}
       showScrollTop={showMainScrollTop}
       onScrollTop={scrollMainToTop}
+      onLongPressScrollTop={() => router.goSettings("floating")}
       hasBottomNav={deviceEnv.isMobile}
     />
 
     <!-- Mobile Bottom Navigation: Home | Bookmarks | History (double-tap resume) | Settings -->
     <nav
       class="fixed right-0 bottom-0 left-0 z-20 flex items-center justify-around border-t py-1.5 backdrop-blur-md md:hidden"
-      style="padding-bottom: max(0.375rem, var(--safe-bottom)); background-color: color-mix(in srgb, var(--surface) 95%, transparent); border-color: var(--border);"
+      style="padding-bottom: max(0.375rem, var(--safe-bottom)); padding-left: var(--safe-left); padding-right: var(--safe-right); background-color: color-mix(in srgb, var(--surface) 95%, transparent); border-color: var(--border);"
     >
       <button
         type="button"

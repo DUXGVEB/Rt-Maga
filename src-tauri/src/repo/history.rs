@@ -134,10 +134,13 @@ impl Database {
 
         if let Some((json,)) = saved
             && let Ok(dest) = serde_json::from_str::<LastReadingDestination>(&json)
+            && self.get_history_for_manga(dest.manga_id).await?.is_some()
             && self
                 .get_manga_by_id(dest.manga_id)
                 .await?
                 .is_some_and(|m| m.hidden == 0)
+            && let Ok((_, is_completed)) = self.get_manga_read_summary(dest.manga_id).await
+            && !is_completed
         {
             return Ok(Some(dest));
         }
@@ -147,6 +150,16 @@ impl Database {
              FROM history h
              INNER JOIN manga m ON m.id = h.manga_id
              WHERE m.hidden = 0
+               AND NOT (
+                   m.has_new = 0
+                   AND m.latest_chapter_url IS NOT NULL
+                   AND EXISTS (
+                       SELECT 1 FROM chapter c
+                       WHERE c.manga_id = m.id
+                         AND RTRIM(c.url, '/') = RTRIM(m.latest_chapter_url, '/')
+                         AND c.read = 1
+                   )
+               )
              ORDER BY h.read_at DESC LIMIT 1",
         )
         .fetch_optional(self.pool())
@@ -229,13 +242,18 @@ impl Database {
         Ok(row)
     }
 
-    /// Removes a manga from reading history and clears its `has_new` flag if not bookmarked.
+    /// Removes a manga from reading history, clears its `has_new` flag if not bookmarked,
+    /// and deactivates any active crash-recovery session pointing to it.
     ///
     /// # Errors
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
     pub(crate) async fn remove_history(&self, manga_id: i64) -> Result<(), AppError> {
         sqlx::query("DELETE FROM history WHERE manga_id = ?")
+            .bind(manga_id)
+            .execute(self.pool())
+            .await?;
+        sqlx::query("UPDATE reader_session SET active = 0 WHERE id = 1 AND manga_id = ?")
             .bind(manga_id)
             .execute(self.pool())
             .await?;
@@ -256,6 +274,9 @@ impl Database {
     /// Returns [`AppError::Db`] on SQLite failure.
     pub(crate) async fn clear_history(&self) -> Result<(), AppError> {
         sqlx::query("DELETE FROM history")
+            .execute(self.pool())
+            .await?;
+        sqlx::query("UPDATE reader_session SET active = 0 WHERE id = 1")
             .execute(self.pool())
             .await?;
         sqlx::query("DELETE FROM settings WHERE key = ?")

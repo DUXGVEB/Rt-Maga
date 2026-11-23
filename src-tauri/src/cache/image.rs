@@ -100,8 +100,9 @@ impl ImageCache {
         out
     }
 
-    /// Reads a cached image if present on disk and refreshes its LRU timestamp.
-    pub(crate) async fn get(&self, key: &str) -> Option<CachedImage> {
+    /// Reads a cached image if present on disk, refreshes its LRU timestamp, and backfills
+    /// missing `site` / `manga_id` ownership metadata.
+    pub(crate) async fn get(&self, key: &str, meta: CacheEntryMeta<'_>) -> Option<CachedImage> {
         let row: Option<(String,)> =
             sqlx::query_as("SELECT content_type FROM image_cache WHERE key = ?")
                 .bind(key)
@@ -119,11 +120,19 @@ impl ImageCache {
             return None;
         };
 
-        let _ = sqlx::query("UPDATE image_cache SET last_access = ? WHERE key = ?")
-            .bind(now_unix_secs())
-            .bind(key)
-            .execute(self.db.pool())
-            .await;
+        let _ = sqlx::query(
+            "UPDATE image_cache
+             SET last_access = ?,
+                 site = COALESCE(site, ?),
+                 manga_id = COALESCE(manga_id, ?)
+             WHERE key = ?",
+        )
+        .bind(now_unix_secs())
+        .bind(meta.site)
+        .bind(meta.manga_id)
+        .bind(key)
+        .execute(self.db.pool())
+        .await;
 
         Some(CachedImage {
             bytes: Bytes::from(data),

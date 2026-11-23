@@ -156,7 +156,15 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let images = ImageCache::new(cache_dir, db.clone()).await?;
 
         match db.prune_stale_manga(STALE_MANGA_RETENTION_DAYS).await {
-            Ok(removed) if removed > 0 => info!(removed, "pruned stale manga entries"),
+            Ok(pruned_ids) if !pruned_ids.is_empty() => {
+                for pid in &pruned_ids {
+                    let _ = images.clear_by_manga(*pid).await;
+                }
+                info!(
+                    removed = pruned_ids.len(),
+                    "pruned stale manga entries and cached images"
+                );
+            }
             Err(err) => warn!(%err, "failed to prune stale manga entries"),
             _ => {}
         }

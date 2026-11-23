@@ -429,7 +429,7 @@ pub struct HttpClient {
 
 #[derive(Debug)]
 struct HttpClientInner {
-    direct_client: RwLock<Client>,
+    direct_client: RwLock<Result<Client, String>>,
     jar: Arc<Jar>,
     user_agent: String,
     timeout: Duration,
@@ -453,18 +453,29 @@ impl HttpClient {
 
     /// Builds a new [`HttpClient`] with a custom [`HttpPolicy`].
     ///
+    /// If a fail-closed `DoH` provider is misconfigured (e.g. missing account ID), construction
+    /// still succeeds so app startup never panics; direct requests fail closed with
+    /// [`ScrapeError::Proxy`] until the user fixes or disables `DoH`.
+    ///
     /// # Errors
     ///
     /// Returns [`ScrapeError::Network`] if the underlying TLS/HTTP client cannot be initialized.
     pub fn with_policy(policy: HttpPolicy) -> Result<Self, ScrapeError> {
         let jar = Arc::new(Jar::default());
         let clean_doh = policy.doh.sanitized();
-        let direct_client = build_direct_client(
+        let direct_client = match build_direct_client(
             &policy.user_agent,
             policy.timeout,
             Arc::clone(&jar),
             &clean_doh,
-        )?;
+        ) {
+            Ok(client) => Ok(client),
+            Err(ScrapeError::Proxy(reason)) => {
+                warn!(%reason, "DoH provider misconfigured at startup; direct requests will fail closed until fixed or disabled");
+                Err(reason)
+            }
+            Err(other) => return Err(other),
+        };
 
         Ok(Self {
             inner: Arc::new(HttpClientInner {
@@ -492,6 +503,22 @@ impl HttpClient {
         self.inner.limiter.limit_kbps()
     }
 
+    /// Returns a snapshot of the active [`DohConfig`].
+    pub fn doh_config(&self) -> DohConfig {
+        match self.inner.doh_config.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Returns `true` when the direct HTTP client is initialized and ready to serve requests.
+    pub fn is_direct_client_ready(&self) -> bool {
+        match self.inner.direct_client.read() {
+            Ok(guard) => guard.is_ok(),
+            Err(poisoned) => poisoned.into_inner().is_ok(),
+        }
+    }
+
     /// Updates the live DNS-over-HTTPS ([`DohConfig`]) provider and rebuilds the direct HTTP client
     /// when the configuration changes.
     pub fn set_doh_config(&self, config: DohConfig) {
@@ -507,38 +534,41 @@ impl HttpClient {
                 true
             }
         };
-        if !changed {
+        if !changed && self.is_direct_client_ready() {
             return;
         }
-        match build_direct_client(
+        let next_state = match build_direct_client(
             &self.inner.user_agent,
             self.inner.timeout,
             Arc::clone(&self.inner.jar),
             &clean,
         ) {
             Ok(next_client) => {
-                match self.inner.direct_client.write() {
-                    Ok(mut g) => *g = next_client,
-                    Err(p) => *p.into_inner() = next_client,
-                }
                 debug!(
                     enabled = clean.enabled,
                     provider = %clean.provider_id,
                     profile = %clean.profile_id,
                     "updated in-app DoH resolver configuration"
                 );
+                Ok(next_client)
             }
             Err(err) => {
-                warn!(%err, "failed to rebuild direct client with DoH resolver");
+                warn!(%err, "failed to rebuild direct client with DoH resolver; failing closed");
+                Err(err.to_string())
             }
+        };
+        match self.inner.direct_client.write() {
+            Ok(mut g) => *g = next_state,
+            Err(p) => *p.into_inner() = next_state,
         }
     }
 
-    fn direct_client(&self) -> Client {
-        match self.inner.direct_client.read() {
+    fn direct_client(&self) -> Result<Client, ScrapeError> {
+        let state = match self.inner.direct_client.read() {
             Ok(g) => g.clone(),
             Err(p) => p.into_inner().clone(),
-        }
+        };
+        state.map_err(ScrapeError::Proxy)
     }
 
     /// Updates the live per-host concurrency limit and resets cached host semaphores if changed.
@@ -700,14 +730,8 @@ impl HttpClient {
                 Ok(c) => c,
                 Err(err) if allow_fallback => {
                     warn!(%err, "proxy unavailable; falling back to direct mode (user-enabled)");
-                    return fetch_html_with_client(
-                        &self.direct_client(),
-                        url,
-                        None,
-                        limiter,
-                        timeout_secs,
-                    )
-                    .await;
+                    let direct = self.direct_client()?;
+                    return fetch_html_with_client(&direct, url, None, limiter, timeout_secs).await;
                 }
                 Err(err) => return Err(err),
             };
@@ -718,20 +742,15 @@ impl HttpClient {
                 Ok(page) => return Ok(page),
                 Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
                     warn!(%err, "proxy request failed; falling back to direct mode (user-enabled)");
-                    return fetch_html_with_client(
-                        &self.direct_client(),
-                        url,
-                        None,
-                        limiter,
-                        timeout_secs,
-                    )
-                    .await;
+                    let direct = self.direct_client()?;
+                    return fetch_html_with_client(&direct, url, None, limiter, timeout_secs).await;
                 }
                 Err(err) => return Err(err),
             }
         }
 
-        fetch_html_with_client(&self.direct_client(), url, None, limiter, timeout_secs).await
+        let direct = self.direct_client()?;
+        fetch_html_with_client(&direct, url, None, limiter, timeout_secs).await
     }
 
     /// Downloads raw image bytes with an explicit `Referer` header and active proxy routing.
@@ -760,8 +779,9 @@ impl HttpClient {
                 Ok(c) => c,
                 Err(err) if allow_fallback => {
                     warn!(%err, "proxy unavailable for image; falling back to direct mode");
+                    let direct = self.direct_client()?;
                     return fetch_image_with_client(
-                        &self.direct_client(),
+                        &direct,
                         url,
                         referer,
                         None,
@@ -786,8 +806,9 @@ impl HttpClient {
                 Ok(bytes) => return Ok(bytes),
                 Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
                     warn!(%err, "proxied image fetch failed; falling back to direct mode");
+                    let direct = self.direct_client()?;
                     return fetch_image_with_client(
-                        &self.direct_client(),
+                        &direct,
                         url,
                         referer,
                         None,
@@ -800,15 +821,8 @@ impl HttpClient {
             }
         }
 
-        fetch_image_with_client(
-            &self.direct_client(),
-            url,
-            referer,
-            None,
-            limiter,
-            timeout_secs,
-        )
-        .await
+        let direct = self.direct_client()?;
+        fetch_image_with_client(&direct, url, referer, None, limiter, timeout_secs).await
     }
 
     fn client_for_proxy(&self, endpoint: &ProxyEndpoint) -> Result<Client, ScrapeError> {
@@ -1781,5 +1795,51 @@ mod tests {
         assert!(matches!(err, ScrapeError::Proxy(_)));
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn doh_misconfigured_fail_closed_does_not_panic_startup_and_recovers_on_disable() {
+        let broken_doh = DohConfig {
+            enabled: true,
+            provider_id: "nextdns".to_owned(),
+            profile_id: "custom".to_owned(),
+            custom_profile_id: None,
+            allow_system_fallback: false,
+        };
+        let client = HttpClient::with_policy(HttpPolicy {
+            doh: broken_doh,
+            ..HttpPolicy::default()
+        })
+        .expect("misconfigured DoH must never panic or fail startup");
+
+        assert!(!client.is_direct_client_ready());
+        let err = client
+            .fetch_html(&Url::parse("https://example.com/series").unwrap())
+            .await
+            .expect_err("fail-closed misconfigured DoH must block direct requests");
+        assert!(matches!(err, ScrapeError::Proxy(_)));
+
+        // Disabling / resetting DNS must immediately restore a ready System DNS direct client.
+        client.set_doh_config(DohConfig::default());
+        assert!(!client.doh_config().enabled);
+        assert!(client.is_direct_client_ready());
+
+        // Switching to a valid DoH provider and back to System DNS must keep direct client healthy.
+        client.set_doh_config(DohConfig {
+            enabled: true,
+            provider_id: "cloudflare".to_owned(),
+            profile_id: "default".to_owned(),
+            custom_profile_id: None,
+            allow_system_fallback: false,
+        });
+        assert!(client.doh_config().enabled);
+        assert!(client.is_direct_client_ready());
+
+        client.set_doh_config(DohConfig {
+            enabled: false,
+            ..client.doh_config()
+        });
+        assert!(!client.doh_config().enabled);
+        assert!(client.is_direct_client_ready());
     }
 }
