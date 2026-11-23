@@ -4,4 +4,4 @@ pub(crate) mod chapter;
 pub(crate) mod image;
 
 pub(crate) use chapter::ChapterCache;
-pub(crate) use image::{CacheInfo, ImageCache};
+pub(crate) use image::{CacheInfo, CacheMangaStats, CacheSourceStats, ImageCache};

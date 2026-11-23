@@ -46,6 +46,8 @@ pub(crate) struct HistoryEntryRow {
     pub has_new: i64,
     pub bookmarked: i64,
     pub total_chapters: i64,
+    pub unread_count: i64,
+    pub is_completed: i64,
     pub current_chapter_idx: Option<i64>,
 }
 
@@ -132,7 +134,10 @@ impl Database {
 
         if let Some((json,)) = saved
             && let Ok(dest) = serde_json::from_str::<LastReadingDestination>(&json)
-            && self.get_manga_by_id(dest.manga_id).await?.is_some()
+            && self
+                .get_manga_by_id(dest.manga_id)
+                .await?
+                .is_some_and(|m| m.hidden == 0)
         {
             return Ok(Some(dest));
         }
@@ -141,6 +146,7 @@ impl Database {
             "SELECT h.manga_id, h.chapter_url, h.chapter_name, h.scroll_ratio, h.page_index, h.read_at
              FROM history h
              INNER JOIN manga m ON m.id = h.manga_id
+             WHERE m.hidden = 0
              ORDER BY h.read_at DESC LIMIT 1",
         )
         .fetch_optional(self.pool())
@@ -160,7 +166,7 @@ impl Database {
         ))
     }
 
-    /// Loads reading history ordered by most recently read first.
+    /// Loads visible (non-hidden) reading history ordered by most recently read first.
     ///
     /// # Errors
     ///
@@ -183,10 +189,20 @@ impl Database {
                 m.has_new,
                 CASE WHEN b.manga_id IS NOT NULL THEN 1 ELSE 0 END AS bookmarked,
                 (SELECT COUNT(*) FROM chapter c WHERE c.manga_id = m.id) AS total_chapters,
+                (SELECT COUNT(*) FROM chapter c WHERE c.manga_id = m.id AND c.read = 0) AS unread_count,
+                CASE WHEN m.has_new = 0
+                     AND m.latest_chapter_url IS NOT NULL
+                     AND EXISTS (
+                         SELECT 1 FROM chapter c
+                         WHERE c.manga_id = m.id
+                           AND RTRIM(c.url, '/') = RTRIM(m.latest_chapter_url, '/')
+                           AND c.read = 1
+                     ) THEN 1 ELSE 0 END AS is_completed,
                 (SELECT c.idx FROM chapter c WHERE c.manga_id = m.id AND RTRIM(c.url, '/') = RTRIM(h.chapter_url, '/') LIMIT 1) AS current_chapter_idx
              FROM history h
              INNER JOIN manga m ON m.id = h.manga_id
              LEFT JOIN bookmark b ON b.manga_id = m.id
+             WHERE m.hidden = 0
              ORDER BY h.read_at DESC",
         )
         .fetch_all(self.pool())

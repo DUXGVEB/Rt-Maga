@@ -25,4 +25,5 @@
 -keep class com.rtmaga.reader.DeviceEnvPlugin { *; }
 -keep class com.rtmaga.reader.OrientationLockArgs { *; }
 -keep class com.rtmaga.reader.ImmersiveArgs { *; }
+-keep class com.rtmaga.reader.KeepScreenOnArgs { *; }
 -keep class com.rtmaga.reader.LocalNotificationArgs { *; }

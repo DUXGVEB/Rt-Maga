@@ -10,19 +10,23 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::android_env::{DeviceEnvInfo, NotificationPermissionInfo, OrientationLockReply};
-use crate::cache::CacheInfo;
+use crate::cache::{CacheInfo, CacheMangaStats, CacheSourceStats};
 use crate::error::AppError;
 use crate::repo::bookmark::BookmarkSort;
+use crate::repo::diagnostics::{DiagnosticLogEntry, NewDiagnosticLog};
 use crate::repo::history::LastReadingDestination;
+use crate::repo::manga::HideAction;
+use crate::repo::session::CrashRecoverySession;
 use crate::services::app_release::{AppReleaseInfo, CURRENT_APP_VERSION, InstallUpdateOutcome};
 use crate::services::library::{
-    BookmarkItemView, FetchMode, HistoryItemView, MangaView, NotificationItemView, ResolveResponse,
+    BookmarkItemView, FetchMode, HiddenMangaView, HistoryItemView, MangaView, NotificationItemView,
+    ResolveResponse,
 };
 use crate::services::reader::ChapterView;
 use crate::services::sync::{SyncDecision, SyncSenderMode, SyncStatusView};
 use crate::services::updater::{CheckScope, UpdateSummary};
 use crate::services::{app_release, library, reader, sync, updater};
-use crate::settings::Settings;
+use crate::settings::{Settings, SettingsSection};
 use crate::state::AppState;
 
 /// Resolves any pasted manga or chapter URL and persists the manga metadata locally.
@@ -234,15 +238,24 @@ pub(crate) async fn set_settings(
     settings: Settings,
 ) -> Result<Settings, AppError> {
     let saved = state.db.save_settings(&settings).await?;
-    let (schedule_changed, doh_changed, proxy_changed, conn_changed) = {
+    apply_settings_side_effects(&app, &state, saved).await
+}
+
+async fn apply_settings_side_effects(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    saved: Settings,
+) -> Result<Settings, AppError> {
+    let (schedule_changed, doh_changed, proxy_changed, conn_changed, speed_changed) = {
         let mut guard = state.settings.write().await;
         let sched = guard.updates.enabled != saved.updates.enabled
             || guard.updates.interval_hours != saved.updates.interval_hours;
         let doh = guard.doh != saved.doh;
         let prox = guard.proxy != saved.proxy;
         let conn = guard.sources.max_conn_per_host != saved.sources.max_conn_per_host;
+        let speed = guard.sources.speed_limit_kbps != saved.sources.speed_limit_kbps;
         *guard = saved.clone();
-        (sched, doh, prox, conn)
+        (sched, doh, prox, conn, speed)
     };
     if doh_changed {
         state.registry.http().set_doh_config(saved.doh.clone());
@@ -256,12 +269,209 @@ pub(crate) async fn set_settings(
             .http()
             .set_max_conn_per_host(usize::from(saved.sources.max_conn_per_host));
     }
+    if speed_changed {
+        state
+            .registry
+            .http()
+            .set_speed_limit_kbps(saved.sources.speed_limit_kbps);
+    }
     let _ = app.emit("settings://changed", &saved);
     state.images.evict_if_needed(saved.cache.max_mb).await;
     if schedule_changed {
-        updater::restart_background_loop(app, Arc::clone(&state)).await;
+        updater::restart_background_loop(app.clone(), Arc::clone(state)).await;
     }
     Ok(saved)
+}
+
+/// Resets a single settings section to factory defaults without touching user library/history data.
+#[tauri::command]
+pub(crate) async fn reset_settings_section(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    section: SettingsSection,
+) -> Result<Settings, AppError> {
+    let mut current = state.current_settings().await;
+    current.reset_section(section);
+    let saved = state.db.save_settings(&current).await?;
+    apply_settings_side_effects(&app, &state, saved).await
+}
+
+/// Resets all application settings to factory defaults without touching manga, chapters, history, or cache.
+#[tauri::command]
+pub(crate) async fn reset_all_settings(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Settings, AppError> {
+    let saved = state.db.save_settings(&Settings::default()).await?;
+    apply_settings_side_effects(&app, &state, saved).await
+}
+
+/// Hides or unhides a manga from normal library listings.
+#[tauri::command]
+pub(crate) async fn set_manga_hidden(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+    action: HideAction,
+) -> Result<bool, AppError> {
+    library::set_manga_hidden(&state, manga_id, action).await
+}
+
+/// Lists all hidden manga so they can be restored or permanently deleted.
+#[tauri::command]
+pub(crate) async fn list_hidden_manga(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<HiddenMangaView>, AppError> {
+    library::list_hidden_manga(&state).await
+}
+
+/// Permanently deletes a manga, its chapter list, reading history, bookmarks, notifications, and cached images.
+#[tauri::command]
+pub(crate) async fn delete_manga_permanently(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+) -> Result<(), AppError> {
+    library::delete_manga_permanently(&state, manga_id).await
+}
+
+/// Updates the Android keep-screen-on window flag while actively reading.
+#[tauri::command]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    clippy::needless_pass_by_value,
+    reason = "IPC command toggles Android FLAG_KEEP_SCREEN_ON with owned AppHandle"
+)]
+pub(crate) fn set_keep_screen_on(app: AppHandle, enabled: bool) -> Result<(), AppError> {
+    crate::android_env::set_keep_screen_on(&app, enabled)
+}
+
+/// Checkpoints an active reader session for crash recovery.
+#[tauri::command]
+pub(crate) async fn upsert_reader_session(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+    chapter_url: String,
+    chapter_name: String,
+    scroll_ratio: f64,
+    page_index: i64,
+    reading_mode: String,
+) -> Result<(), AppError> {
+    state
+        .db
+        .upsert_reader_session(
+            manga_id,
+            &chapter_url,
+            &chapter_name,
+            scroll_ratio,
+            page_index,
+            &reading_mode,
+        )
+        .await
+}
+
+/// Clears the active reader session checkpoint on clean exit or dismiss.
+#[tauri::command]
+pub(crate) async fn clear_reader_session(state: State<'_, Arc<AppState>>) -> Result<(), AppError> {
+    state.db.clear_reader_session().await
+}
+
+/// Returns any abnormally terminated reader session eligible for crash recovery.
+#[tauri::command]
+pub(crate) async fn get_crash_recovery_session(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<CrashRecoverySession>, AppError> {
+    state.db.get_crash_recovery_session().await
+}
+
+/// Records a sanitized frontend runtime/error log entry into SQLite diagnostics.
+#[tauri::command]
+pub(crate) async fn log_client_error(
+    state: State<'_, Arc<AppState>>,
+    entry: NewDiagnosticLog,
+) -> Result<i64, AppError> {
+    state.db.record_diagnostic_log(&entry).await
+}
+
+/// Lists recent sanitized crash and error diagnostic logs.
+#[tauri::command]
+pub(crate) async fn list_diagnostic_logs(
+    state: State<'_, Arc<AppState>>,
+    limit: Option<i64>,
+) -> Result<Vec<DiagnosticLogEntry>, AppError> {
+    state.db.list_diagnostic_logs(limit.unwrap_or(100)).await
+}
+
+/// Clears all stored diagnostic logs.
+#[tauri::command]
+pub(crate) async fn clear_diagnostic_logs(state: State<'_, Arc<AppState>>) -> Result<(), AppError> {
+    state.db.clear_diagnostic_logs().await
+}
+
+/// Generates a structured, credential-free JSON diagnostic report ready for copy or file download.
+#[tauri::command]
+pub(crate) async fn export_diagnostic_logs(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, AppError> {
+    let settings = state.current_settings().await;
+    let logs = state.db.list_diagnostic_logs(500).await?;
+    let cache = state.images.info().await.ok();
+    let env = crate::android_env::get_device_env(&app).ok();
+
+    let payload = serde_json::json!({
+        "app": "RtMaga",
+        "version": CURRENT_APP_VERSION,
+        "exportedAtUnix": crate::repo::now_unix_secs(),
+        "platform": get_platform(),
+        "device": env.map(|e| serde_json::json!({
+            "platform": e.platform,
+            "sdkInt": e.sdk_int,
+            "skin": e.skin,
+            "orientation": e.orientation,
+            "viewportDp": [e.viewport_width_dp, e.viewport_height_dp],
+        })),
+        "cache": cache,
+        "settings": settings.redacted_for_diagnostics(),
+        "logCount": logs.len(),
+        "logs": logs,
+    });
+
+    serde_json::to_string_pretty(&payload).map_err(|e| AppError::Internal {
+        message: format!("failed to serialize diagnostic bundle: {e}"),
+    })
+}
+
+/// Lists disk cache usage grouped by manga source site.
+#[tauri::command]
+pub(crate) async fn list_cache_by_source(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<CacheSourceStats>, AppError> {
+    state.images.list_by_source().await
+}
+
+/// Lists disk cache usage grouped by individual manga.
+#[tauri::command]
+pub(crate) async fn list_cache_by_manga(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<CacheMangaStats>, AppError> {
+    state.images.list_by_manga().await
+}
+
+/// Clears cached images only for `site` (preserving library, history, bookmarks, and settings).
+#[tauri::command]
+pub(crate) async fn clear_cache_by_source(
+    state: State<'_, Arc<AppState>>,
+    site: String,
+) -> Result<CacheInfo, AppError> {
+    state.images.clear_by_source(&site).await
+}
+
+/// Clears cached images only for `manga_id` (preserving library, history, bookmarks, and settings).
+#[tauri::command]
+pub(crate) async fn clear_cache_by_manga(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+) -> Result<CacheInfo, AppError> {
+    state.images.clear_by_manga(manga_id).await
 }
 
 /// Returns the built-in catalog of reputable DNS-over-HTTPS (`DoH`) providers and profiles.

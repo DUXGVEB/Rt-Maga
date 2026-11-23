@@ -78,10 +78,19 @@ pub(crate) async fn get_chapter(
         }
     }
 
+    let site_for_cache = if let Some(id) = manga_id {
+        state.db.get_manga_by_id(id).await?.map(|m| m.site)
+    } else {
+        chapter
+            .url
+            .host_str()
+            .map(|h| h.trim_start_matches("www.").to_ascii_lowercase())
+    };
+
     let images = chapter
         .images
         .iter()
-        .map(|img| encode_page_token(img, &state.proxy_key))
+        .map(|img| encode_page_token(img, manga_id, site_for_cache.as_deref(), &state.proxy_key))
         .collect();
 
     Ok(ChapterView {

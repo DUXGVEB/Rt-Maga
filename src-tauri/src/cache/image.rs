@@ -24,6 +24,33 @@ pub(crate) struct CacheInfo {
     pub files: u64,
 }
 
+/// Disk cache usage aggregated by manga source hostname.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CacheSourceStats {
+    pub site: String,
+    pub bytes: u64,
+    pub files: u64,
+}
+
+/// Disk cache usage aggregated by individual manga.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CacheMangaStats {
+    pub manga_id: i64,
+    pub title: String,
+    pub site: String,
+    pub bytes: u64,
+    pub files: u64,
+}
+
+/// Optional ownership metadata associated with a cached image for scoped clearing.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CacheEntryMeta<'a> {
+    pub site: Option<&'a str>,
+    pub manga_id: Option<i64>,
+}
+
 /// A cached image loaded from disk.
 #[derive(Debug, Clone)]
 pub(crate) struct CachedImage {
@@ -104,9 +131,16 @@ impl ImageCache {
         })
     }
 
-    /// Writes an image to disk atomically, updates the LRU table, and evicts oldest entries if
-    /// the cache exceeds `max_mb`.
-    pub(crate) async fn put(&self, key: &str, bytes: &Bytes, content_type: &str, max_mb: u32) {
+    /// Writes an image to disk atomically, updates the LRU table with optional source/manga
+    /// ownership metadata, and evicts oldest entries if the cache exceeds `max_mb`.
+    pub(crate) async fn put(
+        &self,
+        key: &str,
+        bytes: &Bytes,
+        content_type: &str,
+        max_mb: u32,
+        meta: CacheEntryMeta<'_>,
+    ) {
         let path = self.file_path(key);
         if let Some(parent) = path.parent()
             && let Err(err) = tokio::fs::create_dir_all(parent).await
@@ -132,17 +166,21 @@ impl ImageCache {
         let now = now_unix_secs();
 
         let _ = sqlx::query(
-            "INSERT INTO image_cache (key, content_type, size, last_access)
-             VALUES (?, ?, ?, ?)
+            "INSERT INTO image_cache (key, content_type, size, last_access, site, manga_id)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(key) DO UPDATE SET
                 content_type = excluded.content_type,
                 size = excluded.size,
-                last_access = excluded.last_access",
+                last_access = excluded.last_access,
+                site = COALESCE(excluded.site, image_cache.site),
+                manga_id = COALESCE(excluded.manga_id, image_cache.manga_id)",
         )
         .bind(key)
         .bind(content_type)
         .bind(size)
         .bind(now)
+        .bind(meta.site)
+        .bind(meta.manga_id)
         .execute(self.db.pool())
         .await;
 
@@ -189,6 +227,126 @@ impl ImageCache {
             bytes: u64::try_from(bytes).unwrap_or(0),
             files: u64::try_from(files).unwrap_or(0),
         })
+    }
+
+    /// Returns disk cache usage grouped by source site hostname.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn list_by_source(&self) -> Result<Vec<CacheSourceStats>, AppError> {
+        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT COALESCE(NULLIF(TRIM(site), ''), 'unknown') AS src,
+                    COALESCE(SUM(size), 0) AS total_bytes,
+                    COUNT(*) AS file_count
+             FROM image_cache
+             GROUP BY src
+             ORDER BY total_bytes DESC",
+        )
+        .fetch_all(self.db.pool())
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(site, bytes, files)| CacheSourceStats {
+                site,
+                bytes: u64::try_from(bytes).unwrap_or(0),
+                files: u64::try_from(files).unwrap_or(0),
+            })
+            .collect())
+    }
+
+    /// Returns disk cache usage grouped by individual manga.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn list_by_manga(&self) -> Result<Vec<CacheMangaStats>, AppError> {
+        let rows: Vec<(i64, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT c.manga_id,
+                    COALESCE(m.title, 'Manga #' || c.manga_id) AS title,
+                    COALESCE(m.site, c.site, 'unknown') AS site,
+                    COALESCE(SUM(c.size), 0) AS total_bytes,
+                    COUNT(*) AS file_count
+             FROM image_cache c
+             LEFT JOIN manga m ON m.id = c.manga_id
+             WHERE c.manga_id IS NOT NULL
+             GROUP BY c.manga_id
+             ORDER BY total_bytes DESC",
+        )
+        .fetch_all(self.db.pool())
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(manga_id, title, site, bytes, files)| CacheMangaStats {
+                manga_id,
+                title,
+                site,
+                bytes: u64::try_from(bytes).unwrap_or(0),
+                files: u64::try_from(files).unwrap_or(0),
+            })
+            .collect())
+    }
+
+    /// Deletes cached image files belonging strictly to `site` without touching any library,
+    /// reading history, bookmarks, or user settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn clear_by_source(&self, site: &str) -> Result<CacheInfo, AppError> {
+        let keys: Vec<(String,)> = if site == "unknown" {
+            sqlx::query_as("SELECT key FROM image_cache WHERE site IS NULL OR TRIM(site) = ''")
+                .fetch_all(self.db.pool())
+                .await?
+        } else {
+            sqlx::query_as("SELECT key FROM image_cache WHERE site = ?")
+                .bind(site)
+                .fetch_all(self.db.pool())
+                .await?
+        };
+
+        for (key,) in &keys {
+            let _ = tokio::fs::remove_file(self.file_path(key)).await;
+        }
+
+        if site == "unknown" {
+            sqlx::query("DELETE FROM image_cache WHERE site IS NULL OR TRIM(site) = ''")
+                .execute(self.db.pool())
+                .await?;
+        } else {
+            sqlx::query("DELETE FROM image_cache WHERE site = ?")
+                .bind(site)
+                .execute(self.db.pool())
+                .await?;
+        }
+
+        self.info().await
+    }
+
+    /// Deletes cached image files belonging strictly to `manga_id` without touching any library,
+    /// reading history, bookmarks, or user settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn clear_by_manga(&self, manga_id: i64) -> Result<CacheInfo, AppError> {
+        let keys: Vec<(String,)> = sqlx::query_as("SELECT key FROM image_cache WHERE manga_id = ?")
+            .bind(manga_id)
+            .fetch_all(self.db.pool())
+            .await?;
+
+        for (key,) in &keys {
+            let _ = tokio::fs::remove_file(self.file_path(key)).await;
+        }
+
+        sqlx::query("DELETE FROM image_cache WHERE manga_id = ?")
+            .bind(manga_id)
+            .execute(self.db.pool())
+            .await?;
+
+        self.info().await
     }
 
     /// Deletes all cached image files on disk and clears the SQLite index.

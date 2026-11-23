@@ -1,8 +1,10 @@
 <script lang="ts">
-  import { RotateCcw } from "lucide-svelte";
+  import { AlertCircle, Loader2, RotateCcw } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
   import type { PageLoadMode } from "../readerLayout";
   import { settingsStore } from "../stores/settings.svelte";
+
+  const BACKOFF_DELAYS_MS = [600, 1500, 3000];
 
   let {
     token,
@@ -14,6 +16,7 @@
     snapPage = false,
     snapStopAlways = false,
     groupPageCount = 1,
+    skipBroken = false,
     onImageLoaded,
   }: {
     token: string;
@@ -25,6 +28,7 @@
     snapPage?: boolean;
     snapStopAlways?: boolean;
     groupPageCount?: number;
+    skipBroken?: boolean;
     onImageLoaded?: (info: { index: number; width: number; height: number }) => void;
   } = $props();
 
@@ -33,8 +37,8 @@
   let loaded = $state(false);
   let failed = $state(false);
   let retryCount = $state(0);
+  let autoAttempts = $state(0);
   let knownAspect = $state<number | null>(null);
-  let autoRetried = false;
   let retryTimer: number | null = null;
   let lastToken = "";
 
@@ -48,8 +52,8 @@
       loaded = false;
       failed = false;
       retryCount = 0;
+      autoAttempts = 0;
       knownAspect = null;
-      autoRetried = false;
     }
     lastToken = currentToken;
   });
@@ -60,13 +64,12 @@
     if (mode === "high" || mode === "preload") {
       shouldLoad = true;
     } else if (mode === "unload" && shouldLoad) {
-      // Release decoded bitmap from DOM while retaining measured aspect ratio to prevent scroll jump.
       shouldLoad = false;
       loaded = false;
     }
   });
 
-  // Fallback observer only for `idle` pages very close to viewport (tight margin).
+  // Fallback observer only for `idle` pages very close to viewport.
   $effect(() => {
     if (shouldLoad || loadMode === "unload") return;
     if (!containerEl) return;
@@ -151,25 +154,28 @@
   }
 
   function handleError() {
-    if (!autoRetried) {
-      autoRetried = true;
+    if (autoAttempts < BACKOFF_DELAYS_MS.length) {
+      const delay = BACKOFF_DELAYS_MS[autoAttempts];
+      autoAttempts += 1;
       loaded = false;
       retryTimer = window.setTimeout(() => {
         retryTimer = null;
         retryCount += 1;
-      }, 600);
+      }, delay);
       return;
     }
     failed = true;
   }
 
-  function retry() {
+  function retry(e?: MouseEvent) {
+    e?.stopPropagation();
     if (retryTimer !== null) {
       window.clearTimeout(retryTimer);
       retryTimer = null;
     }
     failed = false;
     loaded = false;
+    autoAttempts = 0;
     retryCount += 1;
   }
 </script>
@@ -184,33 +190,60 @@
   style="{filterStyle} {horizontalBoxStyle()} {snapStyle()}"
 >
   {#if failed}
-    <div
-      class="flex flex-col items-center justify-center gap-3 rounded-lg border px-4 py-8 text-center {horizontal
-        ? 'h-[72dvh] w-[62vw] max-w-[420px]'
-        : 'min-h-[260px] w-full'}"
-      style="background-color: var(--surface); border-color: var(--border);"
-    >
-      <span class="text-xs" style="color: var(--text-muted);">
-        {settingsStore.t.failedPage(index + 1)}
-      </span>
-      <button
-        type="button"
-        onclick={retry}
-        class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium text-white"
-        style="background-color: var(--accent);"
+    {#if skipBroken}
+      <div
+        class="my-1 flex items-center justify-center gap-2 rounded-lg border px-3 py-1.5 text-[11px]"
+        style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
       >
-        <RotateCcw size={13} />
-        {settingsStore.t.retry}
-      </button>
-    </div>
+        <AlertCircle size={13} />
+        <span>{settingsStore.t.failedPageSkipped(index + 1)}</span>
+        <button
+          type="button"
+          onclick={retry}
+          class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium"
+          style="background-color: var(--accent-soft); color: var(--accent);"
+        >
+          <RotateCcw size={11} />
+          {settingsStore.t.retry}
+        </button>
+      </div>
+    {:else}
+      <div
+        class="flex flex-col items-center justify-center gap-3 rounded-lg border px-4 py-8 text-center {horizontal
+          ? 'h-[72dvh] w-[62vw] max-w-[420px]'
+          : 'min-h-[240px] w-full'}"
+        style="background-color: var(--surface); border-color: var(--border);"
+      >
+        <AlertCircle size={22} style="color: var(--danger);" />
+        <span class="text-xs" style="color: var(--text-muted);">
+          {settingsStore.t.failedPage(index + 1)}
+        </span>
+        <button
+          type="button"
+          onclick={retry}
+          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium text-white"
+          style="background-color: var(--accent);"
+        >
+          <RotateCcw size={13} />
+          {settingsStore.t.retry}
+        </button>
+      </div>
+    {/if}
   {:else if shouldLoad}
     {#if !loaded}
       <div
-        class="animate-pulse {horizontal
+        class="flex flex-col items-center justify-center gap-2 {horizontal
           ? 'h-[78dvh] aspect-[5/7] max-w-full rounded'
           : 'aspect-[5/7] w-full'}"
         style={placeholderStyle()}
-      ></div>
+      >
+        <Loader2 size={20} class="animate-spin" style="color: var(--accent);" />
+        <span class="text-[11px] font-medium" style="color: var(--text-muted);">
+          {autoAttempts > 0
+            ? settingsStore.t.retryingPage(index + 1, autoAttempts)
+            : settingsStore.t.pageAlt(index + 1)}
+        </span>
+      </div>
     {/if}
     <img
       {src}

@@ -69,6 +69,9 @@ pub fn run() {
             commands::clear_history,
             commands::toggle_bookmark,
             commands::list_bookmarks,
+            commands::set_manga_hidden,
+            commands::list_hidden_manga,
+            commands::delete_manga_permanently,
             commands::set_manga_reader_override,
             commands::mark_manga_detected_webtoon,
             commands::list_notifications,
@@ -79,12 +82,22 @@ pub fn run() {
             commands::check_updates_now,
             commands::get_settings,
             commands::set_settings,
+            commands::reset_settings_section,
+            commands::reset_all_settings,
             commands::get_platform,
             commands::get_device_env,
             commands::set_orientation_lock,
             commands::set_immersive,
+            commands::set_keep_screen_on,
             commands::check_notification_permission,
             commands::request_notification_permission,
+            commands::upsert_reader_session,
+            commands::clear_reader_session,
+            commands::get_crash_recovery_session,
+            commands::log_client_error,
+            commands::list_diagnostic_logs,
+            commands::clear_diagnostic_logs,
+            commands::export_diagnostic_logs,
             commands::get_network_providers,
             commands::test_doh_provider,
             commands::test_proxy,
@@ -101,6 +114,10 @@ pub fn run() {
             commands::open_release_url,
             commands::download_and_install_update,
             commands::cache_info,
+            commands::list_cache_by_source,
+            commands::list_cache_by_manga,
+            commands::clear_cache_by_source,
+            commands::clear_cache_by_manga,
             commands::clear_image_cache,
         ]);
 
@@ -120,14 +137,18 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .expect("app local data directory must resolve");
     let db_path = data_dir.join("rtmaga.db");
     let cache_dir = data_dir.join("cache").join("img");
+    let crash_file = data_dir.join("crash_last.txt");
+    install_panic_hook(crash_file.clone());
 
     let app_state = tauri::async_runtime::block_on(async {
         let db = Database::open(&db_path).await?;
+        import_pending_crash_file(&db, &crash_file).await;
         let settings = db.load_settings().await?;
         let policy = HttpPolicy {
             max_conn_per_host: usize::from(settings.sources.max_conn_per_host),
             doh: settings.doh.clone(),
             proxy: settings.proxy.clone(),
+            speed_limit_kbps: settings.sources.speed_limit_kbps,
             ..HttpPolicy::default()
         };
         let http = HttpClient::with_policy(policy).map_err(error::AppError::from)?;
@@ -163,6 +184,45 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app_release::spawn_startup_check(handle_for_release, state_for_release);
 
     Ok(())
+}
+
+fn install_panic_hook(crash_file: std::path::PathBuf) {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unexpected panic".to_owned());
+        let location = info.location().map_or_else(
+            || "unknown location".to_owned(),
+            |loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()),
+        );
+        let report = format!("panic at {location}: {payload}");
+        let _ = std::fs::write(&crash_file, repo::diagnostics::redact_sensitive(&report));
+        default_hook(info);
+    }));
+}
+
+async fn import_pending_crash_file(db: &Database, crash_file: &std::path::Path) {
+    if let Ok(contents) = tokio::fs::read_to_string(crash_file).await {
+        let trimmed = contents.trim();
+        if !trimmed.is_empty() {
+            let _ = db
+                .record_diagnostic_log(&repo::diagnostics::NewDiagnosticLog {
+                    level: "crash".to_owned(),
+                    category: "internal".to_owned(),
+                    message: "Previous session ended with an unhandled crash".to_owned(),
+                    detail: Some(trimmed.to_owned()),
+                    source: None,
+                    chapter_url: None,
+                    stack_trace: Some(trimmed.to_owned()),
+                })
+                .await;
+        }
+        let _ = tokio::fs::remove_file(crash_file).await;
+    }
 }
 
 fn init_logging() {

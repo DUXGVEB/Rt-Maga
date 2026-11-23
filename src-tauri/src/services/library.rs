@@ -6,8 +6,9 @@ use serde::Serialize;
 use crate::error::AppError;
 use crate::image_proxy::encode_cover_token;
 use crate::repo::bookmark::{BookmarkEntryRow, BookmarkSort};
+use crate::repo::diagnostics::NewDiagnosticLog;
 use crate::repo::history::{HistoryEntryRow, HistoryProgressRow, LastReadingDestination};
-use crate::repo::manga::{ChapterRow, MangaRow};
+use crate::repo::manga::{ChapterRow, HideAction, MangaRow};
 use crate::repo::notification::NotificationRow;
 use crate::state::AppState;
 
@@ -45,6 +46,10 @@ pub(crate) struct ProgressView {
 /// Full manga detail payload sent to the Svelte UI.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "JSON view DTO carrying independent UI status flags for Svelte"
+)]
 pub(crate) struct MangaView {
     pub id: i64,
     pub url: String,
@@ -53,11 +58,26 @@ pub(crate) struct MangaView {
     pub cover_token: Option<String>,
     pub has_new: bool,
     pub bookmarked: bool,
+    pub hidden: bool,
+    pub unread_count: i64,
+    pub is_completed: bool,
     pub reader_mode_override: Option<String>,
     pub detected_webtoon: bool,
     pub latest_chapter_name: Option<String>,
     pub chapters: Vec<ChapterRefView>,
     pub progress: Option<ProgressView>,
+}
+
+/// Hidden manga record shown in Settings -> Hidden Manga Manager.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HiddenMangaView {
+    pub id: i64,
+    pub url: String,
+    pub site: String,
+    pub title: String,
+    pub cover_token: Option<String>,
+    pub latest_chapter_name: Option<String>,
 }
 
 /// Response returned when the user pastes any manga or chapter URL.
@@ -87,6 +107,8 @@ pub(crate) struct HistoryItemView {
     pub has_new: bool,
     pub bookmarked: bool,
     pub total_chapters: i64,
+    pub unread_count: i64,
+    pub is_completed: bool,
     pub current_chapter_idx: Option<i64>,
 }
 
@@ -104,6 +126,8 @@ pub(crate) struct BookmarkItemView {
     pub latest_chapter_name: Option<String>,
     pub has_new: bool,
     pub total_chapters: i64,
+    pub unread_count: i64,
+    pub is_completed: bool,
     pub chapter_url: Option<String>,
     pub chapter_name: Option<String>,
     pub scroll_ratio: Option<f64>,
@@ -139,7 +163,25 @@ pub(crate) async fn resolve_url(
     raw_url: &str,
 ) -> Result<ResolveResponse, AppError> {
     let policy = state.current_settings().await.headless_policy();
-    let resolved = state.registry.resolve(raw_url, policy).await?;
+    let resolved = match state.registry.resolve(raw_url, policy).await {
+        Ok(r) => r,
+        Err(err) => {
+            let app_err = AppError::from(err);
+            let _ = state
+                .db
+                .record_diagnostic_log(&NewDiagnosticLog {
+                    level: "error".to_owned(),
+                    category: app_err.category().to_owned(),
+                    message: "Failed to resolve pasted manga/chapter URL".to_owned(),
+                    detail: Some(app_err.to_string()),
+                    source: None,
+                    chapter_url: Some(raw_url.to_owned()),
+                    stack_trace: None,
+                })
+                .await;
+            return Err(app_err);
+        }
+    };
 
     let (manga, start_chapter) = match resolved {
         Resolved::Manga(m) => (m, None),
@@ -308,6 +350,59 @@ pub(crate) async fn mark_manga_detected_webtoon(
     state.db.mark_manga_detected_webtoon(manga_id).await
 }
 
+/// Hides or unhides a manga from normal library views.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn set_manga_hidden(
+    state: &AppState,
+    manga_id: i64,
+    action: HideAction,
+) -> Result<bool, AppError> {
+    state.db.set_manga_hidden(manga_id, action).await
+}
+
+/// Lists all hidden manga so they can be unhidden or deleted.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn list_hidden_manga(state: &AppState) -> Result<Vec<HiddenMangaView>, AppError> {
+    let rows = state.db.list_hidden_manga().await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let cover_token = row.cover_url.as_deref().map(|c| {
+                encode_cover_token(c, &row.url, Some(row.id), Some(&row.site), &state.proxy_key)
+            });
+            HiddenMangaView {
+                id: row.id,
+                url: row.url,
+                site: row.site,
+                title: row.title,
+                cover_token,
+                latest_chapter_name: row.latest_chapter_name,
+            }
+        })
+        .collect())
+}
+
+/// Permanently deletes a manga, its chapters, history, bookmarks, notifications, and cached images.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] on SQLite failure.
+pub(crate) async fn delete_manga_permanently(
+    state: &AppState,
+    manga_id: i64,
+) -> Result<(), AppError> {
+    let _ = state.images.clear_by_manga(manga_id).await;
+    state.db.delete_manga_permanently(manga_id).await?;
+    state.chapters.invalidate_all();
+    Ok(())
+}
+
 /// Lists stored chapter notifications for the Notification Center.
 ///
 /// # Errors
@@ -414,31 +509,36 @@ async fn build_manga_view(state: &AppState, manga_id: i64) -> Result<MangaView, 
     let chapters = state.db.list_chapters(manga_id).await?;
     let progress = state.db.get_history_for_manga(manga_id).await?;
     let bookmarked = state.db.is_bookmarked(manga_id).await?;
+    let (unread_count, is_completed) = state.db.get_manga_read_summary(manga_id).await?;
 
     Ok(map_manga_view(
         row,
         chapters,
         progress,
         bookmarked,
+        unread_count,
+        is_completed,
         &state.proxy_key,
     ))
 }
 
 #[expect(
     clippy::fn_params_excessive_bools,
-    reason = "internal view mapper receiving a single boolean bookmark status"
+    reason = "internal view mapper receiving boolean display flags"
 )]
 fn map_manga_view(
     row: MangaRow,
     chapters: Vec<ChapterRow>,
     progress: Option<HistoryProgressRow>,
     bookmarked: bool,
+    unread_count: i64,
+    is_completed: bool,
     proxy_key: &[u8; 32],
 ) -> MangaView {
     let cover_token = row
         .cover_url
         .as_deref()
-        .map(|c| encode_cover_token(c, &row.url, proxy_key));
+        .map(|c| encode_cover_token(c, &row.url, Some(row.id), Some(&row.site), proxy_key));
 
     MangaView {
         id: row.id,
@@ -448,6 +548,9 @@ fn map_manga_view(
         cover_token,
         has_new: row.has_new != 0,
         bookmarked,
+        hidden: row.hidden != 0,
+        unread_count,
+        is_completed,
         reader_mode_override: row.reader_mode_override,
         detected_webtoon: row.detected_webtoon != 0,
         latest_chapter_name: row.latest_chapter_name,
@@ -472,10 +575,15 @@ fn map_manga_view(
 }
 
 fn map_history_row(row: HistoryEntryRow, proxy_key: &[u8; 32]) -> HistoryItemView {
-    let cover_token = row
-        .cover_url
-        .as_deref()
-        .map(|c| encode_cover_token(c, &row.manga_url, proxy_key));
+    let cover_token = row.cover_url.as_deref().map(|c| {
+        encode_cover_token(
+            c,
+            &row.manga_url,
+            Some(row.manga_id),
+            Some(&row.site),
+            proxy_key,
+        )
+    });
 
     HistoryItemView {
         manga_id: row.manga_id,
@@ -493,15 +601,22 @@ fn map_history_row(row: HistoryEntryRow, proxy_key: &[u8; 32]) -> HistoryItemVie
         has_new: row.has_new != 0,
         bookmarked: row.bookmarked != 0,
         total_chapters: row.total_chapters,
+        unread_count: row.unread_count,
+        is_completed: row.is_completed != 0,
         current_chapter_idx: row.current_chapter_idx,
     }
 }
 
 fn map_bookmark_row(row: BookmarkEntryRow, proxy_key: &[u8; 32]) -> BookmarkItemView {
-    let cover_token = row
-        .cover_url
-        .as_deref()
-        .map(|c| encode_cover_token(c, &row.manga_url, proxy_key));
+    let cover_token = row.cover_url.as_deref().map(|c| {
+        encode_cover_token(
+            c,
+            &row.manga_url,
+            Some(row.manga_id),
+            Some(&row.site),
+            proxy_key,
+        )
+    });
 
     BookmarkItemView {
         manga_id: row.manga_id,
@@ -514,6 +629,8 @@ fn map_bookmark_row(row: BookmarkEntryRow, proxy_key: &[u8; 32]) -> BookmarkItem
         latest_chapter_name: row.latest_chapter_name,
         has_new: row.has_new != 0,
         total_chapters: row.total_chapters,
+        unread_count: row.unread_count,
+        is_completed: row.is_completed != 0,
         chapter_url: row.chapter_url,
         chapter_name: row.chapter_name,
         scroll_ratio: row.scroll_ratio,
@@ -529,7 +646,7 @@ fn map_notification_row(row: NotificationRow, proxy_key: &[u8; 32]) -> Notificat
     let cover_token = row
         .cover_url
         .as_deref()
-        .map(|c| encode_cover_token(c, &row.manga_url, proxy_key));
+        .map(|c| encode_cover_token(c, &row.manga_url, Some(row.manga_id), None, proxy_key));
 
     NotificationItemView {
         id: row.id,

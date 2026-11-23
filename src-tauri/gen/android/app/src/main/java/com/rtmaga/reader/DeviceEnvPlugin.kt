@@ -31,6 +31,11 @@ class ImmersiveArgs {
 }
 
 @InvokeArg
+class KeepScreenOnArgs {
+  var enabled: Boolean = false
+}
+
+@InvokeArg
 class LocalNotificationArgs {
   var title: String = "RtMaga"
   var body: String = ""
@@ -102,6 +107,19 @@ class DeviceEnvPlugin(private val activity: Activity) : Plugin(activity) {
     try {
       val args = invoke.parseArgs(ImmersiveArgs::class.java)
       mainActivity()?.setImmersiveEnabled(args.enabled)
+      val res = JSObject()
+      res.put("enabled", args.enabled)
+      invoke.resolve(res)
+    } catch (ex: Exception) {
+      invoke.reject(ex.message ?: ex.toString())
+    }
+  }
+
+  @Command
+  fun setKeepScreenOn(invoke: Invoke) {
+    try {
+      val args = invoke.parseArgs(KeepScreenOnArgs::class.java)
+      mainActivity()?.setKeepScreenOnEnabled(args.enabled)
       val res = JSObject()
       res.put("enabled", args.enabled)
       invoke.resolve(res)

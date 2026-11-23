@@ -7,17 +7,24 @@ import type {
   BookmarkItemView,
   BookmarkSort,
   CacheInfo,
+  CacheMangaStats,
+  CacheSourceStats,
   ChapterView,
+  CrashRecoverySession,
   DeviceEnvInfo,
+  DiagnosticLogEntry,
   DohConfig,
   DohTestResult,
   FoundUpdate,
+  HiddenMangaView,
+  HideAction,
   HistoryItemView,
   InstallUpdateOutcome,
   Language,
   LastReadingDestination,
   MangaView,
   NetworkProviderInfo,
+  NewDiagnosticLog,
   NotificationItemView,
   NotificationPermissionInfo,
   OrientationLockMode,
@@ -27,6 +34,7 @@ import type {
   ReaderModeOverride,
   ResolveResponse,
   Settings,
+  SettingsSection,
   SyncDecision,
   SyncSenderMode,
   SyncStatusView,
@@ -60,7 +68,22 @@ export function formatAppError(
       case "invalid_url":
         return {
           title: t.errInvalidUrlTitle,
-          detail: t.errInvalidUrlDetail,
+          detail: `${t.errInvalidUrlDetail} (${e.message})`,
+        };
+      case "unsupported_source":
+        return {
+          title: t.errUnsupportedSourceTitle(e.host),
+          detail: e.message,
+        };
+      case "timeout":
+        return {
+          title: t.errTimeoutTitle,
+          detail: e.message,
+        };
+      case "http_error":
+        return {
+          title: t.errHttpStatusTitle(e.status),
+          detail: e.message,
         };
       case "blocked":
         return {
@@ -71,7 +94,22 @@ export function formatAppError(
       case "not_recognized":
         return {
           title: t.errNotRecognizedTitle,
-          detail: t.errNotRecognizedDetail,
+          detail: `${t.errNotRecognizedDetail} (${e.message})`,
+        };
+      case "missing_images":
+        return {
+          title: t.errMissingImagesTitle,
+          detail: e.message,
+        };
+      case "invalid_image_format":
+        return {
+          title: t.errInvalidImageTitle,
+          detail: e.message,
+        };
+      case "corrupted_data":
+        return {
+          title: t.errCorruptedDataTitle,
+          detail: e.message,
         };
       case "network":
         return {
@@ -130,6 +168,11 @@ export const api = {
   toggleBookmark: (mangaId: number) => invoke<boolean>("toggle_bookmark", { mangaId }),
   listBookmarks: (sort: BookmarkSort = "newest") =>
     invoke<BookmarkItemView[]>("list_bookmarks", { sort }),
+  setMangaHidden: (mangaId: number, action: HideAction) =>
+    invoke<boolean>("set_manga_hidden", { mangaId, action }),
+  listHiddenManga: () => invoke<HiddenMangaView[]>("list_hidden_manga"),
+  deleteMangaPermanently: (mangaId: number) =>
+    invoke<void>("delete_manga_permanently", { mangaId }),
   setMangaReaderOverride: (mangaId: number, overrideMode: ReaderModeOverride) =>
     invoke<void>("set_manga_reader_override", { mangaId, overrideMode }),
   markMangaDetectedWebtoon: (mangaId: number) =>
@@ -144,15 +187,45 @@ export const api = {
   checkUpdatesNow: () => invoke<UpdateSummary>("check_updates_now"),
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
+  resetSettingsSection: (section: SettingsSection) =>
+    invoke<Settings>("reset_settings_section", { section }),
+  resetAllSettings: () => invoke<Settings>("reset_all_settings"),
   getPlatform: () => invoke<"windows" | "android" | "other">("get_platform"),
   getDeviceEnv: () => invoke<DeviceEnvInfo>("get_device_env"),
   setOrientationLock: (mode: OrientationLockMode) =>
     invoke<OrientationLockReply>("set_orientation_lock", { mode }),
   setImmersive: (enabled: boolean) => invoke<void>("set_immersive", { enabled }),
+  setKeepScreenOn: (enabled: boolean) => invoke<void>("set_keep_screen_on", { enabled }),
   checkNotificationPermission: () =>
     invoke<NotificationPermissionInfo>("check_notification_permission"),
   requestNotificationPermission: () =>
     invoke<NotificationPermissionInfo>("request_notification_permission"),
+
+  upsertReaderSession: (
+    mangaId: number,
+    chapterUrl: string,
+    chapterName: string,
+    scrollRatio: number,
+    pageIndex: number,
+    readingMode: string
+  ) =>
+    invoke<void>("upsert_reader_session", {
+      mangaId,
+      chapterUrl,
+      chapterName,
+      scrollRatio,
+      pageIndex,
+      readingMode,
+    }),
+  clearReaderSession: () => invoke<void>("clear_reader_session"),
+  getCrashRecoverySession: () =>
+    invoke<CrashRecoverySession | null>("get_crash_recovery_session"),
+
+  logClientError: (entry: NewDiagnosticLog) => invoke<number>("log_client_error", { entry }),
+  listDiagnosticLogs: (limit = 100) =>
+    invoke<DiagnosticLogEntry[]>("list_diagnostic_logs", { limit }),
+  clearDiagnosticLogs: () => invoke<void>("clear_diagnostic_logs"),
+  exportDiagnosticLogs: () => invoke<string>("export_diagnostic_logs"),
 
   getNetworkProviders: () => invoke<NetworkProviderInfo[]>("get_network_providers"),
   testDohProvider: (config: DohConfig) => invoke<DohTestResult>("test_doh_provider", { config }),
@@ -177,6 +250,10 @@ export const api = {
   openReleaseUrl: (url: string) => invoke<void>("open_release_url", { url }),
   downloadAndInstallUpdate: () => invoke<InstallUpdateOutcome>("download_and_install_update"),
   cacheInfo: () => invoke<CacheInfo>("cache_info"),
+  listCacheBySource: () => invoke<CacheSourceStats[]>("list_cache_by_source"),
+  listCacheByManga: () => invoke<CacheMangaStats[]>("list_cache_by_manga"),
+  clearCacheBySource: (site: string) => invoke<CacheInfo>("clear_cache_by_source", { site }),
+  clearCacheByManga: (mangaId: number) => invoke<CacheInfo>("clear_cache_by_manga", { mangaId }),
   clearImageCache: () => invoke<CacheInfo>("clear_image_cache"),
 
   onUpdatesFound: (cb: (found: FoundUpdate[]) => void): Promise<UnlistenFn> =>

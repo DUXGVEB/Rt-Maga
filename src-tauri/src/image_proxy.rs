@@ -1,16 +1,19 @@
-//! Signed `img://` custom protocol proxy that fetches images with proper `Referer` and caching.
+//! Signed `img://` custom protocol proxy that fetches images with proper `Referer`,
+//! scoped source/manga cache ownership, and structured diagnostic logging.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use http::{Response, StatusCode};
-use mangacore::PageImage;
+use mangacore::{PageImage, ScrapeError};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tracing::warn;
 use url::Url;
 
 use crate::cache::ImageCache;
+use crate::cache::image::CacheEntryMeta;
+use crate::repo::diagnostics::NewDiagnosticLog;
 use crate::state::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -24,10 +27,27 @@ struct TokenPayload {
     f: Vec<String>,
     /// Required `Referer` header URL.
     r: String,
+    /// Optional owning manga ID for scoped cache management.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    m: Option<i64>,
+    /// Optional owning source site hostname for scoped cache management.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    s: Option<String>,
 }
 
 /// Encodes a [`PageImage`] into an HMAC-signed token safe for the `img://` protocol.
-pub(crate) fn encode_page_token(image: &PageImage, key: &[u8; 32]) -> String {
+pub(crate) fn encode_page_token(
+    image: &PageImage,
+    manga_id: Option<i64>,
+    site: Option<&str>,
+    key: &[u8; 32],
+) -> String {
+    let derived_site = site.map(str::to_owned).or_else(|| {
+        image
+            .referer
+            .host_str()
+            .map(|h| h.trim_start_matches("www.").to_ascii_lowercase())
+    });
     let payload = TokenPayload {
         u: image.url.as_str().to_owned(),
         f: image
@@ -36,16 +56,32 @@ pub(crate) fn encode_page_token(image: &PageImage, key: &[u8; 32]) -> String {
             .map(|u| u.as_str().to_owned())
             .collect(),
         r: image.referer.as_str().to_owned(),
+        m: manga_id,
+        s: derived_site,
     };
     sign_payload(&payload, key)
 }
 
 /// Encodes a cover image URL (with its manga page URL as referer) into a signed proxy token.
-pub(crate) fn encode_cover_token(cover_url: &str, referer_url: &str, key: &[u8; 32]) -> String {
+pub(crate) fn encode_cover_token(
+    cover_url: &str,
+    referer_url: &str,
+    manga_id: Option<i64>,
+    site: Option<&str>,
+    key: &[u8; 32],
+) -> String {
+    let derived_site = site.map(str::to_owned).or_else(|| {
+        Url::parse(referer_url).ok().and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches("www.").to_owned())
+        })
+    });
     let payload = TokenPayload {
         u: cover_url.to_owned(),
         f: Vec::new(),
         r: referer_url.to_owned(),
+        m: manga_id,
+        s: derived_site,
     };
     sign_payload(&payload, key)
 }
@@ -116,6 +152,10 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
         urls_to_try.push(fb.as_str());
     }
 
+    let mut last_status = StatusCode::BAD_GATEWAY;
+    let mut last_category = "network";
+    let mut last_detail = "failed to fetch image".to_owned();
+
     for candidate_str in urls_to_try {
         let Ok(candidate_url) = Url::parse(candidate_str) else {
             continue;
@@ -127,22 +167,66 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
             .await
         {
             Ok(fetched) if !fetched.bytes.is_empty() => {
+                let meta = CacheEntryMeta {
+                    site: payload.s.as_deref(),
+                    manga_id: payload.m,
+                };
                 state
                     .images
-                    .put(&cache_key, &fetched.bytes, &fetched.content_type, max_mb)
+                    .put(
+                        &cache_key,
+                        &fetched.bytes,
+                        &fetched.content_type,
+                        max_mb,
+                        meta,
+                    )
                     .await;
                 return image_ok_response(fetched.bytes.to_vec(), &fetched.content_type);
             }
             Ok(_) => {
                 warn!(%candidate_url, "image response was empty");
+                last_status = StatusCode::UNPROCESSABLE_ENTITY;
+                last_category = "corrupted_data";
+                "upstream returned an empty 0-byte image".clone_into(&mut last_detail);
             }
             Err(err) => {
                 warn!(%candidate_url, %err, "failed to fetch image candidate");
+                let (st, cat) = classify_image_fetch_err(&err);
+                last_status = st;
+                last_category = cat;
+                last_detail = err.to_string();
             }
         }
     }
 
-    error_response(StatusCode::BAD_GATEWAY, "failed to fetch image")
+    let _ = state
+        .db
+        .record_diagnostic_log(&NewDiagnosticLog {
+            level: "warn".to_owned(),
+            category: last_category.to_owned(),
+            message: "Image failed to load after fallback attempts".to_owned(),
+            detail: Some(last_detail.clone()),
+            source: payload.s.clone(),
+            chapter_url: Some(payload.r.clone()),
+            stack_trace: None,
+        })
+        .await;
+
+    error_response(last_status, &last_detail)
+}
+
+fn classify_image_fetch_err(err: &ScrapeError) -> (StatusCode, &'static str) {
+    match err {
+        ScrapeError::Timeout { .. } => (StatusCode::REQUEST_TIMEOUT, "timeout"),
+        ScrapeError::InvalidImageFormat { .. } => {
+            (StatusCode::UNSUPPORTED_MEDIA_TYPE, "invalid_image_format")
+        }
+        ScrapeError::HttpStatus { status, .. } => (
+            StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+            "http_error",
+        ),
+        _ => (StatusCode::BAD_GATEWAY, "network"),
+    }
 }
 
 fn image_ok_response(body: Vec<u8>, content_type: &str) -> Response<Vec<u8>> {
@@ -179,11 +263,13 @@ mod tests {
             referer: Url::parse("https://example.com/series/demo-chap-44").unwrap(),
         };
 
-        let token = encode_page_token(&img, &key);
+        let token = encode_page_token(&img, Some(7), Some("example.com"), &key);
         let decoded = decode_and_verify(&token, &key).expect("valid token must decode");
         assert_eq!(decoded.u, img.url.as_str());
         assert_eq!(decoded.f.len(), 1);
         assert_eq!(decoded.r, img.referer.as_str());
+        assert_eq!(decoded.m, Some(7));
+        assert_eq!(decoded.s.as_deref(), Some("example.com"));
 
         let tampered = format!("{token}x");
         assert!(decode_and_verify(&tampered, &key).is_none());

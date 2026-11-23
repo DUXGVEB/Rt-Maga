@@ -51,6 +51,20 @@ export interface DeviceSettings {
   customName: string | null;
 }
 
+export type DoubleTapAction = "zoom" | "toggle_toolbar" | "next_page" | "disabled";
+
+export type SettingsSection =
+  | "appearance"
+  | "device"
+  | "reader"
+  | "floating"
+  | "network"
+  | "updates"
+  | "sources"
+  | "cache";
+
+export type HideAction = "hide" | "unhide";
+
 export interface VerticalModeSettings {
   layoutMode: VerticalLayoutMode;
   pagesPerGroup: number;
@@ -60,6 +74,7 @@ export interface VerticalModeSettings {
   alignment: GroupAlignment;
   dimUnfocused: boolean;
   dimLevel: number;
+  noGapMode: boolean;
 }
 
 export interface HorizontalModeSettings {
@@ -71,6 +86,15 @@ export interface HorizontalModeSettings {
   centerGroups: boolean;
   dimUnfocused: boolean;
   dimLevel: number;
+}
+
+export interface ReaderBehaviorSettings {
+  keepScreenOn: boolean;
+  skipBrokenImages: boolean;
+  autoMarkReadOnOpen: boolean;
+  doubleTapAction: DoubleTapAction;
+  toolbarAutoHideSecs: number;
+  verticalMarginPx: number;
 }
 
 export interface ReaderSettings {
@@ -85,6 +109,7 @@ export interface ReaderSettings {
   readerBg: ReaderBg;
   vertical: VerticalModeSettings;
   horizontal: HorizontalModeSettings;
+  behavior: ReaderBehaviorSettings;
 }
 
 export type NetworkServiceType = "encrypted_dns" | "dns_filtering" | "local_tunnel";
@@ -215,6 +240,7 @@ export interface UpdateSettings {
 export interface SourceSettings {
   headlessEnabled: boolean;
   maxConnPerHost: number;
+  speedLimitKbps: number;
 }
 
 export interface CacheSettings {
@@ -295,11 +321,23 @@ export interface MangaView {
   coverToken: string | null;
   hasNew: boolean;
   bookmarked: boolean;
+  hidden: boolean;
+  unreadCount: number;
+  isCompleted: boolean;
   readerModeOverride: ReaderModeOverride;
   detectedWebtoon: boolean;
   latestChapterName: string | null;
   chapters: ChapterRefView[];
   progress: ProgressView | null;
+}
+
+export interface HiddenMangaView {
+  id: number;
+  url: string;
+  site: string;
+  title: string;
+  coverToken: string | null;
+  latestChapterName: string | null;
 }
 
 export interface ResolveResponse {
@@ -332,6 +370,8 @@ export interface HistoryItemView {
   hasNew: boolean;
   bookmarked: boolean;
   totalChapters: number;
+  unreadCount: number;
+  isCompleted: boolean;
   currentChapterIdx: number | null;
 }
 
@@ -348,6 +388,8 @@ export interface BookmarkItemView {
   latestChapterName: string | null;
   hasNew: boolean;
   totalChapters: number;
+  unreadCount: number;
+  isCompleted: boolean;
   chapterUrl: string | null;
   chapterName: string | null;
   scrollRatio: number | null;
@@ -382,6 +424,53 @@ export interface LastReadingDestination {
 export interface CacheInfo {
   bytes: number;
   files: number;
+}
+
+export interface CacheSourceStats {
+  site: string;
+  bytes: number;
+  files: number;
+}
+
+export interface CacheMangaStats {
+  mangaId: number;
+  title: string;
+  site: string;
+  bytes: number;
+  files: number;
+}
+
+export interface CrashRecoverySession {
+  mangaId: number;
+  mangaTitle: string;
+  chapterUrl: string;
+  chapterName: string;
+  scrollRatio: number;
+  pageIndex: number;
+  readingMode: ReadingOrientation;
+  updatedAt: number;
+}
+
+export interface DiagnosticLogEntry {
+  id: number;
+  createdAt: number;
+  level: "crash" | "error" | "warn" | "info" | string;
+  category: string;
+  message: string;
+  detail: string | null;
+  source: string | null;
+  chapterUrl: string | null;
+  stackTrace: string | null;
+}
+
+export interface NewDiagnosticLog {
+  level: string;
+  category: string;
+  message: string;
+  detail?: string | null;
+  source?: string | null;
+  chapterUrl?: string | null;
+  stackTrace?: string | null;
 }
 
 export interface FoundUpdate {
@@ -433,9 +522,15 @@ export interface InstallUpdateOutcome {
 
 export type AppError =
   | { kind: "invalid_url"; message: string }
+  | { kind: "unsupported_source"; host: string; message: string }
+  | { kind: "timeout"; timeout_secs: number; message: string }
+  | { kind: "http_error"; status: number; message: string }
   | { kind: "network"; message: string }
   | { kind: "blocked"; host: string; url: string }
   | { kind: "not_recognized"; message: string }
+  | { kind: "missing_images"; message: string }
+  | { kind: "invalid_image_format"; message: string }
+  | { kind: "corrupted_data"; message: string }
   | { kind: "not_found"; message: string }
   | { kind: "db"; message: string }
   | { kind: "internal"; message: string };

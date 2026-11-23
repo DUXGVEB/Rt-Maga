@@ -35,6 +35,8 @@ pub(crate) struct BookmarkEntryRow {
     pub latest_chapter_name: Option<String>,
     pub has_new: i64,
     pub total_chapters: i64,
+    pub unread_count: i64,
+    pub is_completed: i64,
     pub chapter_url: Option<String>,
     pub chapter_name: Option<String>,
     pub scroll_ratio: Option<f64>,
@@ -124,6 +126,15 @@ impl Database {
                 m.latest_chapter_name,
                 m.has_new,
                 (SELECT COUNT(*) FROM chapter c WHERE c.manga_id = m.id) AS total_chapters,
+                (SELECT COUNT(*) FROM chapter c WHERE c.manga_id = m.id AND c.read = 0) AS unread_count,
+                CASE WHEN m.has_new = 0
+                     AND m.latest_chapter_url IS NOT NULL
+                     AND EXISTS (
+                         SELECT 1 FROM chapter c
+                         WHERE c.manga_id = m.id
+                           AND RTRIM(c.url, '/') = RTRIM(m.latest_chapter_url, '/')
+                           AND c.read = 1
+                     ) THEN 1 ELSE 0 END AS is_completed,
                 h.chapter_url,
                 h.chapter_name,
                 h.scroll_ratio,
@@ -135,6 +146,7 @@ impl Database {
              FROM bookmark b
              INNER JOIN manga m ON m.id = b.manga_id
              LEFT JOIN history h ON h.manga_id = m.id
+             WHERE m.hidden = 0
              ORDER BY {order_clause}"
         );
 

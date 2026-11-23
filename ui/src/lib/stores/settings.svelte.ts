@@ -1,6 +1,6 @@
 import { api } from "../api";
 import { getDict, getLocale } from "../i18n";
-import type { FloatingScreenKey, Language, Settings, Theme } from "../types";
+import type { FloatingScreenKey, Language, Settings, SettingsSection, Theme } from "../types";
 import { toasts } from "./toast.svelte";
 
 const ALL_FLOATING_SCREENS: FloatingScreenKey[] = [
@@ -37,6 +37,7 @@ export const DEFAULT_SETTINGS: Settings = {
       alignment: "center",
       dimUnfocused: false,
       dimLevel: 50,
+      noGapMode: false,
     },
     horizontal: {
       pagesPerGroup: 1,
@@ -47,6 +48,14 @@ export const DEFAULT_SETTINGS: Settings = {
       centerGroups: true,
       dimUnfocused: true,
       dimLevel: 55,
+    },
+    behavior: {
+      keepScreenOn: true,
+      skipBrokenImages: false,
+      autoMarkReadOnOpen: false,
+      doubleTapAction: "zoom",
+      toolbarAutoHideSecs: 3,
+      verticalMarginPx: 0,
     },
   },
   floating: {
@@ -79,6 +88,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sources: {
     headlessEnabled: true,
     maxConnPerHost: 4,
+    speedLimitKbps: 0,
   },
   doh: {
     enabled: false,
@@ -138,6 +148,10 @@ function mergeSettings(raw: Partial<Settings>): Settings {
       horizontal: {
         ...DEFAULT_SETTINGS.reader.horizontal,
         ...(rawReader.horizontal ?? {}),
+      },
+      behavior: {
+        ...DEFAULT_SETTINGS.reader.behavior,
+        ...(rawReader.behavior ?? {}),
       },
     },
     floating: {
@@ -244,6 +258,28 @@ class SettingsStore {
     this.value = draft;
     this.applyAppearance(draft.theme, draft.language);
     this.schedulePersist(draft, debounceMs);
+  }
+
+  async resetSection(section: SettingsSection) {
+    try {
+      const saved = await api.resetSettingsSection(section);
+      this.value = mergeSettings(saved);
+      this.applyAppearance(this.value.theme, this.value.language);
+      toasts.push(this.t.toastSectionReset, "success", 2000);
+    } catch {
+      toasts.push(this.t.toastSettingsSaveFailed, "error");
+    }
+  }
+
+  async resetAll() {
+    try {
+      const saved = await api.resetAllSettings();
+      this.value = mergeSettings(saved);
+      this.applyAppearance(this.value.theme, this.value.language);
+      toasts.push(this.t.toastAllSettingsReset, "success", 2400);
+    } catch {
+      toasts.push(this.t.toastSettingsSaveFailed, "error");
+    }
   }
 
   private schedulePersist(payload: Settings, debounceMs: number) {

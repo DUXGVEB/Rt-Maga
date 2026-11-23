@@ -1,7 +1,7 @@
 //! Persisted user settings for appearance, device identity, reader modes, floating controls,
 //! update checks, DNS-over-HTTPS protection, proxy routing, sources, and cache.
 
-use mangacore::{DohConfig, HeadlessPolicy, ProxyConfig};
+use mangacore::{DohConfig, HeadlessPolicy, MAX_SPEED_LIMIT_KBPS, ProxyConfig};
 use serde::{Deserialize, Serialize};
 
 /// Supported UI display languages.
@@ -155,6 +155,8 @@ pub(crate) struct VerticalModeSettings {
     pub dim_unfocused: bool,
     /// Dimming strength (`0..=100%`).
     pub dim_level: u8,
+    /// Force zero gap (`0px`) between consecutive vertical pages.
+    pub no_gap_mode: bool,
 }
 
 impl Default for VerticalModeSettings {
@@ -168,6 +170,7 @@ impl Default for VerticalModeSettings {
             alignment: GroupAlignment::Center,
             dim_unfocused: false,
             dim_level: 50,
+            no_gap_mode: false,
         }
     }
 }
@@ -324,13 +327,60 @@ pub(crate) struct DeviceSettings {
     pub custom_name: Option<String>,
 }
 
+/// Configurable action executed on double-tap inside the reader viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum DoubleTapAction {
+    /// Smoothly toggle 1x ↔ 1.8x zoom centered on the tap point (default).
+    #[default]
+    Zoom,
+    /// Toggle top/bottom reader toolbars.
+    ToggleToolbar,
+    /// Advance to the next page (horizontal) or scroll down one viewport (vertical).
+    NextPage,
+    /// Disable double-tap gesture handling.
+    Disabled,
+}
+
+/// Interactive reader behavior, gesture, and resilience preferences (v2.2.0).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct ReaderBehaviorSettings {
+    /// Prevent device screen sleep while actively reading in the reader.
+    pub keep_screen_on: bool,
+    /// Collapse failed images into a compact inline retry pill instead of blocking reading.
+    pub skip_broken_images: bool,
+    /// Automatically mark a chapter as read immediately when opened.
+    pub auto_mark_read_on_open: bool,
+    /// Action performed on double-tap inside the reader viewport.
+    pub double_tap_action: DoubleTapAction,
+    /// Automatic toolbar hide delay in seconds (`0` = disabled, `2..=15` seconds).
+    pub toolbar_auto_hide_secs: u8,
+    /// Horizontal side margin in CSS pixels for vertical reading (`0..=64 px`).
+    pub vertical_margin_px: u8,
+}
+
+impl Default for ReaderBehaviorSettings {
+    fn default() -> Self {
+        Self {
+            keep_screen_on: true,
+            skip_broken_images: false,
+            auto_mark_read_on_open: false,
+            double_tap_action: DoubleTapAction::Zoom,
+            toolbar_auto_hide_secs: 3,
+            vertical_margin_px: 0,
+        }
+    }
+}
+
 /// Reader display, orientation, auto-webtoon, preloading, and continuous-scroll preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct ReaderSettings {
     /// Active reading orientation (`vertical` or `horizontal`).
     pub orientation: ReadingOrientation,
-    /// Image horizontal sizing mode (used in Vertical mode).
+    /// Image horizontal sizing mode (legacy compatibility field).
     pub width: ImageWidth,
     /// Legacy vertical gap between pages in pixels (kept synchronized with `vertical.page_gap_px`).
     pub gap_px: u8,
@@ -350,6 +400,8 @@ pub(crate) struct ReaderSettings {
     pub vertical: VerticalModeSettings,
     /// Independent Horizontal Reading Mode configuration.
     pub horizontal: HorizontalModeSettings,
+    /// Interactive reader gesture, screen wake, auto-hide, margin, and broken-image behavior.
+    pub behavior: ReaderBehaviorSettings,
 }
 
 impl Default for ReaderSettings {
@@ -366,6 +418,7 @@ impl Default for ReaderSettings {
             reader_bg: ReaderBg::Dark,
             vertical: VerticalModeSettings::default(),
             horizontal: HorizontalModeSettings::default(),
+            behavior: ReaderBehaviorSettings::default(),
         }
     }
 }
@@ -395,7 +448,7 @@ impl Default for UpdateSettings {
     }
 }
 
-/// Scraper and headless browser preferences.
+/// Scraper, headless browser, and global network speed limit preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct SourceSettings {
@@ -403,6 +456,8 @@ pub(crate) struct SourceSettings {
     pub headless_enabled: bool,
     /// Maximum simultaneous requests per remote host (`1..=8`).
     pub max_conn_per_host: u8,
+    /// Global aggregate download speed limit in KiB/s (`0` = unlimited, max `102400`).
+    pub speed_limit_kbps: u32,
 }
 
 impl Default for SourceSettings {
@@ -410,8 +465,24 @@ impl Default for SourceSettings {
         Self {
             headless_enabled: true,
             max_conn_per_host: 4,
+            speed_limit_kbps: 0,
         }
     }
+}
+
+/// Identifies an individual settings group that can be reset to factory defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum SettingsSection {
+    Appearance,
+    Device,
+    Reader,
+    Floating,
+    Network,
+    Updates,
+    Sources,
+    Cache,
 }
 
 /// Local image disk cache limits.
@@ -496,6 +567,17 @@ impl Settings {
 
         // Enforce controlled 5-8 image preload window to balance smoothness and low RAM usage.
         self.reader.preload_images = self.reader.preload_images.clamp(5, 8);
+        self.reader.behavior.toolbar_auto_hide_secs =
+            if self.reader.behavior.toolbar_auto_hide_secs == 0 {
+                0
+            } else {
+                self.reader.behavior.toolbar_auto_hide_secs.clamp(2, 15)
+            };
+        self.reader.behavior.vertical_margin_px = self.reader.behavior.vertical_margin_px.min(64);
+        if self.reader.vertical.no_gap_mode {
+            self.reader.vertical.page_gap_px = 0;
+            self.reader.gap_px = 0;
+        }
 
         // Sanitize floating controls screens & bounds.
         let mut clean_screens: Vec<String> = Vec::with_capacity(VALID_FLOATING_SCREENS.len());
@@ -512,10 +594,89 @@ impl Settings {
 
         self.updates.interval_hours = self.updates.interval_hours.clamp(1, 48);
         self.sources.max_conn_per_host = self.sources.max_conn_per_host.clamp(1, 8);
+        self.sources.speed_limit_kbps = self.sources.speed_limit_kbps.min(MAX_SPEED_LIMIT_KBPS);
         self.doh = self.doh.sanitized();
         self.proxy = self.proxy.sanitized();
         self.cache.max_mb = self.cache.max_mb.clamp(64, 10_240);
         self
+    }
+
+    /// Resets only a single settings section back to defaults without touching other sections.
+    pub(crate) fn reset_section(&mut self, section: SettingsSection) {
+        match section {
+            SettingsSection::Appearance => {
+                self.language = Language::default();
+                self.theme = Theme::default();
+            }
+            SettingsSection::Device => {
+                self.device = DeviceSettings::default();
+            }
+            SettingsSection::Reader => {
+                self.reader = ReaderSettings::default();
+            }
+            SettingsSection::Floating => {
+                self.floating = FloatingButtonsSettings::default();
+            }
+            SettingsSection::Network => {
+                self.doh = DohConfig::default();
+                self.proxy = ProxyConfig::default();
+            }
+            SettingsSection::Updates => {
+                self.updates = UpdateSettings::default();
+            }
+            SettingsSection::Sources => {
+                self.sources = SourceSettings::default();
+            }
+            SettingsSection::Cache => {
+                self.cache = CacheSettings::default();
+            }
+        }
+    }
+
+    /// Produces a safe, credential-free JSON snapshot suitable for diagnostic log export.
+    pub(crate) fn redacted_for_diagnostics(&self) -> serde_json::Value {
+        serde_json::json!({
+            "language": self.language,
+            "theme": self.theme,
+            "reader": {
+                "orientation": self.reader.orientation,
+                "preloadImages": self.reader.preload_images,
+                "autoNextChapter": self.reader.auto_next_chapter,
+                "autoWebtoonDetect": self.reader.auto_webtoon_detect,
+                "tapZonesEnabled": self.reader.tap_zones_enabled,
+                "orientationLock": self.reader.orientation_lock,
+                "verticalNoGap": self.reader.vertical.no_gap_mode,
+                "verticalMarginPx": self.reader.behavior.vertical_margin_px,
+                "doubleTapAction": self.reader.behavior.double_tap_action,
+                "toolbarAutoHideSecs": self.reader.behavior.toolbar_auto_hide_secs,
+                "keepScreenOn": self.reader.behavior.keep_screen_on,
+                "skipBrokenImages": self.reader.behavior.skip_broken_images,
+                "autoMarkReadOnOpen": self.reader.behavior.auto_mark_read_on_open,
+            },
+            "sources": {
+                "headlessEnabled": self.sources.headless_enabled,
+                "maxConnPerHost": self.sources.max_conn_per_host,
+                "speedLimitKbps": self.sources.speed_limit_kbps,
+            },
+            "doh": {
+                "enabled": self.doh.enabled,
+                "providerId": self.doh.provider_id,
+                "profileId": self.doh.profile_id,
+                "hasCustomAccountId": self.doh.custom_profile_id.is_some(),
+                "allowSystemFallback": self.doh.allow_system_fallback,
+            },
+            "proxy": {
+                "enabled": self.proxy.enabled,
+                "protocol": self.proxy.default_proxy.protocol,
+                "hasCustomHost": !self.proxy.default_proxy.host.trim().is_empty(),
+                "hasAuth": self.proxy.default_proxy.username.is_some() || self.proxy.default_proxy.password.is_some(),
+                "domainRuleCount": self.proxy.domain_rules.len(),
+                "allowDirectFallback": self.proxy.allow_direct_fallback,
+            },
+            "cache": {
+                "maxMb": self.cache.max_mb,
+            },
+        })
     }
 
     /// Converts the headless setting into a [`HeadlessPolicy`] for `mangacore`.

@@ -3,14 +3,18 @@
   import {
     ArrowLeft,
     Bookmark,
+    Check,
     ChevronLeft,
     ChevronRight,
+    List,
     Loader2,
     Maximize,
     Minimize,
     RotateCcw,
+    Search,
     SlidersHorizontal,
     Sparkles,
+    ZoomOut,
   } from "lucide-svelte";
   import { tick, untrack } from "svelte";
   import { api, formatAppError } from "../lib/api";
@@ -59,12 +63,19 @@
   let errorState = $state<{ title: string; detail: string; blockedUrl?: string } | null>(null);
   let toolbarVisible = $state(true);
   let quickSettingsOpen = $state(false);
+  let chapterJumpOpen = $state(false);
+  let chapterJumpQuery = $state("");
   let isFullscreen = $state(false);
   let showScrollTopBtn = $state(false);
   let controlsDimmed = $state(false);
   let chapterDetectedWebtoon = $state(false);
 
-  // Viewport focus tracking (key of focused group or page, plus exact focused page index).
+  // Double-tap Zoom state (`1` = normal, `1.8` = zoomed).
+  let zoomScale = $state(1);
+  let zoomOriginX = $state(50);
+  let zoomOriginY = $state(50);
+
+  // Viewport focus tracking.
   let focusedKeys = $state<Set<string>>(new Set());
   let focusedPageIdx = $state(0);
 
@@ -73,6 +84,13 @@
   let prefetched = new Map<string, ChapterView>();
   let saveTimer: number | null = null;
   let idleDimTimer: number | null = null;
+  let toolbarAutoHideTimer: number | null = null;
+  let singleTapTimer: number | null = null;
+  let lastTapAt = 0;
+  let pointerDownX = 0;
+  let pointerDownY = 0;
+  let wakeLockSentinel: { release: () => Promise<void> } | null = null;
+
   let pendingProgress: {
     mangaId: number;
     url: string;
@@ -88,6 +106,7 @@
   let restoredInitialScroll = false;
   let isUserScrollingBeforeRestore = false;
   let suppressAutoHideUntil = 0;
+  let scrubbing = false;
   let loadSeq = 0;
 
   function normUrl(u: string): string {
@@ -97,12 +116,9 @@
   const readerSettings = $derived(settingsStore.value.reader);
   const vCfg = $derived(readerSettings.vertical);
   const hCfg = $derived(readerSettings.horizontal);
+  const behavior = $derived(readerSettings.behavior);
   const t = $derived(settingsStore.t);
 
-  // Strict reader mode precedence:
-  // 1. Per-manga manual override
-  // 2. Auto-detected Webtoon / Long-Strip (when enabled in Settings)
-  // 3. Global reader mode settings
   const effectiveOverride = $derived<ReaderModeOverride>(manga?.readerModeOverride ?? null);
 
   const isAutoWebtoonActive = $derived(
@@ -121,7 +137,9 @@
           : readerSettings.orientation
   );
 
-  const effectiveVerticalGapPx = $derived(isAutoWebtoonActive ? 0 : vCfg.pageGapPx);
+  const effectiveVerticalGapPx = $derived(
+    isAutoWebtoonActive || vCfg.noGapMode ? 0 : vCfg.pageGapPx
+  );
 
   const isHorizontal = $derived(effectiveOrientation === "horizontal");
   const isRtl = $derived(isHorizontal && hCfg.direction === "rtl");
@@ -131,11 +149,19 @@
   );
 
   const lastChapter = $derived(strip[strip.length - 1] ?? null);
+  const totalPages = $derived(activeChapter?.images.length ?? 0);
 
-  const selectChapterValue = $derived(() => {
-    if (!manga || !activeUrl) return activeUrl;
-    const norm = normUrl(activeUrl);
-    return manga.chapters.find((c) => normUrl(c.url) === norm)?.url ?? activeUrl;
+  const filteredJumpChapters = $derived(() => {
+    if (!manga) return [];
+    const q = chapterJumpQuery.trim().toLowerCase();
+    const list = q
+      ? manga.chapters.filter(
+          (c) =>
+            c.name.toLowerCase().includes(q) ||
+            (c.number !== null && String(c.number).includes(q))
+        )
+      : manga.chapters;
+    return [...list].reverse();
   });
 
   const readerBackdrop = $derived(() => {
@@ -148,11 +174,39 @@
   const scrollContainerSnapStyle = $derived(() => {
     if (isHorizontal) {
       if (hCfg.snapMode === "none") return "scroll-snap-type: none;";
-      // `mandatory` paired with `scroll-snap-stop: always` prevents fast swipes from skipping Image 2.
       return "scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;";
     }
     return "scroll-snap-type: none;";
   });
+
+  const zoomTransformStyle = $derived(
+    zoomScale > 1.01
+      ? `transform: scale(${zoomScale}); transform-origin: ${zoomOriginX}% ${zoomOriginY}%; transition: transform 180ms ease;`
+      : "transform: none; transition: transform 180ms ease;"
+  );
+
+  function resetZoom() {
+    zoomScale = 1;
+    zoomOriginX = 50;
+    zoomOriginY = 50;
+  }
+
+  function scheduleToolbarAutoHide() {
+    if (toolbarAutoHideTimer !== null) {
+      window.clearTimeout(toolbarAutoHideTimer);
+      toolbarAutoHideTimer = null;
+    }
+    const secs = behavior.toolbarAutoHideSecs;
+    if (!toolbarVisible || secs <= 0 || quickSettingsOpen || chapterJumpOpen || scrubbing) {
+      return;
+    }
+    toolbarAutoHideTimer = window.setTimeout(() => {
+      toolbarAutoHideTimer = null;
+      if (!quickSettingsOpen && !chapterJumpOpen && !scrubbing && Date.now() >= suppressAutoHideUntil) {
+        toolbarVisible = false;
+      }
+    }, secs * 1000);
+  }
 
   function wakeFloatingControls() {
     controlsDimmed = false;
@@ -162,12 +216,47 @@
     if (settingsStore.value.floating.autoDimInReader) {
       idleDimTimer = window.setTimeout(() => {
         idleDimTimer = null;
-        if (!quickSettingsOpen) {
+        if (!quickSettingsOpen && !chapterJumpOpen) {
           controlsDimmed = true;
         }
       }, 2400);
     }
   }
+
+  async function applyKeepScreenOn(enabled: boolean) {
+    if (deviceEnv.isAndroid) {
+      void api.setKeepScreenOn(enabled).catch(() => {});
+      return;
+    }
+    // Desktop / WebView2 Screen Wake Lock API (best-effort, zero errors if unsupported).
+    const nav = navigator as unknown as {
+      wakeLock?: { request: (t: "screen") => Promise<{ release: () => Promise<void> }> };
+    };
+    try {
+      if (enabled) {
+        if (!wakeLockSentinel && nav.wakeLock) {
+          wakeLockSentinel = await nav.wakeLock.request("screen");
+        }
+      } else if (wakeLockSentinel) {
+        await wakeLockSentinel.release();
+        wakeLockSentinel = null;
+      }
+    } catch {
+      // Ignore unsupported WakeLock environments.
+    }
+  }
+
+  $effect(() => {
+    void applyKeepScreenOn(behavior.keepScreenOn);
+  });
+
+  $effect(() => {
+    void toolbarVisible;
+    void quickSettingsOpen;
+    void chapterJumpOpen;
+    void behavior.toolbarAutoHideSecs;
+    scheduleToolbarAutoHide();
+  });
 
   function isKeyFocused(key: string): boolean {
     if (focusedKeys.size === 0) return true;
@@ -189,7 +278,6 @@
   ) {
     if (normUrl(chapUrl) !== normUrl(activeUrl)) return;
 
-    // Passive Webtoon / Long-Strip detection on the first 8 loaded pages (zero extra network requests).
     if (
       !webtoonDecidedForChapter &&
       readerSettings.autoWebtoonDetect &&
@@ -299,6 +387,10 @@
     if (pendingProgress) {
       const snap = pendingProgress;
       pendingProgress = null;
+      const mode = isHorizontal ? "horizontal" : "vertical";
+      void api
+        .upsertReaderSession(snap.mangaId, snap.url, snap.name, snap.ratio, snap.pageIndex, mode)
+        .catch(() => {});
       return api
         .saveProgress(snap.mangaId, snap.url, snap.name, snap.ratio, snap.pageIndex)
         .catch(() => {});
@@ -336,17 +428,16 @@
       }
       pendingProgress = null;
     }
-    if (restoreTimer !== null) {
-      window.clearTimeout(restoreTimer);
-      restoreTimer = null;
+    for (const timer of [restoreTimer, idleDimTimer, toolbarAutoHideTimer, singleTapTimer]) {
+      if (timer !== null) window.clearTimeout(timer);
     }
+    restoreTimer = null;
+    idleDimTimer = null;
+    toolbarAutoHideTimer = null;
+    singleTapTimer = null;
     if (focusRaf !== null) {
       window.cancelAnimationFrame(focusRaf);
       focusRaf = null;
-    }
-    if (idleDimTimer !== null) {
-      window.clearTimeout(idleDimTimer);
-      idleDimTimer = null;
     }
   }
 
@@ -363,15 +454,31 @@
 
   function scrollToStartOfContainer(smooth = false) {
     if (!scrollEl) return;
-    const behavior: ScrollBehavior = smooth ? "smooth" : "instant";
+    const behaviorScroll: ScrollBehavior = smooth ? "smooth" : "instant";
     if (isHorizontal) {
-      scrollEl.scrollTo({ left: 0, behavior });
+      scrollEl.scrollTo({ left: 0, behavior: behaviorScroll });
       lastScrollOffset = 0;
     } else {
-      scrollEl.scrollTo({ top: 0, behavior });
+      scrollEl.scrollTo({ top: 0, behavior: behaviorScroll });
       lastScrollOffset = 0;
     }
     showScrollTopBtn = false;
+  }
+
+  function seekToPage(pageIndex: number) {
+    if (!scrollEl || !activeChapter) return;
+    const clamped = Math.max(0, Math.min(Math.max(0, activeChapter.images.length - 1), pageIndex));
+    focusedPageIdx = clamped;
+    resetZoom();
+    const pageEl = scrollEl.querySelector<HTMLElement>(
+      `[data-page-key="${CSS.escape(`${activeChapter.url}:${clamped}`)}"]`
+    );
+    if (pageEl) {
+      pageEl.scrollIntoView({ behavior: "instant", block: "start", inline: "center" });
+      lastScrollOffset = isHorizontal ? Math.abs(scrollEl.scrollLeft) : scrollEl.scrollTop;
+      updateFocusNow();
+      captureCurrentProgressNow();
+    }
   }
 
   function applyScrollRestore(ratio: number, pageIdx: number, targetChapUrl: string) {
@@ -403,6 +510,7 @@
   async function loadInitial(targetUrl: string, scrollRatio: number, pageIndex: number) {
     const seq = ++loadSeq;
     clearPendingTimers(true);
+    resetZoom();
     loadingInitial = true;
     appendingNext = false;
     errorState = null;
@@ -433,7 +541,6 @@
       activeUrl = chapterData.url;
       loadingInitial = false;
 
-      // Apply user's preferred mobile orientation lock when entering reader.
       if (deviceEnv.isAndroid) {
         void deviceEnv.setOrientationLock(readerSettings.orientationLock);
       }
@@ -463,14 +570,26 @@
         });
       }
 
+      const mode = isHorizontal ? "horizontal" : "vertical";
       void api
         .saveProgress(mangaId, chapterData.url, chapterData.name, scrollRatio, Math.max(0, pageIndex))
         .catch(() => {});
+      void api
+        .upsertReaderSession(
+          mangaId,
+          chapterData.url,
+          chapterData.name,
+          scrollRatio,
+          Math.max(0, pageIndex),
+          mode
+        )
+        .catch(() => {});
 
-      if (chapterData.images.length <= 2) {
+      if (behavior.autoMarkReadOnOpen || chapterData.images.length <= 2) {
         markChapterReadLocalAndRemote(chapterData.url);
       }
       wakeFloatingControls();
+      scheduleToolbarAutoHide();
     } catch (err) {
       if (seq !== loadSeq) return;
       errorState = formatAppError(err, settingsStore.value.language);
@@ -478,11 +597,18 @@
     }
   }
 
-  // Register Back interceptor (close Quick Settings first) & lifecycle flushers.
   $effect(() => {
     const unregisterBack = router.registerBackInterceptor(() => {
+      if (chapterJumpOpen) {
+        chapterJumpOpen = false;
+        return true;
+      }
       if (quickSettingsOpen) {
         quickSettingsOpen = false;
+        return true;
+      }
+      if (zoomScale > 1.01) {
+        resetZoom();
         return true;
       }
       return false;
@@ -491,14 +617,18 @@
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
         captureCurrentProgressNow();
-      } else if (deviceEnv.isAndroid) {
-        void deviceEnv.reassertImmersive();
+        void applyKeepScreenOn(false);
+      } else {
+        void applyKeepScreenOn(behavior.keepScreenOn);
+        if (deviceEnv.isAndroid) {
+          void deviceEnv.reassertImmersive();
+        }
       }
     };
 
     const onOrientationChanged = () => {
-      // HyperOS/MIUI orientation recovery: keep controls reachable and re-anchor current page.
-      suppressAutoHideUntil = Date.now() + 500;
+      resetZoom();
+      suppressAutoHideUntil = Date.now() + 600;
       toolbarVisible = true;
       wakeFloatingControls();
       captureCurrentProgressNow();
@@ -525,7 +655,7 @@
       unregisterBack();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("rtmaga:orientation-changed", onOrientationChanged);
-      // Restore auto orientation when leaving reader on mobile.
+      void applyKeepScreenOn(false);
       if (deviceEnv.isAndroid) {
         void deviceEnv.setOrientationLock("auto");
       }
@@ -547,7 +677,6 @@
     };
   });
 
-  // Preserve reading page position seamlessly whenever orientation, horizontal pagesPerGroup, or direction changes.
   let prevLayoutSig = "";
   $effect(() => {
     const sig = `${effectiveOrientation}|${hCfg.pagesPerGroup}|${hCfg.direction}`;
@@ -563,6 +692,7 @@
     if (!anchorChap || untrack(() => loadingInitial || strip.length === 0)) return;
 
     void (async () => {
+      resetZoom();
       if (untrack(() => isHorizontal && strip.length > 1)) {
         const current = untrack(() => strip.find((c) => normUrl(c.url) === normUrl(anchorChap)));
         if (current) {
@@ -671,7 +801,9 @@
   function jumpToChapter(url: string) {
     if (!url) return;
     void flushPendingProgress();
+    resetZoom();
     quickSettingsOpen = false;
+    chapterJumpOpen = false;
     toolbarVisible = true;
     scrollToStartOfContainer();
 
@@ -684,6 +816,7 @@
 
   function stepHorizontalGroup(deltaStep: 1 | -1) {
     if (!scrollEl || !isHorizontal) return;
+    resetZoom();
     const groups = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-group-key]"));
     if (groups.length === 0) return;
 
@@ -712,32 +845,95 @@
     }
   }
 
+  function handlePointerDown(e: PointerEvent) {
+    pointerDownX = e.clientX;
+    pointerDownY = e.clientY;
+    wakeFloatingControls();
+  }
+
+  function executeSingleTap(clientX: number) {
+    if (isHorizontal && readerSettings.tapZonesEnabled && scrollEl && zoomScale <= 1.01) {
+      const rect = scrollEl.getBoundingClientRect();
+      const relX = (clientX - rect.left) / Math.max(1, rect.width);
+      if (relX <= 0.26) {
+        stepHorizontalGroup(isRtl ? 1 : -1);
+        return;
+      }
+      if (relX >= 0.74) {
+        stepHorizontalGroup(isRtl ? -1 : 1);
+        return;
+      }
+    }
+    toolbarVisible = !toolbarVisible;
+  }
+
+  function executeDoubleTap(clientX: number, clientY: number) {
+    const action = behavior.doubleTapAction;
+    if (action === "disabled") return;
+    if (action === "toggle_toolbar") {
+      toolbarVisible = !toolbarVisible;
+      return;
+    }
+    if (action === "next_page") {
+      if (isHorizontal) {
+        stepHorizontalGroup(1);
+      } else if (scrollEl) {
+        scrollEl.scrollBy({ top: scrollEl.clientHeight * 0.85, behavior: "smooth" });
+      }
+      return;
+    }
+    // Default: Zoom toggle 1x <-> 1.8x anchored cleanly at tap coordinates.
+    if (zoomScale > 1.01) {
+      resetZoom();
+    } else if (scrollEl) {
+      const rect = scrollEl.getBoundingClientRect();
+      zoomOriginX = Math.max(10, Math.min(90, Math.round(((clientX - rect.left) / Math.max(1, rect.width)) * 100)));
+      zoomOriginY = Math.max(10, Math.min(90, Math.round(((clientY - rect.top) / Math.max(1, rect.height)) * 100)));
+      zoomScale = 1.8;
+    }
+  }
+
   function handleViewportClick(e: MouseEvent) {
     wakeFloatingControls();
     if (quickSettingsOpen) {
       quickSettingsOpen = false;
       return;
     }
-    // Ignore clicks on buttons or links inside the viewport.
+    if (chapterJumpOpen) {
+      chapterJumpOpen = false;
+      return;
+    }
     if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
       return;
     }
-
-    if (isHorizontal && readerSettings.tapZonesEnabled && scrollEl) {
-      const rect = scrollEl.getBoundingClientRect();
-      const relX = (e.clientX - rect.left) / Math.max(1, rect.width);
-      if (relX <= 0.28) {
-        stepHorizontalGroup(isRtl ? 1 : -1);
-        return;
-      }
-      if (relX >= 0.72) {
-        stepHorizontalGroup(isRtl ? -1 : 1);
-        return;
-      }
+    // Ignore drags/scroll gestures (> 10px movement).
+    if (Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 10) {
+      return;
     }
 
-    // Center tap toggles toolbar visibility smoothly.
-    toolbarVisible = !toolbarVisible;
+    const now = Date.now();
+    const doubleTapEnabled = behavior.doubleTapAction !== "disabled";
+
+    if (doubleTapEnabled && now - lastTapAt <= 240) {
+      lastTapAt = 0;
+      if (singleTapTimer !== null) {
+        window.clearTimeout(singleTapTimer);
+        singleTapTimer = null;
+      }
+      executeDoubleTap(e.clientX, e.clientY);
+      return;
+    }
+
+    lastTapAt = now;
+    if (!doubleTapEnabled) {
+      executeSingleTap(e.clientX);
+    } else {
+      const tapX = e.clientX;
+      singleTapTimer = window.setTimeout(() => {
+        singleTapTimer = null;
+        executeSingleTap(tapX);
+      }, 240);
+    }
   }
 
   async function handleManualVerify() {
@@ -791,6 +987,7 @@
         if (delta > 20 && absLeft > 80) {
           toolbarVisible = false;
           quickSettingsOpen = false;
+          chapterJumpOpen = false;
         } else if (delta < -20 || absLeft < 40) {
           toolbarVisible = true;
         }
@@ -811,7 +1008,6 @@
       return;
     }
 
-    // Vertical scroll handling (Continuous Strip & Vertical Grouped Scroll).
     const top = scrollEl.scrollTop;
     const delta = top - lastScrollOffset;
     showScrollTopBtn = top > 320;
@@ -827,6 +1023,7 @@
       if (delta > 16 && top > 80) {
         toolbarVisible = false;
         quickSettingsOpen = false;
+        chapterJumpOpen = false;
       } else if (delta < -16 || top < 60) {
         toolbarVisible = true;
       }
@@ -854,7 +1051,11 @@
       const chapUrl = currentSection.dataset.chapterUrl ?? activeUrl;
       const chap = strip.find((c) => normUrl(c.url) === normUrl(chapUrl));
       if (chap) {
+        const chapterChanged = normUrl(activeUrl) !== normUrl(chap.url);
         activeUrl = chap.url;
+        if (chapterChanged && behavior.autoMarkReadOnOpen) {
+          markChapterReadLocalAndRemote(chap.url);
+        }
         const secHeight = Math.max(1, currentSection.offsetHeight - scrollEl.clientHeight);
         const ratio = Math.min(1, Math.max(0, (top - currentSection.offsetTop) / secHeight));
 
@@ -932,6 +1133,8 @@
   async function exitReader() {
     captureCurrentProgressNow();
     await flushPendingProgress();
+    await api.clearReaderSession().catch(() => {});
+    await applyKeepScreenOn(false);
     try {
       const win = getCurrentWindow();
       if (await win.isFullscreen()) {
@@ -970,7 +1173,9 @@
         void toggleFullscreen();
       } else if (e.key === "Escape") {
         e.preventDefault();
-        if (quickSettingsOpen) quickSettingsOpen = false;
+        if (chapterJumpOpen) chapterJumpOpen = false;
+        else if (quickSettingsOpen) quickSettingsOpen = false;
+        else if (zoomScale > 1.01) resetZoom();
         else if (isFullscreen) void toggleFullscreen();
         else void exitReader();
       }
@@ -992,13 +1197,11 @@
       void toggleFullscreen();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      if (quickSettingsOpen) {
-        quickSettingsOpen = false;
-      } else if (isFullscreen) {
-        void toggleFullscreen();
-      } else {
-        void exitReader();
-      }
+      if (chapterJumpOpen) chapterJumpOpen = false;
+      else if (quickSettingsOpen) quickSettingsOpen = false;
+      else if (zoomScale > 1.01) resetZoom();
+      else if (isFullscreen) void toggleFullscreen();
+      else void exitReader();
     }
   }
 
@@ -1017,7 +1220,6 @@
     settingsStore.update((d) => {
       d.reader.orientation = o;
     });
-    // Record per-manga override so manual choice takes precedence over Auto Webtoon detection.
     const nextOverride: ReaderModeOverride = o === "horizontal" ? "horizontal" : "vertical_strip";
     void applyPerMangaOverride(nextOverride);
   }
@@ -1072,6 +1274,16 @@
     });
   }
 
+  function toggleNoGap() {
+    settingsStore.update((d) => {
+      d.reader.vertical.noGapMode = !d.reader.vertical.noGapMode;
+      if (d.reader.vertical.noGapMode) {
+        d.reader.vertical.pageGapPx = 0;
+        d.reader.gapPx = 0;
+      }
+    });
+  }
+
   function setReaderBg(bg: ReaderBg) {
     settingsStore.update((d) => {
       d.reader.readerBg = bg;
@@ -1082,7 +1294,9 @@
 <svelte:window
   onkeydown={handleKeydown}
   onmousemove={(e) => {
-    if (e.clientY < 52) toolbarVisible = true;
+    if (e.clientY < 52 || e.clientY > window.innerHeight - 52) {
+      toolbarVisible = true;
+    }
   }}
 />
 
@@ -1090,7 +1304,7 @@
   class="relative flex h-full w-full flex-col overflow-hidden"
   style="background-color: {readerBackdrop()};"
 >
-  <!-- Floating Auto-Hide Top Toolbar (respects Android display cutout) -->
+  <!-- Top Auto-Hide Toolbar -->
   <header
     class="fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 backdrop-blur-md transition-transform duration-200 sm:px-4"
     style="padding-top: max(0.5rem, var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 88%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
@@ -1124,53 +1338,47 @@
         </div>
         <div class="truncate text-xs" style="color: var(--text-muted);">
           {activeChapter?.name ?? ""}
-          {#if activeChapter && activeChapter.images.length > 0}
-            · {focusedPageIdx + 1}/{activeChapter.images.length}
+          {#if totalPages > 0}
+            · {focusedPageIdx + 1} / {totalPages}
           {/if}
         </div>
       </div>
     </div>
 
-    <!-- Chapter selector + prev/next + bookmark + settings -->
     <div class="flex shrink-0 items-center gap-1">
-      <button
-        type="button"
-        disabled={!activeChapter?.prev}
-        onclick={() => activeChapter?.prev && jumpToChapter(activeChapter.prev)}
-        class="rounded-lg border p-1.5 disabled:opacity-35"
-        style="border-color: var(--border); background-color: var(--surface);"
-        title={t.prevChapterTooltip}
-      >
-        <ChevronLeft size={16} />
-      </button>
-
-      {#if manga && manga.chapters.length > 0}
-        <select
-          value={selectChapterValue()}
-          onchange={(e) => {
-            const target = e.currentTarget.value;
-            e.currentTarget.blur();
-            jumpToChapter(target);
-          }}
-          class="max-w-28 rounded-lg border px-2 py-1.5 text-xs font-medium outline-none sm:max-w-44"
-          style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+      {#if zoomScale > 1.01}
+        <button
+          type="button"
+          onclick={resetZoom}
+          class="inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium"
+          style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
+          title={t.readerResetZoom}
         >
-          {#each manga.chapters as ch (ch.url)}
-            <option value={ch.url}>{ch.name}</option>
-          {/each}
-        </select>
+          <ZoomOut size={14} />
+          <span>1x</span>
+        </button>
       {/if}
 
-      <button
-        type="button"
-        disabled={!activeChapter?.next}
-        onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
-        class="rounded-lg border p-1.5 disabled:opacity-35"
-        style="border-color: var(--border); background-color: var(--surface);"
-        title={t.nextChapterTooltip}
-      >
-        <ChevronRight size={16} />
-      </button>
+      {#if manga && manga.chapters.length > 0}
+        <button
+          type="button"
+          onclick={() => {
+            chapterJumpOpen = !chapterJumpOpen;
+            quickSettingsOpen = false;
+            wakeFloatingControls();
+          }}
+          class="inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium"
+          style="border-color: {chapterJumpOpen
+            ? 'var(--accent)'
+            : 'var(--border)'}; background-color: {chapterJumpOpen
+            ? 'var(--accent-soft)'
+            : 'var(--surface)'}; color: {chapterJumpOpen ? 'var(--accent)' : 'var(--text)'};"
+          title={t.quickChapterJump}
+        >
+          <List size={15} />
+          <span class="hidden sm:inline">{t.chaptersBtn}</span>
+        </button>
+      {/if}
 
       {#if manga}
         <button
@@ -1190,6 +1398,7 @@
         type="button"
         onclick={() => {
           quickSettingsOpen = !quickSettingsOpen;
+          chapterJumpOpen = false;
           wakeFloatingControls();
         }}
         class="rounded-lg border p-1.5"
@@ -1219,6 +1428,53 @@
     </div>
   </header>
 
+  <!-- Quick Chapter Jump Popover (with dimmed read chapters) -->
+  {#if chapterJumpOpen && manga}
+    <div
+      class="fixed right-4 z-40 flex max-h-[72dvh] w-80 max-w-[calc(100vw-2rem)] flex-col gap-2.5 rounded-2xl border p-3.5 text-xs shadow-xl"
+      style="top: calc(3.5rem + var(--safe-top)); background-color: var(--surface); border-color: var(--border);"
+    >
+      <div class="flex items-center justify-between font-semibold">
+        <span>{t.quickChapterJump}</span>
+        <span style="color: var(--text-muted);">{t.chapterCount(manga.chapters.length)}</span>
+      </div>
+      <div
+        class="flex items-center gap-2 rounded-xl border px-2.5 py-1.5"
+        style="background-color: var(--surface-subtle); border-color: var(--border);"
+      >
+        <Search size={13} style="color: var(--text-muted);" />
+        <input
+          type="text"
+          bind:value={chapterJumpQuery}
+          placeholder={t.filterChapters}
+          class="w-full bg-transparent text-xs outline-none"
+        />
+      </div>
+      <div class="flex max-h-80 flex-col gap-1 overflow-y-auto pr-0.5">
+        {#each filteredJumpChapters() as ch (ch.url)}
+          {@const isCurrent = normUrl(ch.url) === normUrl(activeUrl)}
+          <button
+            type="button"
+            onclick={() => jumpToChapter(ch.url)}
+            class="flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:brightness-95"
+            style="background-color: {isCurrent
+              ? 'var(--accent-soft)'
+              : 'var(--surface-subtle)'}; color: {isCurrent
+              ? 'var(--accent)'
+              : ch.read
+                ? 'var(--text-muted)'
+                : 'var(--text)'}; opacity: {!isCurrent && ch.read ? 0.58 : 1};"
+          >
+            <span class="truncate font-medium">{ch.name}</span>
+            {#if ch.read}
+              <Check size={13} class="shrink-0 opacity-75" />
+            {/if}
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <!-- Quick Reader Settings Popover -->
   {#if quickSettingsOpen}
     <div
@@ -1247,7 +1503,6 @@
         </div>
       {/if}
 
-      <!-- Orientation toggle -->
       <div class="flex flex-col gap-1.5">
         <span class="font-medium">{t.readingModeLabel}</span>
         <div class="grid grid-cols-2 gap-1.5">
@@ -1348,7 +1603,53 @@
             {/each}
           </div>
         </div>
+      {:else}
+        <div class="flex items-center justify-between">
+          <span class="font-medium">{t.noGapModeLabel}</span>
+          <input
+            type="checkbox"
+            checked={vCfg.noGapMode}
+            onchange={toggleNoGap}
+            class="h-4 w-4 accent-rose-500"
+          />
+        </div>
+
+        <div class="flex items-center justify-between">
+          <span class="font-medium">{t.autoAppendNext}</span>
+          <input
+            type="checkbox"
+            checked={readerSettings.autoNextChapter}
+            onchange={toggleAutoNext}
+            class="h-4 w-4 accent-rose-500"
+          />
+        </div>
       {/if}
+
+      <div class="flex items-center justify-between">
+        <span class="font-medium">{t.keepScreenOnLabel}</span>
+        <input
+          type="checkbox"
+          checked={behavior.keepScreenOn}
+          onchange={(e) => {
+            const checked = e.currentTarget.checked;
+            settingsStore.update((d) => (d.reader.behavior.keepScreenOn = checked));
+          }}
+          class="h-4 w-4 accent-rose-500"
+        />
+      </div>
+
+      <div class="flex items-center justify-between">
+        <span class="font-medium">{t.skipBrokenImagesLabel}</span>
+        <input
+          type="checkbox"
+          checked={behavior.skipBrokenImages}
+          onchange={(e) => {
+            const checked = e.currentTarget.checked;
+            settingsStore.update((d) => (d.reader.behavior.skipBrokenImages = checked));
+          }}
+          class="h-4 w-4 accent-rose-500"
+        />
+      </div>
 
       <div class="flex flex-col gap-1.5">
         <div class="flex items-center justify-between">
@@ -1376,18 +1677,6 @@
           </div>
         {/if}
       </div>
-
-      {#if !isHorizontal}
-        <div class="flex items-center justify-between">
-          <span class="font-medium">{t.autoAppendNext}</span>
-          <input
-            type="checkbox"
-            checked={readerSettings.autoNextChapter}
-            onchange={toggleAutoNext}
-            class="h-4 w-4 accent-rose-500"
-          />
-        </div>
-      {/if}
 
       <div class="flex flex-col gap-1.5">
         <span class="font-medium">{t.readerBg}</span>
@@ -1420,6 +1709,7 @@
     bind:this={scrollEl}
     onscroll={handleScroll}
     onwheel={handleWheel}
+    onpointerdown={handlePointerDown}
     onclick={handleViewportClick}
     ontouchstart={wakeFloatingControls}
     dir={isRtl ? "rtl" : "ltr"}
@@ -1476,11 +1766,10 @@
         </div>
       </div>
     {:else if isHorizontal && activeChapter}
-      <!-- HORIZONTAL READING MODE (strict anti-skip slots + scroll-snap-stop: always) -->
       {@const groups = partitionPages(activeChapter.images, hCfg.pagesPerGroup)}
       <div
         class="flex h-full w-max items-center"
-        style="gap: {hCfg.pagesPerGroup === 1 ? 0 : hCfg.groupGapPx}px;"
+        style="gap: {hCfg.pagesPerGroup === 1 ? 0 : hCfg.groupGapPx}px; {zoomTransformStyle}"
       >
         {#each groups as group (`${activeChapter.url}:hg:${group.groupIdx}`)}
           {@const gKey = `${activeChapter.url}:hg:${group.groupIdx}`}
@@ -1511,13 +1800,13 @@
                 snapPage={hCfg.snapMode === "page"}
                 snapStopAlways={hCfg.snapMode !== "none"}
                 groupPageCount={group.items.length}
+                skipBroken={behavior.skipBrokenImages}
                 onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
               />
             {/each}
           </div>
         {/each}
 
-        <!-- End-of-chapter horizontal card -->
         <div
           dir="ltr"
           class="flex h-full w-screen shrink-0 flex-col items-center justify-center px-8"
@@ -1546,23 +1835,31 @@
         </div>
       </div>
     {:else}
-      <!-- VERTICAL READING MODE (Continuous Vertical Scroll) -->
-      <div class="mx-auto flex w-full max-w-[900px] flex-col items-center pt-14 pb-24">
+      <!-- VERTICAL READING MODE (Continuous Vertical Scroll + Chapter Dividers) -->
+      <div
+        class="mx-auto flex w-full max-w-[900px] flex-col items-center pt-14 pb-28"
+        style="padding-left: {behavior.verticalMarginPx}px; padding-right: {behavior.verticalMarginPx}px; {zoomTransformStyle}"
+      >
         {#each strip as chap, chapIdx (chap.url)}
           {@const isActiveChap = normUrl(chap.url) === normUrl(activeUrl)}
           <section data-chapter-url={chap.url} class="flex w-full flex-col">
             {#if chapIdx > 0}
+              <!-- Continuous Chapter Divider -->
               <div
-                class="my-8 flex items-center gap-3 px-4 text-xs font-medium"
-                style="color: var(--text-muted);"
+                class="my-7 flex flex-col items-center gap-1.5 rounded-xl border px-4 py-3 text-center"
+                style="background-color: var(--surface); border-color: var(--border);"
               >
-                <div class="h-px flex-1" style="background-color: var(--border);"></div>
-                <span>{chap.name}</span>
-                <div class="h-px flex-1" style="background-color: var(--border);"></div>
+                <div class="text-[11px]" style="color: var(--text-muted);">
+                  {t.chapterDividerFinished(strip[chapIdx - 1]?.name ?? "")}
+                </div>
+                <div class="flex w-full items-center gap-3 text-xs font-semibold">
+                  <div class="h-px flex-1" style="background-color: var(--border);"></div>
+                  <span style="color: var(--accent);">{chap.name}</span>
+                  <div class="h-px flex-1" style="background-color: var(--border);"></div>
+                </div>
               </div>
             {/if}
 
-            <!-- Continuous Strip: seamless zero-gap when Auto-Webtoon active -->
             <div class="flex w-full flex-col" style="gap: {effectiveVerticalGapPx}px;">
               {#each chap.images as token, imgIdx (`${chap.url}:${imgIdx}`)}
                 {@const pKey = `${chap.url}:${imgIdx}`}
@@ -1577,6 +1874,7 @@
                     isActiveChap
                   )}
                   dimBrightness={pageDimBrightness(pKey)}
+                  skipBroken={behavior.skipBrokenImages}
                   onImageLoaded={(info) => handlePageImageLoaded(chap.url, info)}
                 />
               {/each}
@@ -1584,7 +1882,6 @@
           </section>
         {/each}
 
-        <!-- Footer: Next Chapter Card / Loading / End of Manga -->
         <div
           class="mt-10 flex min-h-14 w-full flex-col items-center justify-center gap-3 px-4"
           style="overflow-anchor: none;"
@@ -1621,7 +1918,66 @@
     {/if}
   </div>
 
-  <!-- Minimal Customizable Floating Reader Controls -->
+  <!-- Bottom Reading Progress Bar with Seek Support -->
+  {#if !loadingInitial && !errorState && activeChapter && totalPages > 0}
+    <footer
+      class="fixed right-0 bottom-0 left-0 z-30 flex items-center gap-3 border-t px-3 py-2.5 backdrop-blur-md transition-transform duration-200 sm:px-5"
+      style="padding-bottom: max(0.625rem, var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 90%, transparent); border-color: var(--border); transform: translateY({toolbarVisible
+        ? '0%'
+        : '115%'});"
+    >
+      <button
+        type="button"
+        disabled={!activeChapter.prev}
+        onclick={() => activeChapter?.prev && jumpToChapter(activeChapter.prev)}
+        class="rounded-lg border p-1.5 disabled:opacity-35"
+        style="border-color: var(--border); background-color: var(--surface);"
+        title={t.prevChapterTooltip}
+      >
+        <ChevronLeft size={16} />
+      </button>
+
+      <div class="flex min-w-0 flex-1 items-center gap-3">
+        <span class="shrink-0 text-xs font-semibold tabular-nums" style="color: var(--accent);">
+          {focusedPageIdx + 1} / {totalPages}
+        </span>
+        <input
+          type="range"
+          min="1"
+          max={totalPages}
+          step="1"
+          value={Math.min(totalPages, focusedPageIdx + 1)}
+          onpointerdown={() => {
+            scrubbing = true;
+          }}
+          onpointerup={() => {
+            scrubbing = false;
+            scheduleToolbarAutoHide();
+          }}
+          oninput={(e) => {
+            seekToPage(Number(e.currentTarget.value) - 1);
+          }}
+          class="h-1.5 w-full cursor-pointer accent-rose-500"
+          aria-label={t.readerProgressSeek}
+        />
+        <span class="hidden shrink-0 text-[11px] tabular-nums sm:inline" style="color: var(--text-muted);">
+          {Math.round(((focusedPageIdx + 1) / Math.max(1, totalPages)) * 100)}%
+        </span>
+      </div>
+
+      <button
+        type="button"
+        disabled={!activeChapter.next}
+        onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
+        class="rounded-lg border p-1.5 disabled:opacity-35"
+        style="border-color: var(--border); background-color: var(--surface);"
+        title={t.nextChapterTooltip}
+      >
+        <ChevronRight size={16} />
+      </button>
+    </footer>
+  {/if}
+
   <FloatingControls
     screen="reader"
     inReader={true}
@@ -1629,6 +1985,7 @@
     onScrollTop={() => scrollToStartOfContainer(true)}
     onToggleReaderSettings={() => {
       quickSettingsOpen = !quickSettingsOpen;
+      chapterJumpOpen = false;
       wakeFloatingControls();
     }}
     readerSettingsActive={quickSettingsOpen}

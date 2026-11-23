@@ -15,7 +15,25 @@ pub enum ScrapeError {
     #[error("blocked address: {0}")]
     DisallowedHost(String),
 
-    /// Transport-level HTTP failure (DNS, TLS, timeout, connection reset).
+    /// The target host or page structure is not a supported manga source.
+    #[error("unsupported source ({host}): {url}")]
+    UnsupportedSource {
+        /// Hostname that is unsupported.
+        host: String,
+        /// Full target URL.
+        url: Url,
+    },
+
+    /// Request timed out before the remote server responded.
+    #[error("request timed out after {timeout_secs}s: {url}")]
+    Timeout {
+        /// Target URL that timed out.
+        url: Url,
+        /// Configured timeout in seconds.
+        timeout_secs: u64,
+    },
+
+    /// Transport-level HTTP failure (DNS, TLS, connection reset).
     #[error("network request failed: {0}")]
     Network(#[from] reqwest::Error),
 
@@ -44,6 +62,29 @@ pub enum ScrapeError {
         url: Url,
         /// Short machine-friendly reason describing what was missing.
         reason: &'static str,
+    },
+
+    /// Chapter page was parsed, but contained zero usable page images.
+    #[error("no readable images found at {url}")]
+    MissingImages {
+        /// Chapter URL with missing images.
+        url: Url,
+    },
+
+    /// Downloaded image payload had an unsupported MIME type or invalid binary header.
+    #[error("invalid image format from {url}: {detail}")]
+    InvalidImageFormat {
+        /// Image URL returning invalid data.
+        url: Url,
+        /// Short diagnostic detail (MIME type or magic-byte mismatch).
+        detail: String,
+    },
+
+    /// Upstream returned truncated or corrupted data.
+    #[error("corrupted response data: {detail}")]
+    CorruptedData {
+        /// Diagnostic description of corruption.
+        detail: String,
     },
 
     /// Headless browser fallback failed or no compatible browser executable was found.

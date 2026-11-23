@@ -8,6 +8,15 @@ use sqlx::FromRow;
 use crate::error::AppError;
 use crate::repo::{Database, now_unix_secs};
 
+/// Action for hiding or unhiding a manga from normal library listings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum HideAction {
+    Hide,
+    Unhide,
+}
+
 /// Persisted manga record.
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct MangaRow {
@@ -21,6 +30,7 @@ pub(crate) struct MangaRow {
     pub(crate) checked_at: Option<i64>,
     pub(crate) reader_mode_override: Option<String>,
     pub(crate) detected_webtoon: i64,
+    pub(crate) hidden: i64,
 }
 
 /// Persisted chapter record belonging to a manga.
@@ -355,7 +365,92 @@ impl Database {
         Ok(newly_discovered)
     }
 
-    /// Deletes cached manga records that are NOT in reading history or bookmarks
+    /// Hides or restores a manga in normal Home/History/Bookmarks listings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn set_manga_hidden(
+        &self,
+        manga_id: i64,
+        action: HideAction,
+    ) -> Result<bool, AppError> {
+        let val: i64 = match action {
+            HideAction::Hide => 1,
+            HideAction::Unhide => 0,
+        };
+        sqlx::query("UPDATE manga SET hidden = ? WHERE id = ?")
+            .bind(val)
+            .bind(manga_id)
+            .execute(self.pool())
+            .await?;
+        Ok(val == 1)
+    }
+
+    /// Lists all hidden manga so the user can restore or permanently delete them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn list_hidden_manga(&self) -> Result<Vec<MangaRow>, AppError> {
+        let rows = sqlx::query_as::<_, MangaRow>(
+            "SELECT * FROM manga WHERE hidden = 1 ORDER BY updated_at DESC",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows)
+    }
+
+    /// Permanently deletes a manga and all dependent SQLite records (`chapter`, `history`,
+    /// `bookmark`, `notification`, `notified_chapter`) and clears dangling session pointers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn delete_manga_permanently(&self, manga_id: i64) -> Result<(), AppError> {
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("DELETE FROM manga WHERE id = ?")
+            .bind(manga_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE reader_session SET active = 0 WHERE id = 1 AND manga_id = ?")
+            .bind(manga_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Returns whether a manga is completed (latest chapter read and `has_new == 0`)
+    /// along with its total unread chapter count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn get_manga_read_summary(
+        &self,
+        manga_id: i64,
+    ) -> Result<(i64, bool), AppError> {
+        let row: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT
+                (SELECT COUNT(*) FROM chapter c WHERE c.manga_id = m.id AND c.read = 0) AS unread_count,
+                CASE WHEN m.has_new = 0
+                     AND m.latest_chapter_url IS NOT NULL
+                     AND EXISTS (
+                         SELECT 1 FROM chapter c
+                         WHERE c.manga_id = m.id
+                           AND RTRIM(c.url, '/') = RTRIM(m.latest_chapter_url, '/')
+                           AND c.read = 1
+                     ) THEN 1 ELSE 0 END AS is_completed
+             FROM manga m WHERE m.id = ?",
+        )
+        .bind(manga_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(row.map_or((0, false), |(unread, completed)| (unread, completed != 0)))
+    }
+
+    /// Deletes cached manga records that are NOT in reading history, bookmarks, or hidden
     /// and haven't been updated for `max_age_days`.
     ///
     /// # Errors
@@ -366,6 +461,7 @@ impl Database {
         let res = sqlx::query(
             "DELETE FROM manga
              WHERE updated_at < ?
+               AND hidden = 0
                AND id NOT IN (SELECT manga_id FROM history)
                AND id NOT IN (SELECT manga_id FROM bookmark)",
         )

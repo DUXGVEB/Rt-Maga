@@ -20,6 +20,7 @@ use url::Url;
 
 use crate::doh::{DohConfig, DohResolver};
 use crate::error::ScrapeError;
+use crate::throttle::BandwidthLimiter;
 
 /// Realistic desktop browser User-Agent used for page and image requests.
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
@@ -385,6 +386,8 @@ pub struct HttpPolicy {
     pub proxy: ProxyConfig,
     /// Initial in-app DNS-over-HTTPS (`DoH`) provider configuration.
     pub doh: DohConfig,
+    /// Global aggregate download speed limit in KiB/s (`0` = unlimited).
+    pub speed_limit_kbps: u32,
 }
 
 impl Default for HttpPolicy {
@@ -395,6 +398,7 @@ impl Default for HttpPolicy {
             max_conn_per_host: DEFAULT_MAX_CONN_PER_HOST,
             proxy: ProxyConfig::default(),
             doh: DohConfig::default(),
+            speed_limit_kbps: 0,
         }
     }
 }
@@ -434,6 +438,7 @@ struct HttpClientInner {
     proxy_config: RwLock<ProxyConfig>,
     doh_config: RwLock<DohConfig>,
     proxy_clients: DashMap<String, Client>,
+    limiter: BandwidthLimiter,
 }
 
 impl HttpClient {
@@ -472,8 +477,19 @@ impl HttpClient {
                 proxy_config: RwLock::new(policy.proxy.sanitized()),
                 doh_config: RwLock::new(clean_doh),
                 proxy_clients: DashMap::new(),
+                limiter: BandwidthLimiter::new(policy.speed_limit_kbps),
             }),
         })
+    }
+
+    /// Updates the global aggregate network download speed ceiling live (`0` = unlimited).
+    pub fn set_speed_limit_kbps(&self, limit_kbps: u32) {
+        self.inner.limiter.set_limit_kbps(limit_kbps);
+    }
+
+    /// Returns the currently active global download speed limit in KiB/s (`0` = unlimited).
+    pub fn speed_limit_kbps(&self) -> u32 {
+        self.inner.limiter.limit_kbps()
     }
 
     /// Updates the live DNS-over-HTTPS ([`DohConfig`]) provider and rebuilds the direct HTTP client
@@ -676,27 +692,46 @@ impl HttpClient {
         validate_public_http_url(url)?;
         let _permit = self.acquire_host_permit(url).await;
 
+        let limiter = &self.inner.limiter;
+        let timeout_secs = self.inner.timeout.as_secs();
+
         if let Some((endpoint, allow_fallback)) = self.proxy_config().resolve_for_url(url) {
             let proxy_client = match self.client_for_proxy(&endpoint) {
                 Ok(c) => c,
                 Err(err) if allow_fallback => {
                     warn!(%err, "proxy unavailable; falling back to direct mode (user-enabled)");
-                    return fetch_html_with_client(&self.direct_client(), url, None).await;
+                    return fetch_html_with_client(
+                        &self.direct_client(),
+                        url,
+                        None,
+                        limiter,
+                        timeout_secs,
+                    )
+                    .await;
                 }
                 Err(err) => return Err(err),
             };
 
-            match fetch_html_with_client(&proxy_client, url, Some(&endpoint)).await {
+            match fetch_html_with_client(&proxy_client, url, Some(&endpoint), limiter, timeout_secs)
+                .await
+            {
                 Ok(page) => return Ok(page),
                 Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
                     warn!(%err, "proxy request failed; falling back to direct mode (user-enabled)");
-                    return fetch_html_with_client(&self.direct_client(), url, None).await;
+                    return fetch_html_with_client(
+                        &self.direct_client(),
+                        url,
+                        None,
+                        limiter,
+                        timeout_secs,
+                    )
+                    .await;
                 }
                 Err(err) => return Err(err),
             }
         }
 
-        fetch_html_with_client(&self.direct_client(), url, None).await
+        fetch_html_with_client(&self.direct_client(), url, None, limiter, timeout_secs).await
     }
 
     /// Downloads raw image bytes with an explicit `Referer` header and active proxy routing.
@@ -704,7 +739,7 @@ impl HttpClient {
     /// # Errors
     ///
     /// Returns [`ScrapeError::DisallowedHost`], [`ScrapeError::Proxy`], [`ScrapeError::HttpStatus`],
-    /// or [`ScrapeError::Network`].
+    /// [`ScrapeError::InvalidImageFormat`], [`ScrapeError::Timeout`], or [`ScrapeError::Network`].
     pub async fn fetch_image(
         &self,
         url: &Url,
@@ -712,6 +747,8 @@ impl HttpClient {
     ) -> Result<FetchedBytes, ScrapeError> {
         validate_public_http_url(url)?;
         let _permit = self.acquire_host_permit(url).await;
+        let limiter = &self.inner.limiter;
+        let timeout_secs = self.inner.timeout.as_secs();
 
         // Match explicit per-source rule on image URL first, then explicit rule on referer domain
         // (so CDN images inherit their manga source's ForceProxy / CustomProxy / ForceDirect rule),
@@ -723,24 +760,55 @@ impl HttpClient {
                 Ok(c) => c,
                 Err(err) if allow_fallback => {
                     warn!(%err, "proxy unavailable for image; falling back to direct mode");
-                    return fetch_image_with_client(&self.direct_client(), url, referer, None)
-                        .await;
+                    return fetch_image_with_client(
+                        &self.direct_client(),
+                        url,
+                        referer,
+                        None,
+                        limiter,
+                        timeout_secs,
+                    )
+                    .await;
                 }
                 Err(err) => return Err(err),
             };
 
-            match fetch_image_with_client(&proxy_client, url, referer, Some(&endpoint)).await {
+            match fetch_image_with_client(
+                &proxy_client,
+                url,
+                referer,
+                Some(&endpoint),
+                limiter,
+                timeout_secs,
+            )
+            .await
+            {
                 Ok(bytes) => return Ok(bytes),
                 Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
                     warn!(%err, "proxied image fetch failed; falling back to direct mode");
-                    return fetch_image_with_client(&self.direct_client(), url, referer, None)
-                        .await;
+                    return fetch_image_with_client(
+                        &self.direct_client(),
+                        url,
+                        referer,
+                        None,
+                        limiter,
+                        timeout_secs,
+                    )
+                    .await;
                 }
                 Err(err) => return Err(err),
             }
         }
 
-        fetch_image_with_client(&self.direct_client(), url, referer, None).await
+        fetch_image_with_client(
+            &self.direct_client(),
+            url,
+            referer,
+            None,
+            limiter,
+            timeout_secs,
+        )
+        .await
     }
 
     fn client_for_proxy(&self, endpoint: &ProxyEndpoint) -> Result<Client, ScrapeError> {
@@ -858,6 +926,8 @@ async fn fetch_html_with_client(
     client: &Client,
     url: &Url,
     proxy_ep: Option<&ProxyEndpoint>,
+    limiter: &BandwidthLimiter,
+    timeout_secs: u64,
 ) -> Result<FetchedPage, ScrapeError> {
     let mut last_err: Option<ScrapeError> = None;
     for attempt in 0..=MAX_RETRIES {
@@ -883,7 +953,8 @@ async fn fetch_html_with_client(
                     ));
                 }
                 let final_url = response.url().clone();
-                let raw_bytes = read_bounded_bytes(response, MAX_HTML_BYTES, &final_url).await?;
+                let raw_bytes =
+                    read_bounded_bytes(response, MAX_HTML_BYTES, &final_url, limiter).await?;
                 let body = String::from_utf8_lossy(&raw_bytes).into_owned();
 
                 if looks_like_challenge(status, &body) {
@@ -917,7 +988,7 @@ async fn fetch_html_with_client(
             }
             Err(err) => {
                 let retryable = err.is_timeout() || err.is_connect();
-                let mapped = map_transport_err(err, proxy_ep);
+                let mapped = map_transport_err(err, proxy_ep, url, timeout_secs);
                 if retryable && attempt < MAX_RETRIES {
                     warn!(%mapped, attempt, "transient transport error, retrying");
                     last_err = Some(mapped);
@@ -939,6 +1010,8 @@ async fn fetch_image_with_client(
     url: &Url,
     referer: Option<&Url>,
     proxy_ep: Option<&ProxyEndpoint>,
+    limiter: &BandwidthLimiter,
+    timeout_secs: u64,
 ) -> Result<FetchedBytes, ScrapeError> {
     let mut last_err: Option<ScrapeError> = None;
     for attempt in 0..=MAX_RETRIES {
@@ -980,12 +1053,18 @@ async fn fetch_image_with_client(
                             },
                         );
                     if !is_acceptable_image_mime(&content_type) {
-                        return Err(ScrapeError::HttpStatus {
-                            status: StatusCode::UNSUPPORTED_MEDIA_TYPE.as_u16(),
+                        return Err(ScrapeError::InvalidImageFormat {
                             url: url.clone(),
+                            detail: format!("non-image MIME type '{content_type}'"),
                         });
                     }
-                    let bytes = read_bounded_bytes(response, MAX_IMAGE_BYTES, url).await?;
+                    let bytes = read_bounded_bytes(response, MAX_IMAGE_BYTES, url, limiter).await?;
+                    if !has_valid_image_magic_bytes(&bytes) {
+                        return Err(ScrapeError::InvalidImageFormat {
+                            url: url.clone(),
+                            detail: "payload header is not a supported image format".to_owned(),
+                        });
+                    }
                     return Ok(FetchedBytes {
                         bytes,
                         content_type,
@@ -1005,7 +1084,7 @@ async fn fetch_image_with_client(
             }
             Err(err) => {
                 let retryable = err.is_timeout() || err.is_connect();
-                let mapped = map_transport_err(err, proxy_ep);
+                let mapped = map_transport_err(err, proxy_ep, url, timeout_secs);
                 if retryable && attempt < MAX_RETRIES {
                     last_err = Some(mapped);
                     continue;
@@ -1021,16 +1100,29 @@ async fn fetch_image_with_client(
     }))
 }
 
-fn map_transport_err(err: reqwest::Error, proxy_ep: Option<&ProxyEndpoint>) -> ScrapeError {
+fn map_transport_err(
+    err: reqwest::Error,
+    proxy_ep: Option<&ProxyEndpoint>,
+    url: &Url,
+    timeout_secs: u64,
+) -> ScrapeError {
     if let Some(ep) = proxy_ep {
         ScrapeError::Proxy(redact_secrets(&err.to_string(), ep))
+    } else if err.is_timeout() {
+        ScrapeError::Timeout {
+            url: url.clone(),
+            timeout_secs,
+        }
     } else {
         ScrapeError::Network(err)
     }
 }
 
 fn is_proxy_fallback_eligible(err: &ScrapeError) -> bool {
-    matches!(err, ScrapeError::Proxy(_) | ScrapeError::Network(_))
+    matches!(
+        err,
+        ScrapeError::Proxy(_) | ScrapeError::Network(_) | ScrapeError::Timeout { .. }
+    )
 }
 
 fn redact_secrets(raw: &str, ep: &ProxyEndpoint) -> String {
@@ -1183,6 +1275,7 @@ async fn read_bounded_bytes(
     mut response: reqwest::Response,
     max_bytes: usize,
     url: &Url,
+    limiter: &BandwidthLimiter,
 ) -> Result<Bytes, ScrapeError> {
     if let Some(len) = response.content_length()
         && u64::try_from(max_bytes).is_ok_and(|cap| len > cap)
@@ -1206,10 +1299,51 @@ async fn read_bounded_bytes(
                 url: url.clone(),
             });
         }
+        limiter.acquire(chunk.len()).await;
         buf.extend_from_slice(&chunk);
     }
 
     Ok(Bytes::from(buf))
+}
+
+/// Validates binary image magic headers so HTML error pages or corrupted responses disguised
+/// as `image/*` are rejected cleanly before caching or rendering.
+fn has_valid_image_magic_bytes(bytes: &[u8]) -> bool {
+    if bytes.len() < 4 {
+        return false;
+    }
+    // JPEG (FF D8 FF)
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return true;
+    }
+    // PNG (89 50 4E 47)
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        return true;
+    }
+    // GIF (GIF8)
+    if bytes.starts_with(b"GIF8") {
+        return true;
+    }
+    // WebP (RIFF....WEBP)
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return true;
+    }
+    // AVIF / HEIF / ISO BMFF (....ftyp)
+    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        return true;
+    }
+    // BMP (BM)
+    if bytes.starts_with(b"BM") {
+        return true;
+    }
+    // SVG / XML image
+    let trimmed = bytes
+        .iter()
+        .copied()
+        .skip_while(u8::is_ascii_whitespace)
+        .take(5)
+        .collect::<Vec<u8>>();
+    trimmed.eq_ignore_ascii_case(b"<svg ") || trimmed.eq_ignore_ascii_case(b"<svg>")
 }
 
 /// Detects whether an HTTP response looks like an anti-bot verification challenge page.

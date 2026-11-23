@@ -2715,7 +2715,530 @@ const V3_DICTIONARIES: Record<Language, V3Dictionary> = {
   th: V3_TH,
 };
 
-export type FullDictionary = Dictionary & V3Dictionary;
+export interface V4Dictionary {
+  // Granular errors
+  errUnsupportedSourceTitle: (host: string) => string;
+  errTimeoutTitle: string;
+  errHttpStatusTitle: (status: number) => string;
+  errMissingImagesTitle: string;
+  errInvalidImageTitle: string;
+  errCorruptedDataTitle: string;
+
+  // Settings reset toasts
+  toastSectionReset: string;
+  toastAllSettingsReset: string;
+
+  // PageImage & Reader v2.2
+  failedPageSkipped: (n: number) => string;
+  retryingPage: (n: number, attempt: number) => string;
+  readerResetZoom: string;
+  quickChapterJump: string;
+  noGapModeLabel: string;
+  noGapModeDesc: string;
+  keepScreenOnLabel: string;
+  keepScreenOnDesc: string;
+  skipBrokenImagesLabel: string;
+  skipBrokenImagesDesc: string;
+  chapterDividerFinished: (name: string) => string;
+  readerProgressSeek: string;
+
+  // Library, cards & Completed section
+  badgeCompleted: string;
+  unreadBadge: (n: number) => string;
+  coverTapResumeHint: string;
+  toastMangaCompletedNoResume: string;
+  crashRecoveryTitle: string;
+  crashRecoveryDesc: (title: string, chapter: string) => string;
+  crashRecoveryResume: string;
+  completedSection: string;
+  completedSectionDesc: string;
+
+  // Manga detail (Quick jump, Hide, Permanent Delete)
+  quickJumpPlaceholder: string;
+  quickJumpGo: string;
+  quickJumpNotFound: (query: string) => string;
+  hideMangaBtn: string;
+  hideMangaDesc: string;
+  toastMangaHidden: string;
+  deleteMangaBtn: string;
+  deleteMangaConfirmTitle: string;
+  deleteMangaConfirmScope: (title: string) => string;
+  deleteMangaConfirmBtn: string;
+  toastMangaDeleted: string;
+
+  // Visual Preview
+  visualPreviewTitle: string;
+  previewGapChip: string;
+  previewMarginChip: string;
+
+  // Diagnostics Panel
+  diagnosticsSection: string;
+  diagnosticsDesc: string;
+  diagnosticsCount: (n: number) => string;
+  diagnosticsRefreshBtn: string;
+  diagnosticsCopyBtn: string;
+  diagnosticsExportBtn: string;
+  diagnosticsClearBtn: string;
+  diagnosticsEmpty: string;
+  diagnosticsCopied: string;
+  diagnosticsExported: string;
+  diagnosticsCleared: string;
+  diagnosticsExportFailed: string;
+
+  // Searchable Settings, Behavior, Speed Limit, Scoped Cache, Hidden Manga, Reset All
+  settingsSearchPlaceholder: string;
+  settingsSearchClear: string;
+  settingsSearchEmpty: (query: string) => string;
+  resetSectionBtn: string;
+  verticalMarginLabel: (px: number) => string;
+  verticalMarginDesc: string;
+  dimLevelDesc: string;
+  horizontalDirDesc: string;
+  pageGapDesc: string;
+  groupGapDesc: string;
+  snapModeDesc: string;
+  doubleTapActionLabel: string;
+  doubleTapActionDesc: string;
+  doubleTapZoom: string;
+  doubleTapToggleToolbar: string;
+  doubleTapNextPage: string;
+  doubleTapDisabled: string;
+  toolbarAutoHideLabel: string;
+  toolbarAutoHideDesc: string;
+  toolbarAutoHideOff: string;
+  secondsOption: (sec: number) => string;
+  autoMarkReadLabel: string;
+  autoMarkReadDesc: string;
+  readerBgDesc: string;
+  checkIntervalDesc: string;
+  speedLimitLabel: string;
+  speedLimitDesc: string;
+  speedLimitUnlimited: string;
+  cachePreservesUserDataNote: string;
+  maxCacheDesc: string;
+  cacheBySourceTitle: string;
+  cacheBySourceDesc: string;
+  cacheByMangaTitle: string;
+  cacheByMangaDesc: string;
+  toastScopedCacheCleared: (target: string) => string;
+  hiddenMangaSection: string;
+  hiddenMangaDesc: string;
+  hiddenMangaEmpty: string;
+  unhideMangaBtn: string;
+  toastMangaUnhidden: (title: string) => string;
+  resetAllSection: string;
+  resetAllDesc: string;
+  resetAllBtn: string;
+  resetAllConfirmTitle: string;
+  resetAllConfirmDesc: string;
+}
+
+const V4_EN: V4Dictionary = {
+  errUnsupportedSourceTitle: (host) => `Unsupported source (${host})`,
+  errTimeoutTitle: "Request timed out",
+  errHttpStatusTitle: (status) => `Website returned HTTP ${status}`,
+  errMissingImagesTitle: "No readable images found",
+  errInvalidImageTitle: "Invalid or unsupported image format",
+  errCorruptedDataTitle: "Corrupted or unreadable data",
+
+  toastSectionReset: "Section restored to default settings.",
+  toastAllSettingsReset: "All settings restored to defaults. Your library and history were preserved.",
+
+  failedPageSkipped: (n) => `Page ${n} failed (skipped)`,
+  retryingPage: (n, attempt) => `Retrying page ${n} (attempt ${attempt})...`,
+  readerResetZoom: "Reset zoom",
+  quickChapterJump: "Quick chapter jump",
+  noGapModeLabel: "No-Gap mode",
+  noGapModeDesc: "Remove all vertical spacing between pages for seamless long-strip reading.",
+  keepScreenOnLabel: "Keep screen on while reading",
+  keepScreenOnDesc: "Prevent the display from sleeping while the reader is active.",
+  skipBrokenImagesLabel: "Skip broken images",
+  skipBrokenImagesDesc: "Collapse permanently failed pages into a compact inline retry pill.",
+  chapterDividerFinished: (name) => `End of ${name}`,
+  readerProgressSeek: "Seek reading position",
+
+  badgeCompleted: "Completed",
+  unreadBadge: (n) => `${n} unread`,
+  coverTapResumeHint: "Tap cover to resume reading",
+  toastMangaCompletedNoResume: "You have finished all available chapters. Tap the title to browse chapters.",
+  crashRecoveryTitle: "Previous reading session ended unexpectedly",
+  crashRecoveryDesc: (title, chapter) => `Resume ${title} — ${chapter}?`,
+  crashRecoveryResume: "Resume session",
+  completedSection: "Completed",
+  completedSectionDesc: "Manga you have caught up on. They automatically return above when a new chapter is detected.",
+
+  quickJumpPlaceholder: "Jump ch #...",
+  quickJumpGo: "Go",
+  quickJumpNotFound: (q) => `No chapter matching "${q}".`,
+  hideMangaBtn: "Hide",
+  hideMangaDesc: "Hide this manga from Home, History, and Bookmarks without deleting its data.",
+  toastMangaHidden: "Manga hidden. You can restore it anytime in Settings > Hidden Manga.",
+  deleteMangaBtn: "Delete",
+  deleteMangaConfirmTitle: "Delete manga permanently?",
+  deleteMangaConfirmScope: (title) =>
+    `This will permanently delete "${title}" along with its chapters, reading history, bookmarks, notifications, and cached page images. This cannot be undone.`,
+  deleteMangaConfirmBtn: "Delete permanently",
+  toastMangaDeleted: "Manga and all associated local data were permanently deleted.",
+
+  visualPreviewTitle: "Live Layout Preview",
+  previewGapChip: "Gap",
+  previewMarginChip: "Margin",
+
+  diagnosticsSection: "Crash & Error Diagnostics",
+  diagnosticsDesc: "Recent local application errors and crash reports (tokens and credentials are automatically redacted).",
+  diagnosticsCount: (n) => (n === 1 ? "1 log entry" : `${n} log entries`),
+  diagnosticsRefreshBtn: "Refresh",
+  diagnosticsCopyBtn: "Copy JSON",
+  diagnosticsExportBtn: "Export Logs",
+  diagnosticsClearBtn: "Clear",
+  diagnosticsEmpty: "No error or crash logs recorded.",
+  diagnosticsCopied: "Sanitized diagnostic logs copied to clipboard.",
+  diagnosticsExported: "Sanitized diagnostic logs exported.",
+  diagnosticsCleared: "Diagnostic logs cleared.",
+  diagnosticsExportFailed: "Could not export diagnostic logs.",
+
+  settingsSearchPlaceholder: "Search settings (e.g. speed, cache, gap, double tap, hidden, logs)...",
+  settingsSearchClear: "Clear search",
+  settingsSearchEmpty: (q) => `No settings match "${q}".`,
+  resetSectionBtn: "Reset",
+  verticalMarginLabel: (px) => `Vertical side margin (${px} px)`,
+  verticalMarginDesc: "Add breathing room on the left and right edges in vertical reading mode.",
+  dimLevelDesc: "Adjust how strongly non-focused pages are dimmed.",
+  horizontalDirDesc: "Choose Western (LTR) or Japanese manga (RTL) page progression.",
+  pageGapDesc: "Spacing between individual pages inside a spread group.",
+  groupGapDesc: "Spacing separating consecutive page groups in horizontal mode.",
+  snapModeDesc: "Automatically snap scrolling to individual pages, groups, or scroll freely.",
+  doubleTapActionLabel: "Double-tap action",
+  doubleTapActionDesc: "Choose what happens when you double-tap inside the reader.",
+  doubleTapZoom: "Zoom (1x ↔ 1.8x)",
+  doubleTapToggleToolbar: "Toggle toolbar",
+  doubleTapNextPage: "Next page / scroll down",
+  doubleTapDisabled: "Disabled",
+  toolbarAutoHideLabel: "Toolbar auto-hide delay",
+  toolbarAutoHideDesc: "Automatically hide reader controls after a period of inactivity.",
+  toolbarAutoHideOff: "Off (manual only)",
+  secondsOption: (sec) => `${sec} seconds`,
+  autoMarkReadLabel: "Auto-mark chapter read on open",
+  autoMarkReadDesc: "Immediately mark a chapter as read as soon as you open it in the reader.",
+  readerBgDesc: "Choose a dark, light, or app-matched backdrop behind manga pages.",
+  checkIntervalDesc: "How frequently background update checks run while the app is open.",
+  speedLimitLabel: "Global network speed limit",
+  speedLimitDesc: "Throttle total download bandwidth across chapters and images (0 = Unlimited).",
+  speedLimitUnlimited: "Unlimited",
+  cachePreservesUserDataNote: "Clearing cache only removes temporary images — your library, history, bookmarks, and settings stay safe.",
+  maxCacheDesc: "Oldest cached images are automatically evicted when disk usage exceeds this limit.",
+  cacheBySourceTitle: "Clear cache by source",
+  cacheBySourceDesc: "Remove cached images belonging to a single website.",
+  cacheByMangaTitle: "Clear cache by manga",
+  cacheByMangaDesc: "Remove cached images for a specific manga title.",
+  toastScopedCacheCleared: (target) => `Cleared cached images for ${target}.`,
+  hiddenMangaSection: "Hidden Manga",
+  hiddenMangaDesc: "Manage manga hidden from Home, History, and Bookmarks. Unhide to restore or delete permanently.",
+  hiddenMangaEmpty: "No hidden manga.",
+  unhideMangaBtn: "Unhide",
+  toastMangaUnhidden: (title) => `Restored "${title}" to your library.`,
+  resetAllSection: "Reset All Settings",
+  resetAllDesc: "Restore every preference back to factory defaults without deleting your manga, history, bookmarks, or cache.",
+  resetAllBtn: "Reset all settings",
+  resetAllConfirmTitle: "Reset all settings to defaults?",
+  resetAllConfirmDesc:
+    "All appearance, reader, floating controls, network, and source preferences will be reset to defaults. Your manga library, chapters, reading history, bookmarks, and image cache will NOT be deleted.",
+};
+
+const V4_VI: V4Dictionary = {
+  errUnsupportedSourceTitle: (host) => `Nguồn không được hỗ trợ (${host})`,
+  errTimeoutTitle: "Hết thời gian chờ kết nối",
+  errHttpStatusTitle: (status) => `Trang web trả về mã lỗi HTTP ${status}`,
+  errMissingImagesTitle: "Không tìm thấy ảnh hợp lệ trong chương",
+  errInvalidImageTitle: "Định dạng ảnh không hợp lệ hoặc bị hỏng",
+  errCorruptedDataTitle: "Dữ liệu bị hỏng hoặc không thể đọc",
+
+  toastSectionReset: "Đã khôi phục mục này về cài đặt mặc định.",
+  toastAllSettingsReset: "Đã khôi phục toàn bộ cài đặt mặc định. Truyện và lịch sử của bạn vẫn nguyên vẹn.",
+
+  failedPageSkipped: (n) => `Trang ${n} lỗi (đã bỏ qua)`,
+  retryingPage: (n, attempt) => `Đang thử tải lại trang ${n} (lần ${attempt})...`,
+  readerResetZoom: "Đặt lại thu phóng",
+  quickChapterJump: "Nhảy nhanh tới chương",
+  noGapModeLabel: "Chế độ không khoảng cách (No-Gap)",
+  noGapModeDesc: "Loại bỏ hoàn toàn khoảng cách dọc giữa các trang để đọc dải dài liền mạch.",
+  keepScreenOnLabel: "Giữ màn hình luôn sáng khi đọc",
+  keepScreenOnDesc: "Ngăn màn hình tự tắt trong lúc bạn đang mở trình đọc truyện.",
+  skipBrokenImagesLabel: "Tự bỏ qua ảnh hỏng",
+  skipBrokenImagesDesc: "Thu gọn trang ảnh lỗi hoàn toàn thành thẻ nhỏ để không làm gián đoạn việc đọc.",
+  chapterDividerFinished: (name) => `Hết ${name}`,
+  readerProgressSeek: "Kéo thanh tiến độ để nhảy trang",
+
+  badgeCompleted: "Đã đọc xong",
+  unreadBadge: (n) => `Còn ${n} chưa đọc`,
+  coverTapResumeHint: "Chạm ảnh bìa để đọc tiếp",
+  toastMangaCompletedNoResume: "Bạn đã đọc hết các chương hiện có. Hãy bấm vào tên truyện để xem danh sách chương.",
+  crashRecoveryTitle: "Phiên đọc trước đã bị đóng đột ngột",
+  crashRecoveryDesc: (title, chapter) => `Khôi phục đọc tiếp ${title} — ${chapter}?`,
+  crashRecoveryResume: "Đọc tiếp ngay",
+  completedSection: "Đã đọc xong",
+  completedSectionDesc: "Các truyện đã đọc đến chương mới nhất. Khi có chương mới, truyện sẽ tự động quay lại danh sách phía trên.",
+
+  quickJumpPlaceholder: "Nhảy tới chap...",
+  quickJumpGo: "Đi",
+  quickJumpNotFound: (q) => `Không tìm thấy chương khớp với "${q}".`,
+  hideMangaBtn: "Ẩn truyện",
+  hideMangaDesc: "Ẩn truyện khỏi Trang chủ, Lịch sử và Đánh dấu mà không xóa dữ liệu.",
+  toastMangaHidden: "Đã ẩn truyện. Bạn có thể hiện lại bất cứ lúc nào trong Cài đặt > Truyện đã ẩn.",
+  deleteMangaBtn: "Xóa vĩnh viễn",
+  deleteMangaConfirmTitle: "Xóa vĩnh viễn truyện này?",
+  deleteMangaConfirmScope: (title) =>
+    `Hành động này sẽ xóa vĩnh viễn "${title}" cùng toàn bộ danh sách chương, lịch sử đọc, đánh dấu, thông báo và ảnh cache trên máy. Không thể hoàn tác.`,
+  deleteMangaConfirmBtn: "Xóa vĩnh viễn",
+  toastMangaDeleted: "Đã xóa vĩnh viễn truyện và toàn bộ dữ liệu liên quan.",
+
+  visualPreviewTitle: "Xem trước bố cục trực tiếp",
+  previewGapChip: "Khoảng cách",
+  previewMarginChip: "Lề ngang",
+
+  diagnosticsSection: "Nhật ký lỗi & Sự cố",
+  diagnosticsDesc: "Ghi nhận lỗi gần đây và báo cáo sự cố cục bộ (mật khẩu và token được tự động ẩn).",
+  diagnosticsCount: (n) => `${n} bản ghi nhật ký`,
+  diagnosticsRefreshBtn: "Làm mới",
+  diagnosticsCopyBtn: "Sao chép JSON",
+  diagnosticsExportBtn: "Xuất nhật ký",
+  diagnosticsClearBtn: "Xóa hết",
+  diagnosticsEmpty: "Chưa ghi nhận lỗi hay sự cố nào.",
+  diagnosticsCopied: "Đã sao chép nhật ký lỗi (đã ẩn thông tin nhạy cảm).",
+  diagnosticsExported: "Đã xuất tệp nhật ký lỗi.",
+  diagnosticsCleared: "Đã xóa toàn bộ nhật ký lỗi.",
+  diagnosticsExportFailed: "Không thể xuất nhật ký lỗi.",
+
+  settingsSearchPlaceholder: "Tìm kiếm cài đặt (vd: tốc độ, cache, lề, chạm đúp, truyện ẩn, lỗi)...",
+  settingsSearchClear: "Xóa tìm kiếm",
+  settingsSearchEmpty: (q) => `Không có cài đặt nào khớp với "${q}".`,
+  resetSectionBtn: "Mặc định",
+  verticalMarginLabel: (px) => `Lề trái/phải khi cuộn dọc (${px} px)`,
+  verticalMarginDesc: "Thêm khoảng trống hai bên lề màn hình ở chế độ đọc dọc.",
+  dimLevelDesc: "Điều chỉnh mức độ làm tối các trang nằm ngoài vùng đang tập trung.",
+  horizontalDirDesc: "Chọn chiều đọc từ trái sang phải (LTR) hoặc kiểu manga Nhật (RTL).",
+  pageGapDesc: "Khoảng cách giữa các trang bên trong cùng một nhóm trang ngang.",
+  groupGapDesc: "Khoảng cách ngăn cách giữa các nhóm trang liên tiếp khi cuộn ngang.",
+  snapModeDesc: "Tự căn dừng theo từng trang, từng nhóm trang hoặc cuộn tự do.",
+  doubleTapActionLabel: "Thao tác khi chạm đúp (Double-Tap)",
+  doubleTapActionDesc: "Chọn hành động khi bạn chạm nhanh 2 lần trong trình đọc.",
+  doubleTapZoom: "Thu phóng (1x ↔ 1.8x)",
+  doubleTapToggleToolbar: "Ẩn/hiện thanh công cụ",
+  doubleTapNextPage: "Trang kế tiếp / cuộn xuống",
+  doubleTapDisabled: "Tắt",
+  toolbarAutoHideLabel: "Tự ẩn thanh công cụ sau",
+  toolbarAutoHideDesc: "Tự động ẩn thanh điều khiển trình đọc khi không có thao tác.",
+  toolbarAutoHideOff: "Tắt (chỉ ẩn thủ công)",
+  secondsOption: (sec) => `${sec} giây`,
+  autoMarkReadLabel: "Tự đánh dấu đã đọc khi mở chương",
+  autoMarkReadDesc: "Đánh dấu chương là đã đọc ngay khi bạn mở chương đó trong trình đọc.",
+  readerBgDesc: "Chọn nền tối, nền sáng hoặc tự đồng bộ theo chủ đề ứng dụng.",
+  checkIntervalDesc: "Tần suất chạy kiểm tra chương mới ở chế độ nền.",
+  speedLimitLabel: "Giới hạn tốc độ mạng toàn cục",
+  speedLimitDesc: "Giới hạn tổng băng thông tải ảnh và dữ liệu chương (0 = Không giới hạn).",
+  speedLimitUnlimited: "Không giới hạn",
+  cachePreservesUserDataNote: "Xóa cache chỉ xóa ảnh tải tạm — truyện, lịch sử đọc, đánh dấu và cài đặt vẫn được giữ nguyên.",
+  maxCacheDesc: "Ảnh cũ nhất sẽ tự động được dọn dẹp khi bộ nhớ đệm vượt quá giới hạn này.",
+  cacheBySourceTitle: "Xóa cache theo nguồn web",
+  cacheBySourceDesc: "Chỉ xóa ảnh tạm thuộc về một trang web cụ thể.",
+  cacheByMangaTitle: "Xóa cache theo từng truyện",
+  cacheByMangaDesc: "Chỉ xóa ảnh tạm của một bộ truyện cụ thể.",
+  toastScopedCacheCleared: (target) => `Đã xóa ảnh cache của ${target}.`,
+  hiddenMangaSection: "Quản lý truyện đã ẩn",
+  hiddenMangaDesc: "Khôi phục truyện đã ẩn về Trang chủ hoặc xóa vĩnh viễn khỏi thiết bị.",
+  hiddenMangaEmpty: "Chưa có truyện nào bị ẩn.",
+  unhideMangaBtn: "Hiện lại",
+  toastMangaUnhidden: (title) => `Đã khôi phục "${title}" về thư viện.`,
+  resetAllSection: "Đặt lại toàn bộ cài đặt",
+  resetAllDesc: "Khôi phục tất cả tùy chỉnh về mặc định ban đầu mà không xóa truyện, lịch sử, đánh dấu hay cache.",
+  resetAllBtn: "Đặt lại tất cả",
+  resetAllConfirmTitle: "Khôi phục toàn bộ cài đặt về mặc định?",
+  resetAllConfirmDesc:
+    "Mọi tùy chọn giao diện, trình đọc, nút nổi, mạng và nguồn sẽ trở về mặc định. Thư viện truyện, danh sách chương, lịch sử đọc, đánh dấu và cache ảnh sẽ KHÔNG bị xóa.",
+};
+
+const V4_ZH: V4Dictionary = {
+  ...V4_EN,
+  errUnsupportedSourceTitle: (host) => `不支持的来源 (${host})`,
+  errTimeoutTitle: "请求超时",
+  errHttpStatusTitle: (status) => `网站返回 HTTP ${status}`,
+  errMissingImagesTitle: "未找到可读取的图片",
+  errInvalidImageTitle: "无效或损坏的图片格式",
+  errCorruptedDataTitle: "数据损坏或无法读取",
+  toastSectionReset: "已恢复此分区的默认设置。",
+  toastAllSettingsReset: "已恢复所有默认设置，书架与阅读历史已完整保留。",
+  failedPageSkipped: (n) => `第 ${n} 页加载失败（已跳过）`,
+  retryingPage: (n, attempt) => `正在重试第 ${n} 页（第 ${attempt} 次）...`,
+  readerResetZoom: "重置缩放",
+  quickChapterJump: "快速跳转章节",
+  noGapModeLabel: "无间隙模式",
+  noGapModeDesc: "移除所有纵向页间空隙，提供无缝条漫阅读体验。",
+  keepScreenOnLabel: "阅读时保持屏幕常亮",
+  keepScreenOnDesc: "阅读期间防止设备自动息屏。",
+  skipBrokenImagesLabel: "自动跳过损坏图片",
+  skipBrokenImagesDesc: "将加载失败的图片折叠为紧凑的重试提示条。",
+  chapterDividerFinished: (name) => `${name} 已读完`,
+  badgeCompleted: "已追完",
+  unreadBadge: (n) => `${n} 话未读`,
+  toastMangaCompletedNoResume: "已读完所有最新章节，请点击标题查看章节列表。",
+  crashRecoveryTitle: "上次阅读会话意外中断",
+  crashRecoveryDesc: (title, chapter) => `是否恢复阅读 ${title} — ${chapter}？`,
+  crashRecoveryResume: "恢复阅读",
+  completedSection: "已追完",
+  completedSectionDesc: "已读至最新话的漫画；检测到新章节时会自动回到上方活跃列表。",
+  quickJumpPlaceholder: "跳转话数...",
+  quickJumpGo: "跳转",
+  hideMangaBtn: "隐藏",
+  deleteMangaBtn: "永久删除",
+  deleteMangaConfirmTitle: "永久删除此漫画？",
+  deleteMangaConfirmBtn: "永久删除",
+  visualPreviewTitle: "实时布局预览",
+  diagnosticsSection: "崩溃与错误日志",
+  settingsSearchPlaceholder: "搜索设置（如：限速、缓存、无间隙、双击、隐藏、日志）...",
+  resetSectionBtn: "重置",
+  doubleTapActionLabel: "双击操作",
+  doubleTapZoom: "缩放 (1x ↔ 1.8x)",
+  doubleTapToggleToolbar: "切换工具栏",
+  doubleTapNextPage: "下一页 / 向下滚动",
+  doubleTapDisabled: "禁用",
+  toolbarAutoHideLabel: "工具栏自动隐藏延迟",
+  toolbarAutoHideOff: "关闭",
+  secondsOption: (sec) => `${sec} 秒`,
+  autoMarkReadLabel: "打开章节时自动标为已读",
+  speedLimitLabel: "全局网络限速",
+  speedLimitUnlimited: "不限速",
+  cacheBySourceTitle: "按来源清除缓存",
+  cacheByMangaTitle: "按漫画清除缓存",
+  hiddenMangaSection: "已隐藏的漫画",
+  unhideMangaBtn: "取消隐藏",
+  resetAllSection: "重置全部设置",
+  resetAllBtn: "重置全部",
+};
+
+const V4_JA: V4Dictionary = {
+  ...V4_EN,
+  errUnsupportedSourceTitle: (host) => `非対応のソース (${host})`,
+  errTimeoutTitle: "リクエストがタイムアウトしました",
+  errHttpStatusTitle: (status) => `HTTP ${status} エラーが返されました`,
+  errMissingImagesTitle: "読み込める画像が見つかりませんでした",
+  errInvalidImageTitle: "無効または破損した画像形式です",
+  errCorruptedDataTitle: "データが破損しています",
+  toastSectionReset: "このセクションをデフォルトに戻しました。",
+  toastAllSettingsReset: "すべての設定をデフォルトに戻しました。ライブラリと履歴は保持されます。",
+  readerResetZoom: "ズームをリセット",
+  quickChapterJump: "チャプターへジャンプ",
+  noGapModeLabel: "隙間なしモード",
+  keepScreenOnLabel: "閲覧中は画面をオンに保つ",
+  skipBrokenImagesLabel: "壊れた画像をスキップ",
+  badgeCompleted: "読了",
+  unreadBadge: (n) => `未読 ${n}`,
+  toastMangaCompletedNoResume: "最新話まで読み終えています。タイトルをタップして一覧を開けます。",
+  crashRecoveryTitle: "前回の閲覧セッションが異常終了しました",
+  crashRecoveryResume: "再開する",
+  completedSection: "読了済み",
+  quickJumpPlaceholder: "話数へ移動...",
+  quickJumpGo: "移動",
+  hideMangaBtn: "非表示",
+  deleteMangaBtn: "完全に削除",
+  deleteMangaConfirmBtn: "完全に削除",
+  visualPreviewTitle: "リアルタイムレイアウトプレビュー",
+  diagnosticsSection: "クラッシュ・エラーログ",
+  settingsSearchPlaceholder: "設定を検索...",
+  resetSectionBtn: "リセット",
+  doubleTapActionLabel: "ダブルタップ動作",
+  toolbarAutoHideLabel: "ツールバー自動非表示",
+  autoMarkReadLabel: "開いたチャプターを自動で既読にする",
+  speedLimitLabel: "グローバル通信速度制限",
+  speedLimitUnlimited: "無制限",
+  hiddenMangaSection: "非表示のマンガ",
+  unhideMangaBtn: "表示に戻す",
+  resetAllSection: "すべての設定をリセット",
+  resetAllBtn: "すべてリセット",
+};
+
+const V4_RU: V4Dictionary = {
+  ...V4_EN,
+  errUnsupportedSourceTitle: (host) => `Неподдерживаемый источник (${host})`,
+  errTimeoutTitle: "Время ожидания истекло",
+  errHttpStatusTitle: (status) => `Сайт вернул HTTP ${status}`,
+  badgeCompleted: "Прочитано",
+  unreadBadge: (n) => `Новых: ${n}`,
+  completedSection: "Прочитано",
+  hideMangaBtn: "Скрыть",
+  deleteMangaBtn: "Удалить навсегда",
+  visualPreviewTitle: "Предпросмотр макета",
+  diagnosticsSection: "Журнал ошибок и сбоев",
+  settingsSearchPlaceholder: "Поиск настроек...",
+  resetSectionBtn: "Сброс",
+  noGapModeLabel: "Без отступов",
+  keepScreenOnLabel: "Не выключать экран",
+  speedLimitLabel: "Ограничение скорости сети",
+  speedLimitUnlimited: "Без лимита",
+  hiddenMangaSection: "Скрытая манга",
+  unhideMangaBtn: "Показать",
+  resetAllSection: "Сбросить все настройки",
+  resetAllBtn: "Сбросить всё",
+};
+
+const V4_KO: V4Dictionary = {
+  ...V4_EN,
+  errUnsupportedSourceTitle: (host) => `지원하지 않는 소스 (${host})`,
+  errTimeoutTitle: "요청 시간 초과",
+  errHttpStatusTitle: (status) => `웹사이트 HTTP ${status} 오류`,
+  badgeCompleted: "완독",
+  unreadBadge: (n) => `${n}화 안 읽음`,
+  completedSection: "완독",
+  hideMangaBtn: "숨기기",
+  deleteMangaBtn: "영구 삭제",
+  visualPreviewTitle: "실시간 레이아웃 미리보기",
+  diagnosticsSection: "충돌 및 오류 로그",
+  settingsSearchPlaceholder: "설정 검색...",
+  resetSectionBtn: "초기화",
+  noGapModeLabel: "여백 없음 모드",
+  keepScreenOnLabel: "읽는 동안 화면 켜짐 유지",
+  speedLimitLabel: "전역 네트워크 속도 제한",
+  speedLimitUnlimited: "무제한",
+  hiddenMangaSection: "숨긴 만화",
+  unhideMangaBtn: "숨기기 해제",
+  resetAllSection: "모든 설정 초기화",
+  resetAllBtn: "전체 초기화",
+};
+
+const V4_TH: V4Dictionary = {
+  ...V4_EN,
+  errUnsupportedSourceTitle: (host) => `ไม่รองรับแหล่งที่มา (${host})`,
+  errTimeoutTitle: "หมดเวลาเชื่อมต่อ",
+  errHttpStatusTitle: (status) => `เว็บไซต์ตอบกลับ HTTP ${status}`,
+  badgeCompleted: "อ่านจบแล้ว",
+  unreadBadge: (n) => `ยังไม่อ่าน ${n}`,
+  completedSection: "อ่านจบแล้ว",
+  hideMangaBtn: "ซ่อน",
+  deleteMangaBtn: "ลบถาวร",
+  visualPreviewTitle: "ตัวอย่างการจัดวางแบบเรียลไทม์",
+  diagnosticsSection: "บันทึกข้อผิดพลาดและปัญหา",
+  settingsSearchPlaceholder: "ค้นหาการตั้งค่า...",
+  resetSectionBtn: "รีเซ็ต",
+  noGapModeLabel: "โหมดไร้ช่องว่าง",
+  keepScreenOnLabel: "เปิดหน้าจอค้างไว้ขณะอ่าน",
+  speedLimitLabel: "จำกัดความเร็วเครือข่ายทั้งหมด",
+  speedLimitUnlimited: "ไม่จำกัด",
+  hiddenMangaSection: "มังงะที่ซ่อนไว้",
+  unhideMangaBtn: "เลิกซ่อน",
+  resetAllSection: "รีเซ็ตการตั้งค่าทั้งหมด",
+  resetAllBtn: "รีเซ็ตทั้งหมด",
+};
+
+const V4_DICTIONARIES: Record<Language, V4Dictionary> = {
+  en: V4_EN,
+  vi: V4_VI,
+  zh: V4_ZH,
+  ja: V4_JA,
+  ru: V4_RU,
+  ko: V4_KO,
+  th: V4_TH,
+};
+
+export type FullDictionary = Dictionary & V3Dictionary & V4Dictionary;
 
 const DICTIONARIES: Record<Language, Dictionary> = { en, vi, zh, ja, ru, ko, th };
 
@@ -2723,6 +3246,7 @@ export function getDict(lang: Language): FullDictionary {
   return {
     ...(DICTIONARIES[lang] ?? en),
     ...(V3_DICTIONARIES[lang] ?? V3_EN),
+    ...(V4_DICTIONARIES[lang] ?? V4_EN),
   };
 }
 

@@ -1,9 +1,11 @@
 //! SQLite repository layer backed by `sqlx` in WAL mode.
 
 pub(crate) mod bookmark;
+pub(crate) mod diagnostics;
 pub(crate) mod history;
 pub(crate) mod manga;
 pub(crate) mod notification;
+pub(crate) mod session;
 pub(crate) mod settings;
 pub(crate) mod sync;
 
@@ -685,5 +687,208 @@ mod tests {
         let hist = db.get_history_for_manga(id).await.unwrap().unwrap();
         assert!((hist.scroll_ratio - 0.85).abs() < 1e-6);
         assert_eq!(hist.page_index, 7);
+    }
+
+    #[tokio::test]
+    async fn completed_hide_delete_and_crash_recovery_work() {
+        use crate::repo::manga::HideAction;
+
+        let db = Database::open_in_memory().await.unwrap();
+        let mut series = Manga {
+            url: Url::parse("https://example.com/series/complete-demo").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Complete Demo".to_owned(),
+            cover: None,
+            chapters: vec![
+                ChapterRef {
+                    url: Url::parse("https://example.com/series/complete-demo-1").unwrap(),
+                    name: "Chapter 1".to_owned(),
+                    number: Some(1.0),
+                },
+                ChapterRef {
+                    url: Url::parse("https://example.com/series/complete-demo-2").unwrap(),
+                    name: "Chapter 2".to_owned(),
+                    number: Some(2.0),
+                },
+            ],
+        };
+
+        let id = db.upsert_manga(&series).await.unwrap();
+        db.save_history(
+            id,
+            "https://example.com/series/complete-demo-2",
+            "Chapter 2",
+            0.9,
+            10,
+        )
+        .await
+        .unwrap();
+        db.mark_chapter_read(id, "https://example.com/series/complete-demo-2")
+            .await
+            .unwrap();
+
+        let hist = db.list_history().await.unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].is_completed, 1);
+        assert_eq!(hist[0].unread_count, 1);
+
+        series.chapters.push(ChapterRef {
+            url: Url::parse("https://example.com/series/complete-demo-3").unwrap(),
+            name: "Chapter 3".to_owned(),
+            number: Some(3.0),
+        });
+        let fresh = db.record_update_check(id, &series).await.unwrap();
+        assert_eq!(fresh.len(), 1);
+        let hist_after = db.list_history().await.unwrap();
+        assert_eq!(
+            hist_after[0].is_completed, 0,
+            "new chapter must move completed manga back to active"
+        );
+
+        db.upsert_reader_session(
+            id,
+            "https://example.com/series/complete-demo-2",
+            "Chapter 2",
+            0.55,
+            6,
+            "horizontal",
+        )
+        .await
+        .unwrap();
+        let rec = db.get_crash_recovery_session().await.unwrap().unwrap();
+        assert_eq!(rec.manga_id, id);
+        assert_eq!(rec.page_index, 6);
+        assert_eq!(rec.reading_mode, "horizontal");
+
+        db.set_manga_hidden(id, HideAction::Hide).await.unwrap();
+        assert!(db.list_history().await.unwrap().is_empty());
+        assert_eq!(db.list_hidden_manga().await.unwrap().len(), 1);
+        db.set_manga_hidden(id, HideAction::Unhide).await.unwrap();
+        assert_eq!(db.list_history().await.unwrap().len(), 1);
+
+        db.delete_manga_permanently(id).await.unwrap();
+        assert!(db.get_manga_by_id(id).await.unwrap().is_none());
+        assert!(db.get_crash_recovery_session().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn diagnostic_redaction_strips_secrets() {
+        use crate::repo::diagnostics::{NewDiagnosticLog, redact_sensitive};
+
+        let db = Database::open_in_memory().await.unwrap();
+        let redacted = redact_sensitive(
+            "failed via socks5://alice:s3cr3t@proxy.example.com:1080?token=abc123&password=xyz",
+        );
+        assert!(
+            !redacted.contains("s3cr3t"),
+            "password in URL must be redacted"
+        );
+        assert!(!redacted.contains("abc123"), "token must be redacted");
+        assert!(
+            !redacted.contains("xyz"),
+            "password query param must be redacted"
+        );
+
+        db.record_diagnostic_log(&NewDiagnosticLog {
+            level: "error".to_owned(),
+            category: "timeout".to_owned(),
+            message: "Timed out".to_owned(),
+            detail: Some("token=secret999".to_owned()),
+            source: Some("example.com".to_owned()),
+            chapter_url: None,
+            stack_trace: None,
+        })
+        .await
+        .unwrap();
+        let logs = db.list_diagnostic_logs(10).await.unwrap();
+        assert_eq!(logs.len(), 1);
+        assert!(
+            !logs[0]
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("secret999")
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_cache_clear_and_settings_reset_preserve_user_data() {
+        use crate::cache::ImageCache;
+        use crate::cache::image::CacheEntryMeta;
+        use crate::settings::SettingsSection;
+
+        let db = Database::open_in_memory().await.unwrap();
+        let manga = Manga {
+            url: Url::parse("https://example.com/series/cache-demo").unwrap(),
+            site: SiteId::generic("example.com"),
+            title: "Cache Demo".to_owned(),
+            cover: None,
+            chapters: vec![ChapterRef {
+                url: Url::parse("https://example.com/series/cache-demo-1").unwrap(),
+                name: "Chapter 1".to_owned(),
+                number: Some(1.0),
+            }],
+        };
+        let id = db.upsert_manga(&manga).await.unwrap();
+        db.save_history(
+            id,
+            "https://example.com/series/cache-demo-1",
+            "Chapter 1",
+            0.2,
+            1,
+        )
+        .await
+        .unwrap();
+
+        let dir =
+            std::env::temp_dir().join(format!("rtmaga_scoped_cache_{}", rand::random::<u64>()));
+        let cache = ImageCache::new(dir.clone(), db.clone()).await.unwrap();
+        let payload = bytes::Bytes::from_static(&[0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+        cache
+            .put(
+                &ImageCache::key_for_url("https://cdn.example.com/1.png"),
+                &payload,
+                "image/png",
+                512,
+                CacheEntryMeta {
+                    site: Some("example.com"),
+                    manga_id: Some(id),
+                },
+            )
+            .await;
+        cache
+            .put(
+                &ImageCache::key_for_url("https://cdn.other.org/2.png"),
+                &payload,
+                "image/png",
+                512,
+                CacheEntryMeta {
+                    site: Some("other.org"),
+                    manga_id: None,
+                },
+            )
+            .await;
+        assert_eq!(cache.list_by_source().await.unwrap().len(), 2);
+        assert_eq!(cache.list_by_manga().await.unwrap().len(), 1);
+        let after_manga_clear = cache.clear_by_manga(id).await.unwrap();
+        assert_eq!(after_manga_clear.files, 1);
+        assert_eq!(
+            db.list_history().await.unwrap().len(),
+            1,
+            "history must survive cache clear"
+        );
+        let after_src_clear = cache.clear_by_source("other.org").await.unwrap();
+        assert_eq!(after_src_clear.files, 0);
+
+        let mut s = Settings {
+            theme: Theme::Dark,
+            ..Settings::default()
+        };
+        s.sources.speed_limit_kbps = 2048;
+        s.reset_section(SettingsSection::Sources);
+        assert_eq!(s.sources.speed_limit_kbps, 0);
+        assert_eq!(s.theme, Theme::Dark);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 }

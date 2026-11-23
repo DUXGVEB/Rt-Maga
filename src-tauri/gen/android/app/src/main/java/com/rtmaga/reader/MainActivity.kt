@@ -259,6 +259,16 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  fun setKeepScreenOnEnabled(enabled: Boolean) {
+    runOnUiThread {
+      if (enabled) {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+      } else {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+      }
+    }
+  }
+
   fun detectAndroidSkin(): String {
     val manu = (Build.MANUFACTURER ?: "").lowercase()
     val brand = (Build.BRAND ?: "").lowercase()

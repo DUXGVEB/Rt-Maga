@@ -12,6 +12,7 @@
   } from "lucide-svelte";
   import { onMount } from "svelte";
   import logoUrl from "./assets/logo.png";
+  import { api } from "./lib/api";
   import FloatingControls from "./lib/components/FloatingControls.svelte";
   import NotificationDrawer from "./lib/components/NotificationDrawer.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
@@ -41,6 +42,51 @@
     void updatesStore.init();
     void notificationsStore.init();
     void appReleaseStore.init();
+
+    let lastLogAt = 0;
+    const forwardClientError = (category: string, message: string, detail?: string) => {
+      const now = Date.now();
+      if (now - lastLogAt < 1500) return;
+      lastLogAt = now;
+      void api
+        .logClientError({
+          level: "error",
+          category,
+          message: message.slice(0, 500),
+          detail: detail ? detail.slice(0, 2000) : null,
+        })
+        .catch(() => {
+          // Never throw from global error handler.
+        });
+    };
+
+    const onWindowError = (event: ErrorEvent) => {
+      const msg = event.message || "Unhandled frontend error";
+      const stack =
+        event.error && typeof event.error === "object" && "stack" in event.error
+          ? String((event.error as { stack?: unknown }).stack ?? "")
+          : `${event.filename || ""}:${event.lineno || 0}:${event.colno || 0}`;
+      forwardClientError("ui_error", msg, stack);
+    };
+
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      const msg =
+        reason instanceof Error
+          ? reason.message
+          : typeof reason === "string"
+            ? reason
+            : "Unhandled promise rejection";
+      const detail = reason instanceof Error ? reason.stack : undefined;
+      forwardClientError("ui_rejection", msg, detail);
+    };
+
+    window.addEventListener("error", onWindowError);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", onWindowError);
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+    };
   });
 
   const isReader = $derived(router.current.name === "reader");

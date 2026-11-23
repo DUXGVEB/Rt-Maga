@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { BookOpen, Clock, Sparkles, Trash2 } from "lucide-svelte";
+  import { BookOpen, CheckCircle2, Clock, Sparkles, Trash2 } from "lucide-svelte";
   import { api, imgProxyUrl } from "../lib/api";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -35,8 +35,16 @@
 
   $effect(() => {
     void updatesStore.lastFound;
-    load(items.length === 0);
+    void load(items.length === 0);
   });
+
+  function resumeFromCover(item: HistoryItemView) {
+    if (item.isCompleted && !item.hasNew) {
+      toasts.push(t.toastMangaCompletedNoResume, "info", 2800);
+      return;
+    }
+    router.goReader(item.mangaId, item.chapterUrl, item.scrollRatio, item.pageIndex);
+  }
 
   async function removeOne(mangaId: number, e: MouseEvent) {
     e.stopPropagation();
@@ -103,7 +111,7 @@
   });
 </script>
 
-<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 px-8 py-8">
+<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 px-5 py-6 sm:px-8 sm:py-8">
   <div class="flex items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold tracking-tight">{t.historyTitle}</h1>
@@ -176,21 +184,16 @@
         </h2>
         <div class="flex flex-col gap-2">
           {#each group.list as item (item.mangaId)}
+            {@const completedOnly = item.isCompleted && !item.hasNew}
             <div
-              role="button"
-              tabindex="0"
-              onclick={() =>
-                router.goReader(item.mangaId, item.chapterUrl, item.scrollRatio, item.pageIndex)}
-              onkeydown={(e) => {
-                if (e.key === "Enter") {
-                  router.goReader(item.mangaId, item.chapterUrl, item.scrollRatio, item.pageIndex);
-                }
-              }}
-              class="flex cursor-pointer items-center gap-4 rounded-xl border p-3 transition-colors hover:brightness-95"
+              class="flex items-center gap-4 rounded-xl border p-3 transition-colors"
               style="background-color: var(--surface); border-color: var(--border);"
             >
-              <div
-                class="h-16 w-12 shrink-0 overflow-hidden rounded-lg"
+              <button
+                type="button"
+                onclick={() => resumeFromCover(item)}
+                title={completedOnly ? t.toastMangaCompletedNoResume : t.coverTapResumeHint}
+                class="h-16 w-12 shrink-0 cursor-pointer overflow-hidden rounded-lg transition-transform hover:scale-[1.03]"
                 style="background-color: var(--surface-subtle);"
               >
                 {#if item.coverToken && !failedCovers[item.mangaId]}
@@ -208,11 +211,17 @@
                     <BookOpen size={18} />
                   </div>
                 {/if}
-              </div>
+              </button>
 
               <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="truncate text-sm font-semibold">{item.title}</span>
+                <div class="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onclick={() => router.goManga(item.mangaId)}
+                    class="truncate text-left text-sm font-semibold hover:underline"
+                  >
+                    {item.title}
+                  </button>
                   {#if item.hasNew}
                     <span
                       class="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-white"
@@ -220,6 +229,22 @@
                     >
                       <Sparkles size={10} />
                       {item.latestChapterName ?? t.badgeNew}
+                    </span>
+                  {:else if completedOnly}
+                    <span
+                      class="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                      style="background-color: rgba(16, 185, 129, 0.14); color: #10b981;"
+                    >
+                      <CheckCircle2 size={10} />
+                      {t.badgeCompleted}
+                    </span>
+                  {/if}
+                  {#if item.unreadCount > 0}
+                    <span
+                      class="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                      style="background-color: var(--surface-hover); color: var(--text-muted);"
+                    >
+                      {t.unreadBadge(item.unreadCount)}
                     </span>
                   {/if}
                 </div>
@@ -233,10 +258,7 @@
               <div class="flex shrink-0 items-center gap-1.5">
                 <button
                   type="button"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    router.goManga(item.mangaId);
-                  }}
+                  onclick={() => router.goManga(item.mangaId)}
                   class="rounded-lg border px-2.5 py-1.5 text-xs font-medium"
                   style="border-color: var(--border); background-color: var(--surface-subtle);"
                 >

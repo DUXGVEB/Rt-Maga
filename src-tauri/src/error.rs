@@ -1,4 +1,5 @@
-//! Application-level error type serialized across the Tauri IPC boundary.
+//! Application-level error type serialized across the Tauri IPC boundary with structured
+//! diagnostic categories and actionable hints.
 
 use mangacore::ScrapeError;
 use serde::Serialize;
@@ -13,7 +14,19 @@ pub(crate) enum AppError {
     #[error("invalid url: {message}")]
     InvalidUrl { message: String },
 
-    /// Network or remote HTTP failure.
+    /// Target host or URL structure is not a supported manga source.
+    #[error("unsupported source ({host}): {message}")]
+    UnsupportedSource { host: String, message: String },
+
+    /// Request timed out waiting for the remote server.
+    #[error("request timeout ({timeout_secs}s): {message}")]
+    Timeout { timeout_secs: u64, message: String },
+
+    /// Upstream server returned an HTTP error status code (4xx/5xx).
+    #[error("http {status}: {message}")]
+    HttpError { status: u16, message: String },
+
+    /// Network or proxy transport failure.
     #[error("network error: {message}")]
     Network { message: String },
 
@@ -21,9 +34,21 @@ pub(crate) enum AppError {
     #[error("site requires verification: {host}")]
     Blocked { host: String, url: String },
 
-    /// Page loaded, but no manga metadata or chapter images could be extracted.
-    #[error("unrecognized manga page: {message}")]
+    /// Page loaded, but parser failed to recognize manga metadata or chapter layout.
+    #[error("parser failure: {message}")]
     NotRecognized { message: String },
+
+    /// Chapter page parsed, but contained zero readable images.
+    #[error("missing images: {message}")]
+    MissingImages { message: String },
+
+    /// Image payload had an unsupported MIME type or invalid binary header.
+    #[error("invalid image format: {message}")]
+    InvalidImageFormat { message: String },
+
+    /// Corrupted or truncated upstream/local data.
+    #[error("corrupted data: {message}")]
+    CorruptedData { message: String },
 
     /// Requested database record does not exist.
     #[error("not found: {message}")]
@@ -38,25 +63,70 @@ pub(crate) enum AppError {
     Internal { message: String },
 }
 
+impl AppError {
+    /// Returns a stable machine-readable error category string for diagnostic logging.
+    pub(crate) const fn category(&self) -> &'static str {
+        match self {
+            Self::InvalidUrl { .. } => "invalid_url",
+            Self::UnsupportedSource { .. } => "unsupported_source",
+            Self::Timeout { .. } => "timeout",
+            Self::HttpError { .. } => "http_error",
+            Self::Network { .. } => "network",
+            Self::Blocked { .. } => "blocked",
+            Self::NotRecognized { .. } => "parser_failure",
+            Self::MissingImages { .. } => "missing_images",
+            Self::InvalidImageFormat { .. } => "invalid_image_format",
+            Self::CorruptedData { .. } => "corrupted_data",
+            Self::NotFound { .. } => "not_found",
+            Self::Db { .. } => "database",
+            Self::Internal { .. } => "internal",
+        }
+    }
+}
+
 impl From<ScrapeError> for AppError {
     fn from(err: ScrapeError) -> Self {
         match err {
             ScrapeError::InvalidUrl(message) | ScrapeError::DisallowedHost(message) => {
                 Self::InvalidUrl { message }
             }
+            ScrapeError::UnsupportedSource { host, url } => Self::UnsupportedSource {
+                host,
+                message: format!("Unsupported manga source at {url}"),
+            },
+            ScrapeError::Timeout { url, timeout_secs } => Self::Timeout {
+                timeout_secs,
+                message: format!("Timed out after {timeout_secs}s while connecting to {url}"),
+            },
             ScrapeError::Blocked { host, url } => Self::Blocked {
                 host,
                 url: url.into(),
             },
-            ScrapeError::NotRecognized { reason, .. } => Self::NotRecognized {
-                message: reason.to_owned(),
+            ScrapeError::NotRecognized { reason, url } => {
+                if reason.contains("image") {
+                    Self::MissingImages {
+                        message: format!("No readable chapter images found at {url} ({reason})"),
+                    }
+                } else {
+                    Self::NotRecognized {
+                        message: format!("{reason} ({url})"),
+                    }
+                }
+            }
+            ScrapeError::MissingImages { url } => Self::MissingImages {
+                message: format!("Chapter contains no readable images ({url})"),
             },
+            ScrapeError::InvalidImageFormat { url, detail } => Self::InvalidImageFormat {
+                message: format!("{detail} ({url})"),
+            },
+            ScrapeError::CorruptedData { detail } => Self::CorruptedData { message: detail },
             ScrapeError::Network(e) => Self::Network {
                 message: e.to_string(),
             },
             ScrapeError::Proxy(message) => Self::Network { message },
-            ScrapeError::HttpStatus { status, url } => Self::Network {
-                message: format!("HTTP {status} ({url})"),
+            ScrapeError::HttpStatus { status, url } => Self::HttpError {
+                status,
+                message: format!("HTTP {status} from {url}"),
             },
             ScrapeError::Headless(message) => Self::NotRecognized { message },
             other => Self::Internal {

@@ -188,6 +188,21 @@ mod imp {
         Ok(())
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "mirrors Android keep-screen-on toggle IPC argument"
+    )]
+    pub(crate) fn set_keep_screen_on(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
+        let state = app.state::<DeviceEnvState<tauri::Wry>>();
+        let _: serde_json::Value = state
+            .0
+            .run_mobile_plugin("setKeepScreenOn", serde_json::json!({ "enabled": enabled }))
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to update Android keep-screen-on flag: {e}"),
+            })?;
+        Ok(())
+    }
+
     pub(crate) fn check_notification_permission(
         app: &AppHandle,
     ) -> Result<NotificationPermissionInfo, AppError> {
@@ -236,7 +251,7 @@ mod imp {
 #[cfg(target_os = "android")]
 pub(crate) use imp::{
     check_notification_permission, get_device_env, init_plugin, request_notification_permission,
-    send_android_notification, set_immersive, set_orientation_lock,
+    send_android_notification, set_immersive, set_keep_screen_on, set_orientation_lock,
 };
 
 #[cfg(not(target_os = "android"))]
@@ -270,6 +285,16 @@ pub(crate) fn set_orientation_lock(
     reason = "matches fallible Android plugin signature and immersive toggle"
 )]
 pub(crate) fn set_immersive(_app: &AppHandle, _enabled: bool) -> Result<(), AppError> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    clippy::fn_params_excessive_bools,
+    reason = "matches fallible Android plugin signature and keep-screen-on toggle"
+)]
+pub(crate) fn set_keep_screen_on(_app: &AppHandle, _enabled: bool) -> Result<(), AppError> {
     Ok(())
 }
 

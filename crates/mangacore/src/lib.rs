@@ -13,6 +13,7 @@ pub mod model;
 pub mod parse;
 pub mod registry;
 pub mod source;
+pub mod throttle;
 
 pub use doh::{
     DohConfig, DohProfileInfo, DohTestResult, NetworkProviderInfo, NetworkServiceType,
@@ -26,3 +27,4 @@ pub use http::{
 pub use model::{Chapter, ChapterRef, Manga, PageImage, Resolved, SiteId};
 pub use registry::{HeadlessPolicy, Registry};
 pub use source::Source;
+pub use throttle::{BandwidthLimiter, MAX_SPEED_LIMIT_KBPS};
