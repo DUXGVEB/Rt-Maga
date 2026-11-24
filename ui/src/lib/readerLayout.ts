@@ -156,8 +156,9 @@ export interface ZoomTransform {
 
 /**
  * Clamps horizontal and vertical pan offsets so a zoomed content box (`contentRect` in unscaled
- * viewport-relative coordinates) stays anchored cleanly inside a viewport (`vpWidth x vpHeight`)
- * without exposing unnecessary empty margins or pushing the image off-screen.
+ * local coordinates relative to the transformed element's `(originLeft, originTop)`) stays
+ * anchored cleanly inside a viewport (`vpWidth x vpHeight`) without exposing unnecessary empty
+ * margins or pushing the image off-screen.
  */
 export function clampZoomPan(
   tx: number,
@@ -165,7 +166,9 @@ export function clampZoomPan(
   scale: number,
   vpWidth: number,
   vpHeight: number,
-  contentRect: RectBox
+  contentRect: RectBox,
+  originLeft = 0,
+  originTop = 0
 ): { tx: number; ty: number } {
   if (scale <= 1.001) {
     return { tx: 0, ty: 0 };
@@ -179,19 +182,19 @@ export function clampZoomPan(
   let clampedTx: number;
   if (scaledW <= vpWidth) {
     // Center the scaled content horizontally inside the viewport.
-    clampedTx = (vpWidth - scaledW) / 2 - contentRect.left * scale;
+    clampedTx = (vpWidth - scaledW) / 2 - originLeft - contentRect.left * scale;
   } else {
-    const minTx = vpWidth - contentRight * scale;
-    const maxTx = -contentRect.left * scale;
+    const minTx = vpWidth - originLeft - contentRight * scale;
+    const maxTx = -originLeft - contentRect.left * scale;
     clampedTx = Math.max(minTx, Math.min(maxTx, tx));
   }
 
   let clampedTy: number;
   if (scaledH <= vpHeight) {
-    clampedTy = (vpHeight - scaledH) / 2 - contentRect.top * scale;
+    clampedTy = (vpHeight - scaledH) / 2 - originTop - contentRect.top * scale;
   } else {
-    const minTy = vpHeight - contentBottom * scale;
-    const maxTy = -contentRect.top * scale;
+    const minTy = vpHeight - originTop - contentBottom * scale;
+    const maxTy = -originTop - contentRect.top * scale;
     clampedTy = Math.max(minTy, Math.min(maxTy, ty));
   }
 
@@ -203,8 +206,8 @@ export function clampZoomPan(
 
 /**
  * Computes the exact `(scale, tx, ty)` transform (with `transform-origin: 0 0`) that keeps the
- * tapped/clicked image pixel anchored directly under `(pointerX, pointerY)` (viewport-relative)
- * while enforcing viewport boundary constraints.
+ * pinched/anchored image pixel directly under `(pointerX, pointerY)` (viewport-relative) while
+ * respecting the transformed container's unscaled `(originLeft, originTop)` and viewport bounds.
  */
 export function computeAnchoredZoom(
   pointerX: number,
@@ -213,20 +216,75 @@ export function computeAnchoredZoom(
   targetScale: number,
   vpWidth: number,
   vpHeight: number,
-  contentRect: RectBox
+  contentRect: RectBox,
+  originLeft = 0,
+  originTop = 0
 ): ZoomTransform {
   if (targetScale <= 1.001) {
     return { scale: 1, tx: 0, ty: 0 };
   }
 
   const safeCurScale = Math.max(0.5, current.scale);
-  // Recover unscaled point under pointer before scaling.
-  const ux = (pointerX - current.tx) / safeCurScale;
-  const uy = (pointerY - current.ty) / safeCurScale;
+  // Recover local unscaled point under pointer before scaling.
+  const lx = (pointerX - originLeft - current.tx) / safeCurScale;
+  const ly = (pointerY - originTop - current.ty) / safeCurScale;
 
-  const rawTx = pointerX - ux * targetScale;
-  const rawTy = pointerY - uy * targetScale;
-  const clamped = clampZoomPan(rawTx, rawTy, targetScale, vpWidth, vpHeight, contentRect);
+  const rawTx = pointerX - originLeft - lx * targetScale;
+  const rawTy = pointerY - originTop - ly * targetScale;
+  const clamped = clampZoomPan(
+    rawTx,
+    rawTy,
+    targetScale,
+    vpWidth,
+    vpHeight,
+    contentRect,
+    originLeft,
+    originTop
+  );
+
+  return {
+    scale: targetScale,
+    tx: clamped.tx,
+    ty: clamped.ty,
+  };
+}
+
+/**
+ * Computes the exact `(scale, tx, ty)` transform for double-tap / double-click zoom that
+ * focuses/centers the tapped content point `(pointerX, pointerY)` directly into the middle of the
+ * viewport `(vpWidth / 2, vpHeight / 2)`, clamped cleanly to content boundaries.
+ */
+export function computeFocusedZoom(
+  pointerX: number,
+  pointerY: number,
+  current: ZoomTransform,
+  targetScale: number,
+  vpWidth: number,
+  vpHeight: number,
+  contentRect: RectBox,
+  originLeft = 0,
+  originTop = 0
+): ZoomTransform {
+  if (targetScale <= 1.001) {
+    return { scale: 1, tx: 0, ty: 0 };
+  }
+
+  const safeCurScale = Math.max(0.5, current.scale);
+  const lx = (pointerX - originLeft - current.tx) / safeCurScale;
+  const ly = (pointerY - originTop - current.ty) / safeCurScale;
+
+  const rawTx = vpWidth / 2 - originLeft - lx * targetScale;
+  const rawTy = vpHeight / 2 - originTop - ly * targetScale;
+  const clamped = clampZoomPan(
+    rawTx,
+    rawTy,
+    targetScale,
+    vpWidth,
+    vpHeight,
+    contentRect,
+    originLeft,
+    originTop
+  );
 
   return {
     scale: targetScale,

@@ -25,9 +25,11 @@
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
   import FloatingControls from "../lib/components/FloatingControls.svelte";
   import PageImage from "../lib/components/PageImage.svelte";
+  import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import {
     clampZoomPan,
     computeAnchoredZoom,
+    computeFocusedZoom,
     computeHorizontalTrackMetrics,
     computeNavStepCooldownMs,
     computePageLoadMode,
@@ -47,11 +49,13 @@
     ChapterView,
     FloatingEdge,
     FloatingScreenKey,
+    FormattedAppError,
     HorizontalDirection,
     MangaView,
     OrientationLockMode,
     ReaderBg,
     ReaderModeOverride,
+    ReaderSettings,
     ReadingOrientation,
     SettingsSection,
   } from "../lib/types";
@@ -74,7 +78,8 @@
   let loadingInitial = $state(true);
   let appendingNext = $state(false);
   let verifyingBlocked = $state(false);
-  let errorState = $state<{ title: string; detail: string; blockedUrl?: string } | null>(null);
+  let loggingIn = $state(false);
+  let errorState = $state<FormattedAppError | null>(null);
   let toolbarVisible = $state(true);
   let quickSettingsOpen = $state(false);
   let openQuickCat = $state<"layout" | "display" | "controls" | null>(null);
@@ -86,13 +91,16 @@
   let controlsDimmed = $state(false);
   let chapterDetectedWebtoon = $state(false);
 
-  // Double-tap / double-click anchored zoom state (`1` = normal, `2.0` = zoomed).
+  // Double-tap / double-click focused zoom state (`1` = normal, `2.0` = zoomed).
   const ZOOM_TARGET_SCALE = 2.0;
   let zoomScale = $state(1);
   let zoomTx = $state(0);
   let zoomTy = $state(0);
   let zoomPanning = $state(false);
   let zoomContentRect: RectBox | null = null;
+  let zoomOriginLeft = 0;
+  let zoomOriginTop = 0;
+  let zoomTransitionLockUntil = 0;
   let verticalZoomExtraBottomPx = $state(0);
 
   // Isolated Horizontal RTL center-focus peek track & snap state.
@@ -122,14 +130,20 @@
   let lastScrollOffset = 0;
   let prefetched = new Map<string, ChapterView>();
   let preloadedImageTokens = new Set<string>();
+  let purgedChapterUrls = new Set<string>();
   let saveTimer: number | null = null;
+  let mangaSettingsSaveTimer: number | null = null;
+  let pendingMangaSettings: { id: number; settings: ReaderSettings } | null = null;
   let idleDimTimer: number | null = null;
   let toolbarAutoHideTimer: number | null = null;
   let singleTapTimer: number | null = null;
   let orientationRestoreTimer: number | null = null;
+  let zoomFocusSettleTimer: number | null = null;
   let verticalAnimRaf: number | null = null;
   let verticalAnimTargetTop = 0;
   let lastTapAt = 0;
+  let lastTapX = 0;
+  let lastTapY = 0;
   let lastHorizontalStepAt = 0;
   let wheelDeltaAccum = 0;
   let wheelResetTimer: number | null = null;
@@ -141,6 +155,7 @@
   let panStartY = 0;
   let panOriginTx = 0;
   let panOriginTy = 0;
+  let panOriginScrollTop = 0;
   let didPanDrag = false;
   let lastViewportW = typeof window !== "undefined" ? window.innerWidth : 0;
   let lastViewportH = typeof window !== "undefined" ? window.innerHeight : 0;
@@ -169,13 +184,90 @@
     return u.endsWith("/") ? u.slice(0, -1) : u;
   }
 
-  const readerSettings = $derived(settingsStore.value.reader);
+  function cloneReaderSettings(rs: ReaderSettings): ReaderSettings {
+    return {
+      ...rs,
+      width: { ...rs.width },
+      vertical: { ...rs.vertical },
+      horizontal: { ...rs.horizontal },
+      behavior: { ...rs.behavior },
+    };
+  }
+
+  function flushPendingMangaSettings() {
+    if (mangaSettingsSaveTimer !== null) {
+      window.clearTimeout(mangaSettingsSaveTimer);
+      mangaSettingsSaveTimer = null;
+    }
+    if (!pendingMangaSettings) return;
+    const snap = pendingMangaSettings;
+    pendingMangaSettings = null;
+    void api.setMangaReaderSettings(snap.id, snap.settings).catch(() => {});
+  }
+
+  function updateMangaReaderSettings(
+    mutator: (draft: ReaderSettings) => void,
+    debounceMs = 0
+  ) {
+    const base = cloneReaderSettings(manga?.readerSettings ?? settingsStore.value.reader);
+    mutator(base);
+    if (manga) {
+      manga = {
+        ...manga,
+        readerSettings: base,
+        readerModeOverride: null,
+      };
+    }
+    pendingMangaSettings = { id: mangaId, settings: base };
+    if (mangaSettingsSaveTimer !== null) {
+      window.clearTimeout(mangaSettingsSaveTimer);
+      mangaSettingsSaveTimer = null;
+    }
+    if (debounceMs > 0) {
+      mangaSettingsSaveTimer = window.setTimeout(() => {
+        flushPendingMangaSettings();
+      }, debounceMs);
+    } else {
+      flushPendingMangaSettings();
+    }
+  }
+
+  async function resetMangaReaderSettingsToGlobal() {
+    if (mangaSettingsSaveTimer !== null) {
+      window.clearTimeout(mangaSettingsSaveTimer);
+      mangaSettingsSaveTimer = null;
+    }
+    pendingMangaSettings = null;
+    if (manga) {
+      manga = { ...manga, readerSettings: null, readerModeOverride: null };
+    }
+    try {
+      await api.setMangaReaderSettings(mangaId, null);
+      toasts.push(t.toastMangaSettingsReset, "info", 2200);
+    } catch {
+      // Ignore error.
+    }
+  }
+
+  function purgeFinishedChapterCache(url: string) {
+    const norm = normUrl(url);
+    if (!norm || purgedChapterUrls.has(norm)) return;
+    purgedChapterUrls.add(norm);
+    void api.purgeChapterPageCache(mangaId, url).catch(() => {});
+  }
+
+  const hasCustomMangaSettings = $derived(Boolean(manga?.readerSettings));
+  const readerSettings = $derived<ReaderSettings>(
+    manga?.readerSettings ?? settingsStore.value.reader
+  );
   const vCfg = $derived(readerSettings.vertical);
   const hCfg = $derived(readerSettings.horizontal);
   const behavior = $derived(readerSettings.behavior);
   const t = $derived(settingsStore.t);
 
-  const effectiveOverride = $derived<ReaderModeOverride>(manga?.readerModeOverride ?? null);
+  const effectiveOverride = $derived<ReaderModeOverride>(
+    hasCustomMangaSettings ? null : (manga?.readerModeOverride ?? null)
+  );
 
   const isAutoWebtoonActive = $derived(
     effectiveOverride === null &&
@@ -406,6 +498,12 @@
     zoomTy = 0;
     zoomPanning = false;
     zoomContentRect = null;
+    zoomOriginLeft = 0;
+    zoomOriginTop = 0;
+    if (zoomFocusSettleTimer !== null) {
+      window.clearTimeout(zoomFocusSettleTimer);
+      zoomFocusSettleTimer = null;
+    }
 
     if (wasZoomed && !isHorizontal && scrollEl) {
       const vpRect = scrollEl.getBoundingClientRect();
@@ -413,15 +511,24 @@
       const unscaledDocY = (scrollEl.scrollTop + vy) / Math.max(1, prevScale);
       verticalZoomExtraBottomPx = 0;
       const targetTop = Math.max(0, Math.round(unscaledDocY - vy));
-      suppressAutoHideUntil = Date.now() + 260;
-      window.requestAnimationFrame(() => {
+      zoomTransitionLockUntil = Date.now() + 220;
+      suppressAutoHideUntil = Date.now() + 300;
+      void tick().then(() => {
         if (scrollEl) {
-          scrollEl.scrollTop = targetTop;
-          lastScrollOffset = targetTop;
+          const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+          const clampedTop = Math.max(0, Math.min(maxTop, targetTop));
+          scrollEl.scrollTop = clampedTop;
+          lastScrollOffset = clampedTop;
         }
+        zoomFocusSettleTimer = window.setTimeout(() => {
+          zoomFocusSettleTimer = null;
+          zoomTransitionLockUntil = 0;
+          updateFocusNow();
+        }, 180);
       });
     } else {
       verticalZoomExtraBottomPx = 0;
+      zoomTransitionLockUntil = 0;
     }
   }
 
@@ -577,6 +684,7 @@
 
   function updateFocusNow() {
     if (strip.length === 0 || loadingInitial) return;
+    if (Date.now() < zoomTransitionLockUntil) return;
 
     if (isHorizontal) {
       const grp = currentHorizontalGroup;
@@ -690,12 +798,17 @@
     cancelVerticalSmoothScroll();
     if (flush) {
       void flushPendingProgress(keepSessionActive);
+      flushPendingMangaSettings();
     } else {
       if (saveTimer !== null) {
         window.clearTimeout(saveTimer);
         saveTimer = null;
       }
       pendingProgress = null;
+      if (mangaSettingsSaveTimer !== null) {
+        window.clearTimeout(mangaSettingsSaveTimer);
+        mangaSettingsSaveTimer = null;
+      }
     }
     for (const timer of [
       restoreTimer,
@@ -704,6 +817,7 @@
       singleTapTimer,
       orientationRestoreTimer,
       wheelResetTimer,
+      zoomFocusSettleTimer,
     ]) {
       if (timer !== null) window.clearTimeout(timer);
     }
@@ -713,6 +827,7 @@
     singleTapTimer = null;
     orientationRestoreTimer = null;
     wheelResetTimer = null;
+    zoomFocusSettleTimer = null;
     if (focusRaf !== null) {
       window.cancelAnimationFrame(focusRaf);
       focusRaf = null;
@@ -841,6 +956,7 @@
     horizontalAtEnd = false;
     preloadedImageTokens.clear();
     prefetched.clear();
+    purgedChapterUrls.clear();
     markedReadSet.clear();
     dimensionSamples.clear();
     webtoonDecidedForChapter = false;
@@ -1047,6 +1163,7 @@
       captureCurrentProgressNow(false);
       clearPendingTimers(true, false);
       void api.clearReaderSession().catch(() => {});
+      void api.purgeMangaPageCache(mangaId).catch(() => {});
       unregisterBack();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("rtmaga:orientation-changed", onOrientationChanged);
@@ -1172,7 +1289,7 @@
     if (prefetched.has(normNext) || strip.some((c) => normUrl(c.url) === normNext)) return;
     const seq = loadSeq;
     try {
-      const data = await api.getChapter(nextUrl, mangaId);
+      const data = await api.getChapter(nextUrl, mangaId, "prefetch");
       if (seq === loadSeq) {
         if (prefetched.size >= 3) {
           const oldestKey = prefetched.keys().next().value;
@@ -1196,7 +1313,7 @@
     appendingNext = true;
     try {
       const nextChap =
-        prefetched.get(normNext) ?? (await api.getChapter(tail.next, mangaId));
+        prefetched.get(normNext) ?? (await api.getChapter(tail.next, mangaId, "prefetch"));
       if (seq !== loadSeq) return;
       prefetched.delete(normNext);
 
@@ -1216,8 +1333,12 @@
         }
       }
 
+      const removedChapUrl = shouldTrimOldest ? strip[0]?.url : null;
       strip = shouldTrimOldest ? [...strip.slice(1), nextChap] : [...strip, nextChap];
       appendingNext = false;
+      if (removedChapUrl) {
+        purgeFinishedChapterCache(removedChapUrl);
+      }
 
       await tick();
       if (seq === loadSeq && scrollEl) {
@@ -1247,6 +1368,9 @@
 
   function jumpToChapter(url: string) {
     if (!url) return;
+    if (activeChapter && normUrl(activeChapter.url) !== normUrl(url)) {
+      purgeFinishedChapterCache(activeChapter.url);
+    }
     void flushPendingProgress();
     resetZoom();
     quickSettingsOpen = false;
@@ -1320,9 +1444,17 @@
     }
   }
 
-  function measureZoomTargetRect(target: EventTarget | null): RectBox {
+  function measureZoomTargetBox(target: EventTarget | null): {
+    rect: RectBox;
+    originLeft: number;
+    originTop: number;
+  } {
     if (!scrollEl) {
-      return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+      return {
+        rect: { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight },
+        originLeft: 0,
+        originTop: 0,
+      };
     }
     const vpRect = scrollEl.getBoundingClientRect();
     if (isHorizontal) {
@@ -1350,26 +1482,99 @@
         }
         if (Number.isFinite(minL) && maxR > minL && maxB > minT) {
           return {
-            left: (minL - zoomTx) / Math.max(1, zoomScale),
-            top: (minT - zoomTy) / Math.max(1, zoomScale),
-            width: (maxR - minL) / Math.max(1, zoomScale),
-            height: (maxB - minT) / Math.max(1, zoomScale),
+            rect: {
+              left: (minL - zoomTx) / Math.max(1, zoomScale),
+              top: (minT - zoomTy) / Math.max(1, zoomScale),
+              width: (maxR - minL) / Math.max(1, zoomScale),
+              height: (maxB - minT) / Math.max(1, zoomScale),
+            },
+            originLeft: 0,
+            originTop: 0,
           };
         }
       }
-      return { left: 0, top: 0, width: vpRect.width, height: vpRect.height };
+      return {
+        rect: { left: 0, top: 0, width: vpRect.width, height: vpRect.height },
+        originLeft: 0,
+        originTop: 0,
+      };
     }
 
     if (verticalContentEl) {
-      const cRect = verticalContentEl.getBoundingClientRect();
+      // offsetLeft / offsetWidth are exact unscaled layout coordinates unaffected by CSS transform.
+      const originLeft = verticalContentEl.offsetLeft;
+      const contentWidth = verticalContentEl.offsetWidth || vpRect.width;
       return {
-        left: (cRect.left - vpRect.left - zoomTx) / Math.max(1, zoomScale),
-        top: 0,
-        width: cRect.width / Math.max(1, zoomScale),
-        height: vpRect.height,
+        rect: {
+          left: 0,
+          top: 0,
+          width: contentWidth,
+          height: vpRect.height,
+        },
+        originLeft,
+        originTop: 0,
       };
     }
-    return { left: 0, top: 0, width: vpRect.width, height: vpRect.height };
+    return {
+      rect: { left: 0, top: 0, width: vpRect.width, height: vpRect.height },
+      originLeft: 0,
+      originTop: 0,
+    };
+  }
+
+  function isPointInsideActiveHorizontalImage(clientX: number, clientY: number): boolean {
+    if (!horizontalStageEl) return false;
+    const imgs = horizontalStageEl.querySelectorAll<HTMLImageElement>(
+      '[data-hslide-active="true"] img'
+    );
+    for (const img of imgs) {
+      const r = img.getBoundingClientRect();
+      if (
+        r.width > 10 &&
+        r.height > 10 &&
+        clientX >= r.left - 8 &&
+        clientX <= r.right + 8 &&
+        clientY >= r.top - 8 &&
+        clientY <= r.bottom + 8
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function findVerticalPageAtPoint(
+    clientY: number,
+    target: EventTarget | null
+  ): { key: string; idx: number } | null {
+    if (target instanceof HTMLElement) {
+      const direct = target.closest<HTMLElement>("[data-page-key]");
+      if (direct?.dataset.pageKey) {
+        return {
+          key: direct.dataset.pageKey,
+          idx: Number(direct.dataset.pageIdx) || 0,
+        };
+      }
+    }
+    if (!scrollEl) return null;
+    const pages = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-page-key]"));
+    let best: HTMLElement | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const el of pages) {
+      const r = el.getBoundingClientRect();
+      if (clientY >= r.top && clientY <= r.bottom && el.dataset.pageKey) {
+        return { key: el.dataset.pageKey, idx: Number(el.dataset.pageIdx) || 0 };
+      }
+      const dist = Math.abs(r.top + r.height / 2 - clientY);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = el;
+      }
+    }
+    if (best?.dataset.pageKey) {
+      return { key: best.dataset.pageKey, idx: Number(best.dataset.pageIdx) || 0 };
+    }
+    return null;
   }
 
   function handlePointerDown(e: PointerEvent) {
@@ -1398,7 +1603,10 @@
             y: (pts[0].y + pts[1].y) / 2 - vpRect.top,
           };
         }
-        zoomContentRect = measureZoomTargetRect(e.target);
+        const box = measureZoomTargetBox(e.target);
+        zoomContentRect = box.rect;
+        zoomOriginLeft = box.originLeft;
+        zoomOriginTop = box.originTop;
         return;
       }
       horizontalDragDidMove = false;
@@ -1417,7 +1625,8 @@
       panStartY = e.clientY;
       panOriginTx = zoomTx;
       panOriginTy = zoomTy;
-      if (isHorizontal && scrollEl) {
+      panOriginScrollTop = scrollEl?.scrollTop ?? 0;
+      if (scrollEl) {
         try {
           scrollEl.setPointerCapture(e.pointerId);
         } catch {
@@ -1454,7 +1663,9 @@
             targetScale,
             vpRect.width,
             vpRect.height,
-            rect
+            rect,
+            zoomOriginLeft,
+            zoomOriginTop
           );
           zoomScale = next.scale;
           zoomTx = next.tx;
@@ -1495,7 +1706,7 @@
     if (!zoomPanning || activePointerId !== e.pointerId || !scrollEl || zoomScale <= 1.01) return;
     const dx = e.clientX - panStartX;
     const dy = e.clientY - panStartY;
-    if (Math.hypot(dx, dy) > 4) {
+    if (Math.hypot(dx, dy) > 6) {
       didPanDrag = true;
     }
     const vpRect = scrollEl.getBoundingClientRect();
@@ -1511,11 +1722,18 @@
       zoomScale,
       vpRect.width,
       vpRect.height,
-      rect
+      rect,
+      zoomOriginLeft,
+      zoomOriginTop
     );
     zoomTx = clamped.tx;
     if (isHorizontal) {
       zoomTy = clamped.ty;
+    } else {
+      const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+      const nextTop = Math.max(0, Math.min(maxTop, Math.round(panOriginScrollTop - dy)));
+      scrollEl.scrollTop = nextTop;
+      lastScrollOffset = nextTop;
     }
   }
 
@@ -1583,42 +1801,52 @@
     return false;
   }
 
-  function handleHorizontalLeftZoneClick(e: MouseEvent) {
+  function handleHorizontalZoneTap(zone: "left" | "center" | "right", e: MouseEvent) {
     e.stopPropagation();
     wakeFloatingControls();
-    if (horizontalDragDidMove || Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 10) {
+    if (
+      horizontalDragDidMove ||
+      Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 14
+    ) {
       horizontalDragDidMove = false;
       return;
     }
     if (dismissHorizontalOverlayIfOpen()) return;
-    // Left Zone (~27% width): brings left peeking slide into center (RTL: Next, LTR: Prev).
-    stepHorizontalGroup(isRtl ? 1 : -1, false);
-  }
 
-  function handleHorizontalRightZoneClick(e: MouseEvent) {
-    e.stopPropagation();
-    wakeFloatingControls();
-    if (horizontalDragDidMove || Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 10) {
-      horizontalDragDidMove = false;
-      return;
-    }
-    if (dismissHorizontalOverlayIfOpen()) return;
-    // Right Zone (~27% width): brings right peeking slide into center (RTL: Prev, LTR: Next).
-    stepHorizontalGroup(isRtl ? -1 : 1, false);
-  }
+    const runSingleAction = () => {
+      if (zone === "left") {
+        stepHorizontalGroup(isRtl ? 1 : -1, false);
+      } else if (zone === "right") {
+        stepHorizontalGroup(isRtl ? -1 : 1, false);
+      } else {
+        toolbarVisible = !toolbarVisible;
+      }
+    };
 
-  function handleHorizontalCenterZoneClick(e: MouseEvent) {
-    e.stopPropagation();
-    wakeFloatingControls();
-    if (horizontalDragDidMove || Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 10) {
-      horizontalDragDidMove = false;
+    const doubleTapEnabled = behavior.doubleTapAction !== "disabled";
+    if (!doubleTapEnabled) {
+      runSingleAction();
       return;
     }
-    if (dismissHorizontalOverlayIfOpen()) return;
+
+    // On side margins outside the actual manga image (PC), flip pages immediately with zero delay.
+    // On the image itself (all 3 zones on Mobile & PC), detect double-tap cleanly so users can
+    // double-tap any speech bubble or corner to focus-zoom into that exact point.
+    const tappedOnImage = zone === "center" || isPointInsideActiveHorizontalImage(e.clientX, e.clientY);
+    if (!tappedOnImage) {
+      lastTapAt = 0;
+      if (singleTapTimer !== null) {
+        window.clearTimeout(singleTapTimer);
+        singleTapTimer = null;
+      }
+      runSingleAction();
+      return;
+    }
 
     const now = Date.now();
-    const doubleTapEnabled = behavior.doubleTapAction !== "disabled";
-    if (doubleTapEnabled && now - lastTapAt <= 260) {
+    const isDoubleTap =
+      now - lastTapAt <= 260 && Math.hypot(e.clientX - lastTapX, e.clientY - lastTapY) <= 48;
+    if (isDoubleTap) {
       lastTapAt = 0;
       if (singleTapTimer !== null) {
         window.clearTimeout(singleTapTimer);
@@ -1629,14 +1857,27 @@
     }
 
     lastTapAt = now;
-    if (!doubleTapEnabled) {
-      toolbarVisible = !toolbarVisible;
-    } else {
-      singleTapTimer = window.setTimeout(() => {
-        singleTapTimer = null;
-        toolbarVisible = !toolbarVisible;
-      }, 260);
+    lastTapX = e.clientX;
+    lastTapY = e.clientY;
+    if (singleTapTimer !== null) {
+      window.clearTimeout(singleTapTimer);
     }
+    singleTapTimer = window.setTimeout(() => {
+      singleTapTimer = null;
+      runSingleAction();
+    }, 220);
+  }
+
+  function handleHorizontalLeftZoneClick(e: MouseEvent) {
+    handleHorizontalZoneTap("left", e);
+  }
+
+  function handleHorizontalRightZoneClick(e: MouseEvent) {
+    handleHorizontalZoneTap("right", e);
+  }
+
+  function handleHorizontalCenterZoneClick(e: MouseEvent) {
+    handleHorizontalZoneTap("center", e);
   }
 
   function executeSingleTap(clientX: number) {
@@ -1678,7 +1919,8 @@
       return;
     }
 
-    // Anchored zoom toggle (`1x <-> 2.0x`) centered precisely on tapped/clicked coordinates.
+    // Focused zoom toggle (`1x <-> 2.0x`): brings the exact tapped point cleanly to viewport center
+    // while locking focus onto the zoomed page so `dimUnfocused` and progress tracking stay intact.
     if (zoomScale > 1.01) {
       resetZoom(clientY);
       return;
@@ -1688,37 +1930,78 @@
     const vpRect = scrollEl.getBoundingClientRect();
     const pointerX = clientX - vpRect.left;
     const pointerY = clientY - vpRect.top;
-    const contentRect = measureZoomTargetRect(target);
-    zoomContentRect = contentRect;
+    const box = measureZoomTargetBox(target);
+    zoomContentRect = box.rect;
+    zoomOriginLeft = box.originLeft;
+    zoomOriginTop = box.originTop;
 
-    const next = computeAnchoredZoom(
+    const next = computeFocusedZoom(
       pointerX,
       pointerY,
-      { scale: zoomScale, tx: zoomTx, ty: zoomTy },
+      { scale: 1, tx: 0, ty: 0 },
       ZOOM_TARGET_SCALE,
       vpRect.width,
       vpRect.height,
-      contentRect
+      box.rect,
+      box.originLeft,
+      box.originTop
     );
 
+    if (zoomFocusSettleTimer !== null) {
+      window.clearTimeout(zoomFocusSettleTimer);
+      zoomFocusSettleTimer = null;
+    }
+
     if (isHorizontal) {
+      zoomTransitionLockUntil = Date.now() + 220;
       zoomScale = next.scale;
       zoomTx = next.tx;
       zoomTy = next.ty;
+      zoomFocusSettleTimer = window.setTimeout(() => {
+        zoomFocusSettleTimer = null;
+        zoomTransitionLockUntil = 0;
+        updateFocusNow();
+      }, 200);
     } else {
+      // Lock focus immediately onto the exact page the user tapped before the transform animates.
+      const tappedPage = findVerticalPageAtPoint(clientY, target);
+      if (tappedPage) {
+        focusedKeys = new Set([tappedPage.key]);
+        focusedPageIdx =
+          totalPages > 0
+            ? Math.max(0, Math.min(totalPages - 1, tappedPage.idx))
+            : Math.max(0, tappedPage.idx);
+      }
+
       const docYBefore = scrollEl.scrollTop + pointerY;
       const baseHeight = verticalContentEl?.offsetHeight ?? scrollEl.scrollHeight;
       verticalZoomExtraBottomPx = Math.max(0, Math.round(baseHeight * (next.scale - 1)));
+      zoomTransitionLockUntil = Date.now() + 240;
+      suppressAutoHideUntil = Date.now() + 360;
       zoomScale = next.scale;
       zoomTx = next.tx;
       zoomTy = 0;
-      const targetScrollTop = Math.max(0, Math.round(docYBefore * next.scale - pointerY));
-      suppressAutoHideUntil = Date.now() + 300;
-      window.requestAnimationFrame(() => {
+
+      // Center the tapped document Y coordinate vertically in the viewport (`vpRect.height / 2`).
+      const desiredScrollTop = Math.max(
+        0,
+        Math.round(docYBefore * next.scale - vpRect.height * 0.5)
+      );
+
+      // Wait for Svelte to flush `verticalZoomExtraBottomPx` so `scrollEl.scrollHeight` expands
+      // before setting `scrollTop` (prevents silent premature clamping near the bottom of a chapter).
+      void tick().then(() => {
         if (scrollEl) {
-          scrollEl.scrollTop = targetScrollTop;
-          lastScrollOffset = targetScrollTop;
+          const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+          const clampedTop = Math.max(0, Math.min(maxTop, desiredScrollTop));
+          scrollEl.scrollTop = clampedTop;
+          lastScrollOffset = clampedTop;
         }
+        zoomFocusSettleTimer = window.setTimeout(() => {
+          zoomFocusSettleTimer = null;
+          zoomTransitionLockUntil = 0;
+          updateFocusNow();
+        }, 210);
       });
     }
   }
@@ -1745,15 +2028,19 @@
     if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
       return;
     }
-    // Ignore drags/scroll gestures (> 10px movement).
-    if (Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 10) {
+    // Ignore drags/scroll gestures (> 14px movement to allow slight mobile finger jitter).
+    if (Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 14) {
       return;
     }
 
     const now = Date.now();
     const doubleTapEnabled = behavior.doubleTapAction !== "disabled";
+    const isDoubleTap =
+      doubleTapEnabled &&
+      now - lastTapAt <= 260 &&
+      Math.hypot(e.clientX - lastTapX, e.clientY - lastTapY) <= 48;
 
-    if (doubleTapEnabled && now - lastTapAt <= 260) {
+    if (isDoubleTap) {
       lastTapAt = 0;
       if (singleTapTimer !== null) {
         window.clearTimeout(singleTapTimer);
@@ -1764,29 +2051,65 @@
     }
 
     lastTapAt = now;
+    lastTapX = e.clientX;
+    lastTapY = e.clientY;
     if (!doubleTapEnabled) {
       executeSingleTap(e.clientX);
     } else {
       const tapX = e.clientX;
+      if (singleTapTimer !== null) {
+        window.clearTimeout(singleTapTimer);
+      }
       singleTapTimer = window.setTimeout(() => {
         singleTapTimer = null;
         executeSingleTap(tapX);
-      }, 260);
+      }, 240);
     }
   }
 
-  async function handleManualVerify() {
-    if (!errorState?.blockedUrl || verifyingBlocked) return;
+  async function handleManualVerify(targetUrl?: string) {
+    const target = targetUrl || errorState?.blockedUrl || chapterUrl;
+    if (!target || verifyingBlocked) return;
     verifyingBlocked = true;
     try {
       toasts.push(t.toastOpeningVerify, "info", 4500);
-      await api.openManualVerification(errorState.blockedUrl);
+      await api.openManualVerification(target);
       toasts.push(t.toastVerifyDone, "success");
       await loadInitial(chapterUrl, initialScrollRatio, initialPageIndex);
     } catch (err) {
       errorState = formatAppError(err, settingsStore.value.language);
     } finally {
       verifyingBlocked = false;
+    }
+  }
+
+  async function handleBrowserLogin(targetUrl: string) {
+    const target = targetUrl || chapterUrl;
+    if (!target || loggingIn) return;
+    loggingIn = true;
+    try {
+      toasts.push(t.errActionOpeningLogin, "info", 4500);
+      const outcome = await api.openBrowserLoginSession(target);
+      if (outcome.cookiesSynced) {
+        toasts.push(t.toastLoginSynced, "success");
+        await loadInitial(chapterUrl, initialScrollRatio, initialPageIndex);
+      } else {
+        toasts.push(t.toastLoginExternalOpened, "info", 4500);
+      }
+    } catch (err) {
+      errorState = formatAppError(err, settingsStore.value.language);
+    } finally {
+      loggingIn = false;
+    }
+  }
+
+  async function handleOpenExternalUrl(targetUrl?: string) {
+    const target = targetUrl || errorState?.externalUrl || chapterUrl;
+    if (!target) return;
+    try {
+      await api.openExternalUrl(target);
+    } catch (err) {
+      toasts.push(formatAppError(err, settingsStore.value.language).detail, "error");
     }
   }
 
@@ -1810,7 +2133,9 @@
           zoomScale,
           vpRect.width,
           vpRect.height,
-          rect
+          rect,
+          zoomOriginLeft,
+          zoomOriginTop
         );
         zoomTx = clamped.tx;
         zoomTy = clamped.ty;
@@ -1850,7 +2175,9 @@
     if (isHorizontal || !scrollEl || strip.length === 0 || loadingInitial) return;
 
     wakeFloatingControls();
-    scheduleFocusUpdate();
+    if (Date.now() >= zoomTransitionLockUntil) {
+      scheduleFocusUpdate();
+    }
 
     const suppressHide = scrubbing || Date.now() < suppressAutoHideUntil;
 
@@ -1876,8 +2203,13 @@
     }
     lastScrollOffset = top;
 
+    // Scale-correct scroll offset against unscaled `offsetTop`/`offsetHeight` when zoomed.
+    const scaleFactor = zoomScale > 1.01 ? zoomScale : 1;
+    const unscaledTop = top / scaleFactor;
+    const unscaledVpH = scrollEl.clientHeight / scaleFactor;
+    const viewportMid = unscaledTop + unscaledVpH * 0.35;
+
     const sections = Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-chapter-url]"));
-    const viewportMid = top + scrollEl.clientHeight * 0.35;
     let currentSection: HTMLElement | null = null;
 
     for (const sec of sections) {
@@ -1895,7 +2227,8 @@
 
     if (currentSection && restoredInitialScroll) {
       const chapUrl = currentSection.dataset.chapterUrl ?? activeUrl;
-      const chap = strip.find((c) => normUrl(c.url) === normUrl(chapUrl));
+      const chapIdx = strip.findIndex((c) => normUrl(c.url) === normUrl(chapUrl));
+      const chap = chapIdx >= 0 ? strip[chapIdx] : undefined;
       if (chap) {
         const chapterChanged = normUrl(activeUrl) !== normUrl(chap.url);
         activeUrl = chap.url;
@@ -1904,9 +2237,14 @@
           if (behavior.autoMarkReadOnOpen) {
             markChapterReadLocalAndRemote(chap.url);
           }
+          // Reclaim disk storage for earlier finished chapters (2+ chapters behind active view).
+          for (let i = 0; i <= chapIdx - 2; i += 1) {
+            const oldChap = strip[i];
+            if (oldChap) purgeFinishedChapterCache(oldChap.url);
+          }
         }
-        const secHeight = Math.max(1, currentSection.offsetHeight - scrollEl.clientHeight);
-        const ratio = Math.min(1, Math.max(0, (top - currentSection.offsetTop) / secHeight));
+        const secHeight = Math.max(1, currentSection.offsetHeight - unscaledVpH);
+        const ratio = Math.min(1, Math.max(0, (unscaledTop - currentSection.offsetTop) / secHeight));
 
         scheduleSaveProgress(chap.url, chap.name, ratio, focusedPageIdx);
 
@@ -1956,8 +2294,8 @@
   }
 
   async function setOrientationLockDirect(next: OrientationLockMode) {
-    settingsStore.update((d) => {
-      d.reader.orientationLock = next;
+    updateMangaReaderSettings((r) => {
+      r.orientationLock = next;
     });
     await deviceEnv.setOrientationLock(next);
     const label =
@@ -2050,9 +2388,12 @@
 
   async function exitReader() {
     closingReader = true;
+    flushPendingMangaSettings();
     captureCurrentProgressNow(false);
     await flushPendingProgress(false);
     await api.clearReaderSession().catch(() => {});
+    // Reclaim transient chapter page cache immediately on exit while keeping cover & settings.
+    void api.purgeMangaPageCache(mangaId).catch(() => {});
     await applyKeepScreenOn(false);
     // Preserve desktop fullscreen state (Part 8) so exiting a chapter does not unexpectedly leave fullscreen.
     if (!router.goBack()) {
@@ -2137,111 +2478,101 @@
     }
   }
 
-  async function applyPerMangaOverride(mode: ReaderModeOverride) {
-    if (manga) {
-      manga = { ...manga, readerModeOverride: mode };
-    }
-    try {
-      await api.setMangaReaderOverride(mangaId, mode);
-    } catch {
-      // Ignore error.
-    }
-  }
-
   function setOrientation(o: ReadingOrientation) {
-    settingsStore.update((d) => {
-      d.reader.orientation = o;
+    updateMangaReaderSettings((r) => {
+      r.orientation = o;
+      if (o === "horizontal") {
+        // Switching explicitly to horizontal on a detected webtoon disables auto-webtoon override for this manga.
+        r.autoWebtoonDetect = false;
+      }
     });
-    const nextOverride: ReaderModeOverride = o === "horizontal" ? "horizontal" : "vertical_strip";
-    void applyPerMangaOverride(nextOverride);
   }
 
   function resetToAutoMode() {
-    void applyPerMangaOverride(null);
-    toasts.push(t.readerOverrideResetToast, "info", 2000);
+    void resetMangaReaderSettingsToGlobal();
   }
 
   function setPagesPerGroup(n: number) {
     const clamped = Math.max(1, Math.min(8, n));
-    settingsStore.update((d) => {
-      d.reader.horizontal.pagesPerGroup = clamped;
+    updateMangaReaderSettings((r) => {
+      r.horizontal.pagesPerGroup = clamped;
     });
   }
 
   function setHorizontalDirection(dir: HorizontalDirection) {
-    settingsStore.update((d) => {
-      d.reader.horizontal.direction = dir;
+    updateMangaReaderSettings((r) => {
+      r.horizontal.direction = dir;
     });
   }
 
   function setNavigationSpeed(speed: number) {
     const clamped = Math.max(1, Math.min(10, Math.round(speed)));
-    settingsStore.update((d) => {
-      d.reader.behavior.navigationSpeed = clamped;
-    }, 80);
+    updateMangaReaderSettings((r) => {
+      r.behavior.navigationSpeed = clamped;
+    }, 120);
   }
 
   function toggleDim() {
-    settingsStore.update((d) => {
+    updateMangaReaderSettings((r) => {
       if (isHorizontal) {
-        d.reader.horizontal.dimUnfocused = !d.reader.horizontal.dimUnfocused;
+        r.horizontal.dimUnfocused = !r.horizontal.dimUnfocused;
       } else {
-        d.reader.vertical.dimUnfocused = !d.reader.vertical.dimUnfocused;
+        r.vertical.dimUnfocused = !r.vertical.dimUnfocused;
       }
     });
   }
 
   function setDimLevel(val: number) {
-    settingsStore.update((d) => {
+    updateMangaReaderSettings((r) => {
       if (isHorizontal) {
-        d.reader.horizontal.dimLevel = val;
+        r.horizontal.dimLevel = val;
       } else {
-        d.reader.vertical.dimLevel = val;
+        r.vertical.dimLevel = val;
       }
-    }, 80);
+    }, 120);
   }
 
   function toggleAutoNext() {
-    settingsStore.update((d) => {
-      d.reader.autoNextChapter = !d.reader.autoNextChapter;
+    updateMangaReaderSettings((r) => {
+      r.autoNextChapter = !r.autoNextChapter;
     });
   }
 
   function toggleNoGap() {
     const turningOff = effectiveNoGap;
     if (turningOff) {
-      settingsStore.update((d) => {
-        d.reader.vertical.noGapMode = false;
-        if (d.reader.vertical.pageGapPx === 0) {
-          d.reader.vertical.pageGapPx = 12;
-          d.reader.gapPx = 12;
+      updateMangaReaderSettings((r) => {
+        r.vertical.noGapMode = false;
+        if (isAutoWebtoonActive) {
+          r.autoWebtoonDetect = false;
+        }
+        if (r.vertical.pageGapPx === 0) {
+          r.vertical.pageGapPx = 12;
+          r.gapPx = 12;
         }
       });
-      if (isAutoWebtoonActive) {
-        void applyPerMangaOverride("vertical_strip");
-      }
     } else {
-      settingsStore.update((d) => {
-        d.reader.vertical.noGapMode = true;
+      updateMangaReaderSettings((r) => {
+        r.vertical.noGapMode = true;
       });
     }
   }
 
   function setVerticalGapPx(val: number) {
     const clamped = Math.max(0, Math.min(48, Math.round(val)));
-    settingsStore.update((d) => {
-      d.reader.vertical.noGapMode = false;
-      d.reader.vertical.pageGapPx = clamped;
-      d.reader.gapPx = clamped;
-    }, 100);
-    if (isAutoWebtoonActive && clamped > 0) {
-      void applyPerMangaOverride("vertical_strip");
-    }
+    updateMangaReaderSettings((r) => {
+      r.vertical.noGapMode = false;
+      r.vertical.pageGapPx = clamped;
+      r.gapPx = clamped;
+      if (isAutoWebtoonActive && clamped > 0) {
+        r.autoWebtoonDetect = false;
+      }
+    }, 120);
   }
 
   function setReaderBg(bg: ReaderBg) {
-    settingsStore.update((d) => {
-      d.reader.readerBg = bg;
+    updateMangaReaderSettings((r) => {
+      r.readerBg = bg;
     });
   }
 </script>
@@ -2442,25 +2773,34 @@
         </button>
       </div>
 
-      {#if isAutoWebtoonActive || effectiveOverride !== null}
+      {#if hasCustomMangaSettings || isAutoWebtoonActive || effectiveOverride !== null}
         <div
           class="flex items-center justify-between gap-2 rounded-xl border px-3 py-2"
           style="background-color: var(--surface-subtle); border-color: var(--border);"
         >
           <span class="font-medium" style="color: var(--text);">
-            {effectiveOverride !== null ? t.readerOverrideActive : t.autoWebtoonBadge}
+            {hasCustomMangaSettings || effectiveOverride !== null
+              ? t.perMangaSettingsBadge
+              : t.autoWebtoonBadge}
           </span>
-          {#if effectiveOverride !== null}
+          {#if hasCustomMangaSettings || effectiveOverride !== null}
             <button
               type="button"
               onclick={resetToAutoMode}
-              class="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium"
+              class="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium"
               style="background-color: var(--accent-soft); color: var(--accent);"
             >
               <RotateCcw size={11} />
-              {t.readerResetToAuto}
+              {t.resetMangaSettingsBtn}
             </button>
           {/if}
+        </div>
+      {:else}
+        <div
+          class="rounded-xl border px-3 py-1.5 text-[11px]"
+          style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+        >
+          {t.perMangaSettingsHint}
         </div>
       {/if}
 
@@ -2578,9 +2918,11 @@
                   checked={hCfg.noGapMode}
                   onchange={(e) => {
                     const checked = e.currentTarget.checked;
-                    settingsStore.update((d) => (d.reader.horizontal.noGapMode = checked));
+                    updateMangaReaderSettings((r) => {
+                      r.horizontal.noGapMode = checked;
+                    });
                   }}
-                  class="h-4 w-4 accent-rose-500"
+                  class="h-4 w-4"
                 />
               </div>
             {:else}
@@ -2600,7 +2942,7 @@
                   type="checkbox"
                   checked={effectiveNoGap}
                   onchange={toggleNoGap}
-                  class="h-4 w-4 accent-rose-500"
+                  class="h-4 w-4"
                 />
               </div>
 
@@ -2616,7 +2958,7 @@
                     step="2"
                     value={vCfg.pageGapPx}
                     oninput={(e) => setVerticalGapPx(Number(e.currentTarget.value))}
-                    class="w-full accent-rose-500"
+                    class="w-full"
                   />
                 </div>
               {/if}
@@ -2627,7 +2969,7 @@
                   type="checkbox"
                   checked={readerSettings.autoNextChapter}
                   onchange={toggleAutoNext}
-                  class="h-4 w-4 accent-rose-500"
+                  class="h-4 w-4"
                 />
               </div>
             {/if}
@@ -2694,7 +3036,7 @@
                   type="checkbox"
                   checked={isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
                   onchange={toggleDim}
-                  class="h-4 w-4 accent-rose-500"
+                  class="h-4 w-4"
                 />
               </div>
               {#if isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
@@ -2707,7 +3049,7 @@
                     step="5"
                     value={dimPct}
                     oninput={(e) => setDimLevel(Number(e.currentTarget.value))}
-                    class="w-full accent-rose-500"
+                    class="w-full"
                   />
                   <span class="w-9 text-right" style="color: var(--text-muted);">{dimPct}%</span>
                 </div>
@@ -2750,9 +3092,11 @@
                 checked={behavior.keepScreenOn}
                 onchange={(e) => {
                   const checked = e.currentTarget.checked;
-                  settingsStore.update((d) => (d.reader.behavior.keepScreenOn = checked));
+                  updateMangaReaderSettings((r) => {
+                    r.behavior.keepScreenOn = checked;
+                  });
                 }}
-                class="h-4 w-4 accent-rose-500"
+                class="h-4 w-4"
               />
             </div>
 
@@ -2763,9 +3107,11 @@
                 checked={behavior.skipBrokenImages}
                 onchange={(e) => {
                   const checked = e.currentTarget.checked;
-                  settingsStore.update((d) => (d.reader.behavior.skipBrokenImages = checked));
+                  updateMangaReaderSettings((r) => {
+                    r.behavior.skipBrokenImages = checked;
+                  });
                 }}
-                class="h-4 w-4 accent-rose-500"
+                class="h-4 w-4"
               />
             </div>
 
@@ -2780,7 +3126,7 @@
                 step="1"
                 value={behavior.navigationSpeed}
                 oninput={(e) => setNavigationSpeed(Number(e.currentTarget.value))}
-                class="w-full accent-rose-500"
+                class="w-full"
               />
             </div>
           </div>
@@ -2843,7 +3189,7 @@
               const checked = e.currentTarget.checked;
               settingsStore.update((d) => (d.floating.showOrientationLock = checked));
             }}
-            class="h-4 w-4 accent-rose-500"
+            class="h-4 w-4"
           />
         </div>
 
@@ -2877,7 +3223,7 @@
                 const v = Number(e.currentTarget.value);
                 settingsStore.update((d) => (d.floating.orientationLock.verticalPercent = v), 100);
               }}
-              class="w-full accent-rose-500"
+              class="w-full"
             />
             <span class="w-8 text-right tabular-nums" style="color: var(--text-muted);">
               {settingsStore.value.floating.orientationLock.verticalPercent}%
@@ -2936,7 +3282,7 @@
                 const v = Number(e.currentTarget.value);
                 settingsStore.update((d) => (d.floating.scrollToTop.verticalPercent = v), 100);
               }}
-              class="w-full accent-rose-500"
+              class="w-full"
             />
             <span class="w-8 text-right tabular-nums" style="color: var(--text-muted);">
               {settingsStore.value.floating.scrollToTop.verticalPercent}%
@@ -2953,7 +3299,7 @@
               const checked = e.currentTarget.checked;
               settingsStore.update((d) => (d.floating.autoDimInReader = checked));
             }}
-            class="h-4 w-4 accent-rose-500"
+            class="h-4 w-4"
           />
         </div>
       {/if}
@@ -2984,8 +3330,8 @@
     onclick={handleViewportClick}
     ontouchstart={wakeFloatingControls}
     class={isHorizontal
-      ? "relative flex h-full w-full select-none overflow-hidden"
-      : "relative h-full w-full select-none overflow-y-auto"}
+      ? "reader-no-scrollbar relative flex h-full w-full select-none overflow-hidden"
+      : "reader-no-scrollbar relative h-full w-full select-none overflow-y-auto"}
     style={isHorizontal
       ? zoomScale > 1.01
         ? zoomPanning
@@ -2996,8 +3342,8 @@
           : "touch-action: pan-y pinch-zoom;"
       : zoomScale > 1.01
         ? zoomPanning
-          ? "touch-action: pan-y; cursor: grabbing;"
-          : "touch-action: pan-y; cursor: grab;"
+          ? "touch-action: none; cursor: grabbing;"
+          : "touch-action: none; cursor: grab;"
         : "touch-action: pan-y;"}
   >
     {#if loadingInitial}
@@ -3009,43 +3355,28 @@
         <span>{t.loadingPages}</span>
       </div>
     {:else if errorState}
-      <div class="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
-        <div class="text-base font-semibold">{errorState.title}</div>
-        <p class="max-w-md text-xs" style="color: var(--text-muted);">{errorState.detail}</p>
-        <div class="mt-2 flex flex-wrap justify-center gap-2">
-          {#if errorState.blockedUrl}
-            <button
-              type="button"
-              disabled={verifyingBlocked}
-              onclick={handleManualVerify}
-              class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
-              style="background-color: var(--accent);"
-            >
-              {#if verifyingBlocked}
-                <Loader2 size={14} class="animate-spin" />
-                <span>{t.waitingVerification}</span>
-              {:else}
-                <span>{t.openVerification}</span>
-              {/if}
-            </button>
-          {/if}
-          <button
-            type="button"
-            onclick={() => loadInitial(chapterUrl, initialScrollRatio, initialPageIndex)}
-            class="rounded-xl px-4 py-2 text-xs font-medium text-white"
-            style="background-color: var(--accent);"
-          >
-            {t.retry}
-          </button>
-          <button
-            type="button"
-            onclick={exitReader}
-            class="rounded-xl border px-4 py-2 text-xs font-medium"
-            style="border-color: var(--border); background-color: var(--surface);"
-          >
-            {t.back}
-          </button>
+      <div class="flex h-full w-full flex-col items-center justify-center gap-4 px-4 py-6">
+        <div class="w-full max-w-xl">
+          <SourceDiagnosticCard
+            error={errorState}
+            fallbackUrl={chapterUrl}
+            verifying={verifyingBlocked}
+            {loggingIn}
+            onRetry={() => void loadInitial(chapterUrl, initialScrollRatio, initialPageIndex)}
+            onVerify={(u) => void handleManualVerify(u)}
+            onLogin={(u) => void handleBrowserLogin(u)}
+            onOpenExternal={(u) => void handleOpenExternalUrl(u)}
+            onOpenNetworkSettings={() => router.goSettings("network")}
+          />
         </div>
+        <button
+          type="button"
+          onclick={exitReader}
+          class="rounded-xl border px-4 py-2 text-xs font-medium"
+          style="border-color: var(--border); background-color: var(--surface);"
+        >
+          {t.back}
+        </button>
       </div>
     {:else if isHorizontal && activeChapter}
       {#snippet endOfChapterCard()}
@@ -3118,8 +3449,8 @@
                   e.stopPropagation();
                   if (activeChapter?.next) jumpToChapter(activeChapter.next);
                 }}
-                class="inline-flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-                style="background-color: var(--accent);"
+                class="inline-flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-semibold shadow-sm transition-opacity hover:opacity-90"
+                style="background-color: var(--accent); color: var(--accent-fg);"
               >
                 <span>{t.nextChapter}</span>
                 <ChevronRight size={17} />
@@ -3402,8 +3733,8 @@
                   jumpToChapter(lastChapter.next);
                 }
               }}
-              class="inline-flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
-              style="background-color: var(--accent);"
+              class="inline-flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold shadow-sm transition-opacity hover:opacity-90"
+              style="background-color: var(--accent); color: var(--accent-fg);"
             >
               <span>{t.nextChapter}</span>
               <ChevronRight size={17} />
@@ -3487,7 +3818,7 @@
             scrubbing = false;
             scheduleToolbarAutoHide();
           }}
-          class="h-1.5 w-full cursor-pointer accent-rose-500"
+          class="h-1.5 w-full cursor-pointer"
           aria-label={t.readerProgressSeek}
         />
         <span class="hidden shrink-0 text-[11px] tabular-nums sm:inline" style="color: var(--text-muted);">

@@ -48,9 +48,24 @@ struct CandidateImg {
     dom_order: usize,
 }
 
-/// Extracts ordered manga page images using DOM container scoring, with a `<script>` fallback.
+/// Extracts ordered manga page images using adaptive HTML DOM scoring (`<img>`,
+/// `<picture><source>`, CSS `background-image`, lazy attrs), with a `<script>` fallback.
 pub fn extract_chapter_images(doc: &Html, page_url: &Url, base: &Url) -> Vec<PageImage> {
-    let dom_images = extract_from_dom(doc, page_url, base);
+    let adaptive = crate::extract::extract_chapter_html_adaptive(
+        doc,
+        page_url,
+        base,
+        crate::extract::HtmlMinimumPolicy::StandardThree,
+    );
+    if adaptive.pages.len() >= MIN_DOM_IMAGES_BEFORE_SCRIPT_FALLBACK {
+        return adaptive.pages;
+    }
+
+    let dom_images = if adaptive.pages.is_empty() {
+        extract_from_dom(doc, page_url, base)
+    } else {
+        adaptive.pages
+    };
     if dom_images.len() >= MIN_DOM_IMAGES_BEFORE_SCRIPT_FALLBACK {
         return dom_images;
     }

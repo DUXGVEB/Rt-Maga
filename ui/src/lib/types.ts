@@ -2,6 +2,14 @@ export type Language = "en" | "vi" | "zh" | "ja" | "ru" | "ko" | "th";
 
 export type Theme = "system" | "light" | "dark";
 
+export type NavDestination = "home" | "bookmarks" | "history" | "settings";
+
+export interface UiCustomizationSettings {
+  lightAccent: string;
+  darkAccent: string;
+  navOrder: NavDestination[];
+}
+
 export type ImageWidth =
   | { mode: "fit_window" }
   | { mode: "percent"; value: number }
@@ -253,6 +261,7 @@ export interface CacheSettings {
 export interface Settings {
   language: Language;
   theme: Theme;
+  ui: UiCustomizationSettings;
   device: DeviceSettings;
   reader: ReaderSettings;
   floating: FloatingButtonsSettings;
@@ -307,9 +316,132 @@ export type UrlKind =
   | "IMAGE_URL"
   | "API_ENDPOINT"
   | "REDIRECTED_URL"
+  | "LOGIN_PAGE"
+  | "VERIFICATION_PAGE"
+  | "PAYWALL_PAGE"
+  | "NOT_A_COMIC_PAGE"
   | "UNSUPPORTED_URL"
   | "INVALID_URL"
   | "BLOCKED_OR_RESTRICTED";
+
+export type SourceErrorCode =
+  | "INVALID_URL"
+  | "UNSUPPORTED_WEBSITE"
+  | "NOT_A_COMIC_PAGE"
+  | "SOURCE_DETECTION_FAILED"
+  | "CHAPTER_NOT_FOUND"
+  | "CHAPTER_CONTENT_NOT_LOADED"
+  | "JAVASCRIPT_RENDER_REQUIRED"
+  | "BROWSER_ENGINE_UNAVAILABLE"
+  | "LOGIN_REQUIRED"
+  | "SESSION_EXPIRED"
+  | "VERIFICATION_REQUIRED"
+  | "ACCESS_DENIED"
+  | "GEO_RESTRICTION"
+  | "PAYWALL_OR_SUBSCRIPTION_REQUIRED"
+  | "DRM_PROTECTED_CONTENT"
+  | "EXTRACTION_NOT_PERMITTED"
+  | "UNSUPPORTED_API_FORMAT"
+  | "UNSUPPORTED_IMAGE_FORMAT"
+  | "IMAGE_DECODE_FAILED"
+  | "IMAGE_REQUEST_FAILED"
+  | "IMAGE_SOURCE_CHANGED"
+  | "RATE_LIMITED"
+  | "NETWORK_TIMEOUT"
+  | "SERVER_ERROR"
+  | "ADAPTER_OUTDATED"
+  | "ADAPTER_EXECUTION_FAILED"
+  | "UNKNOWN_SOURCE_ERROR";
+
+export type FailureCategoryGroup =
+  | "source_detection"
+  | "chapter_identification"
+  | "content_loading"
+  | "image_extraction"
+  | "access_permission"
+  | "unsupported_format"
+  | "network";
+
+export type ExtractionStrategyKind =
+  | "site_adapter"
+  | "structured_data_and_api"
+  | "native_html"
+  | "browser_rendering"
+  | "authenticated_browser";
+
+export type RecoveryActionKind =
+  | "retry"
+  | "open_browser_reading_mode"
+  | "sign_in_via_browser"
+  | "complete_verification"
+  | "open_original_website"
+  | "configure_network_or_proxy"
+  | "export_diagnostics";
+
+export interface StrategyAttemptTrace {
+  strategy: ExtractionStrategyKind;
+  adapterId: string | null;
+  outcome: string;
+  candidatesFound: number;
+  validatedCount: number;
+  durationMs: number;
+}
+
+export interface SourceDiagnosticReport {
+  originalUrl: string;
+  finalUrl: string | null;
+  domain: string | null;
+  detectedPageType: UrlKind;
+  detectionConfidence: number;
+  extractionConfidence: number;
+  selectedStrategy: ExtractionStrategyKind | null;
+  strategiesAttempted: StrategyAttemptTrace[];
+  failedStage: string | null;
+  httpStatus: number | null;
+  contentType: string | null;
+  responseBytes: number | null;
+  imageCandidatesCount: number;
+  validatedImagesCount: number;
+  adapterName: string | null;
+  adapterVersion: string | null;
+  browserErrors: string[];
+  errorCode: SourceErrorCode | null;
+  failureGroup: FailureCategoryGroup | null;
+  titleVi: string | null;
+  explanationVi: string | null;
+  titleEn: string | null;
+  explanationEn: string | null;
+  evidence: string[];
+  retryable: boolean;
+  userInteractionRequired: boolean;
+  browserReadingAvailable: boolean;
+  suggestedActionVi: string | null;
+  suggestedActionEn: string | null;
+  recoveryActions: RecoveryActionKind[];
+  timestampUnix: number;
+}
+
+export interface BrowserAuthOutcome {
+  mode: "integrated_session" | "external_browser" | string;
+  cookiesSynced: boolean;
+}
+
+export type ChapterLoadPriority = "primary" | "prefetch";
+
+export interface FormattedAppError {
+  title: string;
+  detail: string;
+  blockedUrl?: string;
+  externalUrl?: string;
+  loginUrl?: string;
+  code?: SourceErrorCode;
+  failureGroup?: FailureCategoryGroup;
+  suggestedAction?: string;
+  retryable?: boolean;
+  userInteractionRequired?: boolean;
+  browserReadingAvailable?: boolean;
+  report?: SourceDiagnosticReport;
+}
 
 export type RecognitionStatus =
   | "WEBSITE_IDENTIFIED"
@@ -332,7 +464,8 @@ export type RecognitionStatus =
   | "MISSING_METADATA"
   | "IMAGE_EXTRACTION_FAILURE"
   | "ACCESS_RESTRICTED"
-  | "VERIFICATION_REQUIRED";
+  | "VERIFICATION_REQUIRED"
+  | "CONTENT_PROTECTED";
 
 export interface RecognitionDiagnostic {
   status: RecognitionStatus;
@@ -345,6 +478,8 @@ export interface RecognitionDiagnostic {
   httpStatus: number | null;
   detail: string;
   suggestedAction: string | null;
+  confidence?: number;
+  report?: SourceDiagnosticReport | null;
   timestampUnix: number;
 }
 
@@ -382,6 +517,7 @@ export interface MangaView {
   unreadCount: number;
   isCompleted: boolean;
   readerModeOverride: ReaderModeOverride;
+  readerSettings: ReaderSettings | null;
   detectedWebtoon: boolean;
   latestChapterName: string | null;
   sourceId: string | null;
@@ -659,6 +795,7 @@ export type AppError =
   | { kind: "http_error"; status: number; message: string }
   | { kind: "network"; message: string }
   | { kind: "blocked"; host: string; url: string }
+  | { kind: "content_protected"; host: string; url: string; message: string }
   | { kind: "not_recognized"; message: string }
   | { kind: "missing_metadata"; message: string }
   | { kind: "missing_images"; message: string }
@@ -666,4 +803,10 @@ export type AppError =
   | { kind: "corrupted_data"; message: string }
   | { kind: "not_found"; message: string }
   | { kind: "db"; message: string }
+  | {
+      kind: "source_failure";
+      code: SourceErrorCode;
+      message: string;
+      report: SourceDiagnosticReport;
+    }
   | { kind: "internal"; message: string };

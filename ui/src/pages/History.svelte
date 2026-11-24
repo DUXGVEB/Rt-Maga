@@ -227,8 +227,8 @@
                   </button>
                   {#if item.hasNew}
                     <span
-                      class="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-white"
-                      style="background-color: var(--accent);"
+                      class="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                      style="background-color: var(--accent); color: var(--accent-fg);"
                     >
                       <Sparkles size={10} />
                       {item.latestChapterName ?? t.badgeNew}

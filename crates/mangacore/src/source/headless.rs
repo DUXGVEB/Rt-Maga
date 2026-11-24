@@ -23,8 +23,21 @@ const RENDER_SETTLE_DELAY: Duration = Duration::from_millis(900);
 /// Maximum wait time for a user to finish manual site verification in a visible window.
 const MANUAL_VERIFY_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Maximum wait time for a user to finish ordinary account sign-in in a visible browser window.
+const USER_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
+
 /// Shut down the idle background headless browser after 5 minutes of inactivity.
 const IDLE_SHUTDOWN_AFTER: Duration = Duration::from_secs(300);
+
+/// Controls the completion criteria of an interactive visible browser session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InteractiveSessionMode {
+    /// Wait for anti-bot / human verification challenge markers to clear.
+    ManualVerification,
+    /// Wait for ordinary user account sign-in (redirect off login/password form + session cookies).
+    UserAuthentication,
+}
 
 /// Shared lazy-initialized headless browser controller.
 #[derive(Debug, Clone)]
@@ -40,6 +53,7 @@ struct BrowserSlot {
 
 struct HeadlessInner {
     slot: Mutex<BrowserSlot>,
+    interactive_guard: Mutex<()>,
     tab_permits: Arc<Semaphore>,
     reaper_running: AtomicBool,
 }
@@ -66,14 +80,15 @@ impl HeadlessBrowser {
                     active_proxy_arg: None,
                     last_used: tokio::time::Instant::now(),
                 }),
+                interactive_guard: Mutex::new(()),
                 tab_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_TABS)),
                 reaper_running: AtomicBool::new(false),
             }),
         }
     }
 
-    /// Renders `url` in a headless browser tab, scrolls down to trigger lazy-loaded images,
-    /// copies cookies into `http`, and returns the rendered HTML.
+    /// Renders `url` in a headless browser tab, waits for SPA/dynamic content, scrolls down
+    /// to trigger lazy-loaded images, copies cookies into `http`, and returns the rendered HTML.
     ///
     /// # Errors
     ///
@@ -109,16 +124,39 @@ impl HeadlessBrowser {
         url: &Url,
         http: &HttpClient,
     ) -> Result<(), ScrapeError> {
+        self.open_interactive_session(url, InteractiveSessionMode::ManualVerification, http)
+            .await
+    }
+
+    /// Opens a visible browser window for manual verification or ordinary user account login and
+    /// synchronizes authorized domain cookies into `http`.
+    ///
+    /// Never inspects or logs passwords or raw cookie values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError::DisallowedHost`], [`ScrapeError::Proxy`], or [`ScrapeError::Headless`].
+    pub async fn open_interactive_session(
+        &self,
+        url: &Url,
+        mode: InteractiveSessionMode,
+        http: &HttpClient,
+    ) -> Result<(), ScrapeError> {
         validate_public_http_url(url)?;
         let proxy_args = http.chromium_proxy_args_for_url(url)?;
         let exe = find_browser_executable().ok_or_else(|| {
             ScrapeError::Headless("no compatible local browser executable found".to_owned())
         })?;
+        let _auth_lock = self.inner.interactive_guard.lock().await;
 
         let mut builder = BrowserConfig::builder()
             .chrome_executable(exe)
             .with_head()
             .arg(format!("--user-agent={DEFAULT_USER_AGENT}"));
+        if mode == InteractiveSessionMode::UserAuthentication {
+            let profile_dir = std::env::temp_dir().join("rtmaga-browser-auth");
+            builder = builder.user_data_dir(profile_dir);
+        }
         if let Some((proxy_arg, resolver_arg)) = proxy_args {
             builder = builder.arg(proxy_arg);
             if let Some(res_arg) = resolver_arg {
@@ -144,32 +182,24 @@ impl HeadlessBrowser {
         let page = browser
             .new_page(url.as_str())
             .await
-            .map_err(|e| ScrapeError::Headless(format!("failed to open verification tab: {e}")))?;
+            .map_err(|e| ScrapeError::Headless(format!("failed to open interactive tab: {e}")))?;
 
-        let deadline = tokio::time::Instant::now() + MANUAL_VERIFY_TIMEOUT;
-        let mut verified = false;
-
-        while tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            if let Ok(html) = page.content().await
-                && !looks_like_rendered_challenge(&html)
-            {
-                copy_page_cookies(&page, url, http).await;
-                verified = true;
-                break;
-            }
-        }
-
+        let completed = poll_interactive_session(&page, url, mode, http).await;
         let _ = browser.close().await;
         handler_task.abort();
 
-        if verified {
-            info!(%url, "manual verification completed and cookies synced");
+        if completed {
+            info!(%url, ?mode, "interactive browser session completed and cookies synced");
             Ok(())
         } else {
-            Err(ScrapeError::Headless(
-                "manual verification timed out before challenge cleared".to_owned(),
-            ))
+            Err(ScrapeError::Headless(match mode {
+                InteractiveSessionMode::ManualVerification => {
+                    "manual verification timed out before challenge cleared".to_owned()
+                }
+                InteractiveSessionMode::UserAuthentication => {
+                    "browser login window timed out before sign-in completed".to_owned()
+                }
+            }))
         }
     }
 
@@ -293,22 +323,133 @@ impl HeadlessBrowser {
     }
 }
 
+async fn poll_interactive_session(
+    page: &chromiumoxide::Page,
+    initial_url: &Url,
+    mode: InteractiveSessionMode,
+    http: &HttpClient,
+) -> bool {
+    match mode {
+        InteractiveSessionMode::ManualVerification => {
+            let deadline = tokio::time::Instant::now() + MANUAL_VERIFY_TIMEOUT;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let Ok(html) = page.content().await else {
+                    continue;
+                };
+                if !looks_like_rendered_challenge(&html) {
+                    let sync_url = page
+                        .url()
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|s| Url::parse(&s).ok())
+                        .filter(|u| validate_public_http_url(u).is_ok())
+                        .unwrap_or_else(|| initial_url.clone());
+                    copy_page_cookies(page, &sync_url, http).await;
+                    return true;
+                }
+            }
+            false
+        }
+        InteractiveSessionMode::UserAuthentication => {
+            poll_user_login(page, initial_url, http).await
+        }
+    }
+}
+
+async fn poll_user_login(page: &chromiumoxide::Page, initial_url: &Url, http: &HttpClient) -> bool {
+    let deadline = tokio::time::Instant::now() + USER_LOGIN_TIMEOUT;
+    let mut baseline_cookies: Option<usize> = None;
+    let mut saw_login_stage = is_login_like_url(initial_url);
+    let mut last_observed: Vec<(String, String, String, String)> = Vec::new();
+    let mut sync_url = initial_url.clone();
+
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let Ok(cookies) = page.get_cookies().await else {
+            if let Some(base) = baseline_cookies
+                && last_observed.len() > base
+            {
+                apply_captured_cookies(&last_observed, &sync_url, http);
+                return true;
+            }
+            break;
+        };
+        let base = *baseline_cookies.get_or_insert(cookies.len());
+        last_observed = cookies
+            .iter()
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    c.value.clone(),
+                    c.domain.clone(),
+                    c.path.clone(),
+                )
+            })
+            .collect();
+        if let Some(u) = page
+            .url()
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| Url::parse(&s).ok())
+            .filter(|u| validate_public_http_url(u).is_ok())
+        {
+            sync_url = u;
+        }
+        if is_login_like_url(&sync_url) {
+            saw_login_stage = true;
+        }
+        let Ok(html) = page.content().await else {
+            if last_observed.len() > base {
+                apply_captured_cookies(&last_observed, &sync_url, http);
+                return true;
+            }
+            break;
+        };
+        let lower = html.to_ascii_lowercase();
+        let has_pw = lower.contains("type=\"password\"") || lower.contains("type='password'");
+        if has_pw {
+            saw_login_stage = true;
+        }
+        let off_login =
+            !has_pw && !is_login_like_url(&sync_url) && !looks_like_rendered_challenge(&html);
+        if off_login && (saw_login_stage || last_observed.len() > base) {
+            tokio::time::sleep(Duration::from_millis(1_200)).await;
+            copy_page_cookies(page, &sync_url, http).await;
+            return true;
+        }
+    }
+    false
+}
+
+fn is_login_like_url(url: &Url) -> bool {
+    let lower = url.path().to_ascii_lowercase();
+    lower.contains("/login")
+        || lower.contains("/signin")
+        || lower.contains("/sign-in")
+        || lower.contains("/dang-nhap")
+        || lower.contains("/auth")
+}
+
 async fn render_and_extract(
     page: &chromiumoxide::Page,
     requested_url: &Url,
     http: &HttpClient,
 ) -> Result<FetchedPage, ScrapeError> {
     let _ = page.wait_for_navigation().await;
-    tokio::time::sleep(RENDER_SETTLE_DELAY).await;
+    wait_for_dynamic_dom(page).await;
 
-    // Incrementally scroll down to trigger IntersectionObserver / lazy-loaded images.
+    // Incrementally scroll down to trigger IntersectionObserver / lazy-loaded / infinite-scroll images.
     let scroll_script = r"
         (async () => {
             const step = Math.max(window.innerHeight || 800, 600);
-            const limit = Math.min(document.body ? document.body.scrollHeight : 0, 40000);
+            const limit = Math.min(document.body ? document.body.scrollHeight : 0, 50000);
             for (let y = 0; y <= limit; y += step) {
                 window.scrollTo(0, y);
-                await new Promise(r => setTimeout(r, 80));
+                window.dispatchEvent(new Event('scroll'));
+                await new Promise(r => setTimeout(r, 90));
             }
             window.scrollTo(0, 0);
         })()
@@ -331,6 +472,7 @@ async fn render_and_extract(
         .content()
         .await
         .map_err(|e| ScrapeError::Headless(format!("failed to read rendered HTML: {e}")))?;
+    let response_bytes = html.len();
 
     copy_page_cookies(page, &final_url, http).await;
 
@@ -342,15 +484,58 @@ async fn render_and_extract(
         });
     }
 
-    Ok(FetchedPage { final_url, html })
+    Ok(FetchedPage {
+        final_url,
+        html,
+        status: 200,
+        content_type: Some("text/html".to_owned()),
+        response_bytes,
+    })
+}
+
+async fn wait_for_dynamic_dom(page: &chromiumoxide::Page) {
+    let ready_expr = r"
+        (() => {
+            if (document.readyState !== 'complete') return false;
+            if (document.getElementById('__NEXT_DATA__')) return true;
+            if (document.querySelectorAll('img').length >= 3) return true;
+            return false;
+        })()
+    ";
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Ok(eval) = page.evaluate(ready_expr).await
+            && eval.into_value::<bool>().ok() == Some(true)
+        {
+            break;
+        }
+    }
 }
 
 async fn copy_page_cookies(page: &chromiumoxide::Page, url: &Url, http: &HttpClient) {
     if let Ok(cookies) = page.get_cookies().await {
-        for cookie in cookies {
-            let header = format!("{}={}; Path={}", cookie.name, cookie.value, cookie.path);
-            http.add_cookie(&header, url);
-        }
+        let captured: Vec<(String, String, String, String)> = cookies
+            .into_iter()
+            .map(|c| (c.name, c.value, c.domain, c.path))
+            .collect();
+        apply_captured_cookies(&captured, url, http);
+    }
+}
+
+fn apply_captured_cookies(
+    cookies: &[(String, String, String, String)],
+    url: &Url,
+    http: &HttpClient,
+) {
+    for (name, value, domain, path) in cookies {
+        let clean_path = if path.is_empty() { "/" } else { path.as_str() };
+        let header = if domain.trim().is_empty() {
+            format!("{name}={value}; Path={clean_path}")
+        } else {
+            let clean_domain = domain.trim().trim_start_matches('.');
+            format!("{name}={value}; Domain={clean_domain}; Path={clean_path}")
+        };
+        http.add_cookie(&header, url);
     }
 }
 

@@ -20,8 +20,10 @@ use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 use url::Url;
 
+use crate::diagnostics::SourceErrorCode;
 use crate::doh::{DohConfig, DohResolver};
-use crate::error::ScrapeError;
+use crate::error::{ClassifiedFailureDetail, ScrapeError};
+use crate::resolver::{ImageValidationError, inspect_image_bytes};
 use crate::throttle::BandwidthLimiter;
 
 /// Realistic desktop browser User-Agent used for page and image requests.
@@ -35,7 +37,10 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Maximum number of retry attempts on transient 5xx, 429, or transport errors.
-const MAX_RETRIES: u8 = 2;
+const MAX_RETRIES: u8 = 3;
+
+/// Maximum `Retry-After` or adaptive rate-limit wait honored for a single request.
+const MAX_RETRY_AFTER_SECS: u64 = 15;
 
 /// Default maximum concurrent requests allowed per remote host.
 const DEFAULT_MAX_CONN_PER_HOST: usize = 4;
@@ -405,13 +410,19 @@ impl Default for HttpPolicy {
     }
 }
 
-/// An HTML response downloaded by [`HttpClient`].
+/// An HTML or JSON response downloaded by [`HttpClient`].
 #[derive(Debug, Clone)]
 pub struct FetchedPage {
     /// Final URL after following redirects.
     pub final_url: Url,
     /// Decoded response body text.
     pub html: String,
+    /// HTTP status code received from the upstream server.
+    pub status: u16,
+    /// Normalized media type parsed from `Content-Type` (e.g. `"text/html"`, `"application/json"`).
+    pub content_type: Option<String>,
+    /// Measured payload byte size read from the upstream body.
+    pub response_bytes: usize,
 }
 
 /// Raw binary response downloaded for an image resource.
@@ -433,9 +444,11 @@ pub struct HttpClient {
 struct HttpClientInner {
     direct_client: RwLock<Result<Client, String>>,
     jar: Arc<Jar>,
+    session_domains: DashMap<String, usize>,
     user_agent: String,
     timeout: Duration,
     host_semaphores: DashMap<String, Arc<Semaphore>>,
+    host_cooldowns: DashMap<String, Instant>,
     max_conn_per_host: AtomicUsize,
     proxy_config: RwLock<ProxyConfig>,
     doh_config: RwLock<DohConfig>,
@@ -483,9 +496,11 @@ impl HttpClient {
             inner: Arc::new(HttpClientInner {
                 direct_client: RwLock::new(direct_client),
                 jar,
+                session_domains: DashMap::new(),
                 user_agent: policy.user_agent,
                 timeout: policy.timeout,
                 host_semaphores: DashMap::new(),
+                host_cooldowns: DashMap::new(),
                 max_conn_per_host: AtomicUsize::new(policy.max_conn_per_host.max(1)),
                 proxy_config: RwLock::new(policy.proxy.sanitized()),
                 doh_config: RwLock::new(clean_doh),
@@ -636,9 +651,29 @@ impl HttpClient {
         ))
     }
 
-    /// Injects a `Set-Cookie` style header value for `url` into the shared cookie jar.
+    /// Injects a `Set-Cookie` style header value for `url` into the shared cookie jar and marks
+    /// that an interactive or user-authorized session cookie exists for that domain (without logging
+    /// any cookie value).
     pub fn add_cookie(&self, cookie_header: &str, url: &Url) {
         self.inner.jar.add_cookie_str(cookie_header, url);
+        if let Some(host) = url.host_str() {
+            let key = host.trim_start_matches("www.").to_ascii_lowercase();
+            *self.inner.session_domains.entry(key).or_insert(0) += 1;
+        }
+    }
+
+    /// Returns `true` when session cookies have been recorded for `url`'s host or parent domain.
+    #[must_use]
+    pub fn has_session_cookies_for(&self, url: &Url) -> bool {
+        has_recorded_session(&self.inner.session_domains, url)
+    }
+
+    /// Clears the tracked session-cookie marker for `url`'s domain.
+    pub fn clear_session_marker(&self, url: &Url) {
+        if let Some(host) = url.host_str() {
+            let key = host.trim_start_matches("www.").to_ascii_lowercase();
+            self.inner.session_domains.remove(&key);
+        }
     }
 
     /// Tests connectivity and round-trip latency through `endpoint` using a minimal cookie-free
@@ -723,9 +758,7 @@ impl HttpClient {
     pub async fn fetch_html(&self, url: &Url) -> Result<FetchedPage, ScrapeError> {
         validate_public_http_url(url)?;
         let _permit = self.acquire_host_permit(url).await;
-
-        let limiter = &self.inner.limiter;
-        let timeout_secs = self.inner.timeout.as_secs();
+        let ctx = self.fetch_ctx();
 
         if let Some((endpoint, allow_fallback)) = self.proxy_config().resolve_for_url(url) {
             let proxy_client = match self.client_for_proxy(&endpoint) {
@@ -733,26 +766,24 @@ impl HttpClient {
                 Err(err) if allow_fallback => {
                     warn!(%err, "proxy unavailable; falling back to direct mode (user-enabled)");
                     let direct = self.direct_client()?;
-                    return fetch_html_with_client(&direct, url, None, limiter, timeout_secs).await;
+                    return fetch_html_with_client(&direct, url, None, ctx).await;
                 }
                 Err(err) => return Err(err),
             };
 
-            match fetch_html_with_client(&proxy_client, url, Some(&endpoint), limiter, timeout_secs)
-                .await
-            {
+            match fetch_html_with_client(&proxy_client, url, Some(&endpoint), ctx).await {
                 Ok(page) => return Ok(page),
                 Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
                     warn!(%err, "proxy request failed; falling back to direct mode (user-enabled)");
                     let direct = self.direct_client()?;
-                    return fetch_html_with_client(&direct, url, None, limiter, timeout_secs).await;
+                    return fetch_html_with_client(&direct, url, None, ctx).await;
                 }
                 Err(err) => return Err(err),
             }
         }
 
         let direct = self.direct_client()?;
-        fetch_html_with_client(&direct, url, None, limiter, timeout_secs).await
+        fetch_html_with_client(&direct, url, None, ctx).await
     }
 
     /// Fetches a JSON API endpoint while enforcing SSRF checks, per-host concurrency limits,
@@ -771,9 +802,7 @@ impl HttpClient {
     ) -> Result<FetchedPage, ScrapeError> {
         validate_public_http_url(url)?;
         let _permit = self.acquire_host_permit(url).await;
-
-        let limiter = &self.inner.limiter;
-        let timeout_secs = self.inner.timeout.as_secs();
+        let ctx = self.fetch_ctx();
 
         if let Some((endpoint, allow_fallback)) = self.proxy_config().resolve_for_url(url) {
             let proxy_client = match self.client_for_proxy(&endpoint) {
@@ -787,8 +816,7 @@ impl HttpClient {
                         service,
                         user_agent_override,
                         None,
-                        limiter,
-                        timeout_secs,
+                        ctx,
                     )
                     .await;
                 }
@@ -801,8 +829,7 @@ impl HttpClient {
                 service,
                 user_agent_override,
                 Some(&endpoint),
-                limiter,
-                timeout_secs,
+                ctx,
             )
             .await
             {
@@ -816,8 +843,7 @@ impl HttpClient {
                         service,
                         user_agent_override,
                         None,
-                        limiter,
-                        timeout_secs,
+                        ctx,
                     )
                     .await;
                 }
@@ -826,24 +852,16 @@ impl HttpClient {
         }
 
         let direct = self.direct_client()?;
-        fetch_json_with_client(
-            &direct,
-            url,
-            service,
-            user_agent_override,
-            None,
-            limiter,
-            timeout_secs,
-        )
-        .await
+        fetch_json_with_client(&direct, url, service, user_agent_override, None, ctx).await
     }
 
     /// Downloads raw image bytes with an explicit `Referer` header and active proxy routing.
     ///
     /// # Errors
     ///
-    /// Returns [`ScrapeError::DisallowedHost`], [`ScrapeError::Proxy`], [`ScrapeError::HttpStatus`],
-    /// [`ScrapeError::InvalidImageFormat`], [`ScrapeError::Timeout`], or [`ScrapeError::Network`].
+    /// Returns [`ScrapeError::DisallowedHost`], [`ScrapeError::Proxy`], [`ScrapeError::RateLimited`],
+    /// [`ScrapeError::HttpStatus`], [`ScrapeError::InvalidImageFormat`], [`ScrapeError::Timeout`],
+    /// or [`ScrapeError::Network`].
     pub async fn fetch_image(
         &self,
         url: &Url,
@@ -851,8 +869,7 @@ impl HttpClient {
     ) -> Result<FetchedBytes, ScrapeError> {
         validate_public_http_url(url)?;
         let _permit = self.acquire_host_permit(url).await;
-        let limiter = &self.inner.limiter;
-        let timeout_secs = self.inner.timeout.as_secs();
+        let ctx = self.fetch_ctx();
 
         // Match explicit per-source rule on image URL first, then explicit rule on referer domain
         // (so CDN images inherit their manga source's ForceProxy / CustomProxy / ForceDirect rule),
@@ -865,49 +882,33 @@ impl HttpClient {
                 Err(err) if allow_fallback => {
                     warn!(%err, "proxy unavailable for image; falling back to direct mode");
                     let direct = self.direct_client()?;
-                    return fetch_image_with_client(
-                        &direct,
-                        url,
-                        referer,
-                        None,
-                        limiter,
-                        timeout_secs,
-                    )
-                    .await;
+                    return fetch_image_with_client(&direct, url, referer, None, ctx).await;
                 }
                 Err(err) => return Err(err),
             };
 
-            match fetch_image_with_client(
-                &proxy_client,
-                url,
-                referer,
-                Some(&endpoint),
-                limiter,
-                timeout_secs,
-            )
-            .await
-            {
+            match fetch_image_with_client(&proxy_client, url, referer, Some(&endpoint), ctx).await {
                 Ok(bytes) => return Ok(bytes),
                 Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
                     warn!(%err, "proxied image fetch failed; falling back to direct mode");
                     let direct = self.direct_client()?;
-                    return fetch_image_with_client(
-                        &direct,
-                        url,
-                        referer,
-                        None,
-                        limiter,
-                        timeout_secs,
-                    )
-                    .await;
+                    return fetch_image_with_client(&direct, url, referer, None, ctx).await;
                 }
                 Err(err) => return Err(err),
             }
         }
 
         let direct = self.direct_client()?;
-        fetch_image_with_client(&direct, url, referer, None, limiter, timeout_secs).await
+        fetch_image_with_client(&direct, url, referer, None, ctx).await
+    }
+
+    fn fetch_ctx(&self) -> FetchCtx<'_> {
+        FetchCtx {
+            limiter: &self.inner.limiter,
+            cooldowns: &self.inner.host_cooldowns,
+            session_domains: &self.inner.session_domains,
+            timeout_secs: self.inner.timeout.as_secs(),
+        }
     }
 
     fn client_for_proxy(&self, endpoint: &ProxyEndpoint) -> Result<Client, ScrapeError> {
@@ -930,6 +931,7 @@ impl HttpClient {
     }
 
     async fn acquire_host_permit(&self, url: &Url) -> tokio::sync::OwnedSemaphorePermit {
+        wait_for_host_cooldown(&self.inner.host_cooldowns, url).await;
         let host = url.host_str().unwrap_or("default").to_ascii_lowercase();
         let limit = self.inner.max_conn_per_host.load(Ordering::Acquire).max(1);
         let sem = Arc::clone(
@@ -939,9 +941,107 @@ impl HttpClient {
                 .or_insert_with(|| Arc::new(Semaphore::new(limit)))
                 .value(),
         );
-        sem.acquire_owned()
+        let permit = sem
+            .acquire_owned()
             .await
-            .expect("host semaphore is never closed")
+            .expect("host semaphore is never closed");
+        wait_for_host_cooldown(&self.inner.host_cooldowns, url).await;
+        permit
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FetchCtx<'a> {
+    limiter: &'a BandwidthLimiter,
+    cooldowns: &'a DashMap<String, Instant>,
+    session_domains: &'a DashMap<String, usize>,
+    timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionCookieState {
+    Present,
+    Absent,
+}
+
+fn has_recorded_session(session_domains: &DashMap<String, usize>, url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let lower = host.trim_start_matches("www.").to_ascii_lowercase();
+    if session_domains.contains_key(&lower) {
+        return true;
+    }
+    session_domains
+        .iter()
+        .any(|entry| domain_matches(&lower, entry.key()))
+}
+
+fn session_state_for(session_domains: &DashMap<String, usize>, url: &Url) -> SessionCookieState {
+    if has_recorded_session(session_domains, url) {
+        SessionCookieState::Present
+    } else {
+        SessionCookieState::Absent
+    }
+}
+
+fn extract_media_type(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|raw| {
+            raw.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .filter(|s| !s.is_empty())
+}
+
+fn parse_retry_after_secs(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+fn compute_rate_limit_delay(retry_after: Option<u64>, attempt: u8) -> Duration {
+    if let Some(secs) = retry_after {
+        return Duration::from_secs(secs.clamp(1, MAX_RETRY_AFTER_SECS));
+    }
+    let exp_ms = 1_200_u64.saturating_mul(1_u64 << attempt.min(3));
+    Duration::from_millis(exp_ms.min(MAX_RETRY_AFTER_SECS * 1_000))
+}
+
+fn record_host_cooldown(cooldowns: &DashMap<String, Instant>, url: &Url, delay: Duration) {
+    let Some(host) = url.host_str() else {
+        return;
+    };
+    let host_key = host.to_ascii_lowercase();
+    let target = Instant::now() + delay.min(Duration::from_secs(MAX_RETRY_AFTER_SECS));
+    cooldowns
+        .entry(host_key)
+        .and_modify(|existing| {
+            if target > *existing {
+                *existing = target;
+            }
+        })
+        .or_insert(target);
+}
+
+async fn wait_for_host_cooldown(cooldowns: &DashMap<String, Instant>, url: &Url) {
+    let Some(host) = url.host_str() else {
+        return;
+    };
+    let host_key = host.to_ascii_lowercase();
+    let maybe_deadline = cooldowns.get(&host_key).map(|entry| *entry.value());
+    if let Some(deadline) = maybe_deadline {
+        let now = Instant::now();
+        if deadline > now {
+            let wait = (deadline - now).min(Duration::from_secs(MAX_RETRY_AFTER_SECS));
+            tokio::time::sleep(wait).await;
+        }
     }
 }
 
@@ -1025,14 +1125,12 @@ async fn fetch_html_with_client(
     client: &Client,
     url: &Url,
     proxy_ep: Option<&ProxyEndpoint>,
-    limiter: &BandwidthLimiter,
-    timeout_secs: u64,
+    ctx: FetchCtx<'_>,
 ) -> Result<FetchedPage, ScrapeError> {
     let mut last_err: Option<ScrapeError> = None;
+    let mut next_delay: Option<Duration> = None;
     for attempt in 0..=MAX_RETRIES {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_millis(400 * u64::from(attempt))).await;
-        }
+        sleep_before_attempt(attempt, &mut next_delay, url, ctx).await;
 
         let resp = client
             .get(url.as_str())
@@ -1051,14 +1149,12 @@ async fn fetch_html_with_client(
                         "proxy authentication failed (HTTP 407)".to_owned(),
                     ));
                 }
-                let retry_after = response
-                    .headers()
-                    .get(RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.trim().parse::<u64>().ok());
+                let retry_after = parse_retry_after_secs(response.headers());
+                let content_type = extract_media_type(response.headers());
                 let final_url = response.url().clone();
                 let raw_bytes =
-                    read_bounded_bytes(response, MAX_HTML_BYTES, &final_url, limiter).await?;
+                    read_bounded_bytes(response, MAX_HTML_BYTES, &final_url, ctx.limiter).await?;
+                let response_bytes = raw_bytes.len();
                 let body = String::from_utf8_lossy(&raw_bytes).into_owned();
 
                 if looks_like_challenge(status, &body) {
@@ -1070,18 +1166,28 @@ async fn fetch_html_with_client(
                 }
 
                 if status.is_success() {
-                    debug!(%final_url, len = body.len(), proxied = proxy_ep.is_some(), "fetched html page");
+                    debug!(%final_url, len = response_bytes, proxied = proxy_ep.is_some(), "fetched html page");
                     return Ok(FetchedPage {
                         final_url,
                         html: body,
+                        status: status.as_u16(),
+                        content_type,
+                        response_bytes,
                     });
                 }
 
-                let err = map_http_status_err(status, &final_url, retry_after, &body);
-                if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
-                    && attempt < MAX_RETRIES
-                {
-                    warn!(%err, attempt, "transient http status, retrying");
+                let sess = session_state_for(ctx.session_domains, &final_url);
+                let err = map_http_status_err(status, &final_url, retry_after, &body, sess);
+                if should_retry_http_status(
+                    status,
+                    retry_after,
+                    attempt,
+                    url,
+                    &final_url,
+                    &ctx,
+                    &mut next_delay,
+                    &err,
+                ) {
                     last_err = Some(err);
                     continue;
                 }
@@ -1089,7 +1195,7 @@ async fn fetch_html_with_client(
             }
             Err(err) => {
                 let retryable = err.is_timeout() || err.is_connect();
-                let mapped = map_transport_err(err, proxy_ep, url, timeout_secs);
+                let mapped = map_transport_err(err, proxy_ep, url, ctx.timeout_secs);
                 if retryable && attempt < MAX_RETRIES {
                     warn!(%mapped, attempt, "transient transport error, retrying");
                     last_err = Some(mapped);
@@ -1106,20 +1212,64 @@ async fn fetch_html_with_client(
     }))
 }
 
+async fn sleep_before_attempt(
+    attempt: u8,
+    next_delay: &mut Option<Duration>,
+    url: &Url,
+    ctx: FetchCtx<'_>,
+) {
+    if let Some(delay) = next_delay.take() {
+        tokio::time::sleep(delay).await;
+    } else if attempt > 0 {
+        tokio::time::sleep(Duration::from_millis(400 * u64::from(attempt))).await;
+    }
+    if attempt > 0 {
+        wait_for_host_cooldown(ctx.cooldowns, url).await;
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal retry/cooldown helper avoids duplicating HTTP 429/5xx logic"
+)]
+fn should_retry_http_status(
+    status: StatusCode,
+    retry_after: Option<u64>,
+    attempt: u8,
+    req_url: &Url,
+    final_url: &Url,
+    ctx: &FetchCtx<'_>,
+    next_delay: &mut Option<Duration>,
+    err: &ScrapeError,
+) -> bool {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        let delay = compute_rate_limit_delay(retry_after, attempt);
+        record_host_cooldown(ctx.cooldowns, req_url, delay);
+        record_host_cooldown(ctx.cooldowns, final_url, delay);
+        if attempt < MAX_RETRIES {
+            warn!(%err, attempt, delay_ms = delay.as_millis(), "rate limited (HTTP 429), backing off");
+            *next_delay = Some(delay);
+            return true;
+        }
+    } else if status.is_server_error() && attempt < MAX_RETRIES {
+        warn!(%err, attempt, "transient http status, retrying");
+        return true;
+    }
+    false
+}
+
 async fn fetch_json_with_client(
     client: &Client,
     url: &Url,
     service: &'static str,
     user_agent_override: Option<&str>,
     proxy_ep: Option<&ProxyEndpoint>,
-    limiter: &BandwidthLimiter,
-    timeout_secs: u64,
+    ctx: FetchCtx<'_>,
 ) -> Result<FetchedPage, ScrapeError> {
     let mut last_err: Option<ScrapeError> = None;
+    let mut next_delay: Option<Duration> = None;
     for attempt in 0..=MAX_RETRIES {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_millis(500 * u64::from(attempt))).await;
-        }
+        sleep_before_attempt(attempt, &mut next_delay, url, ctx).await;
 
         let mut req = client.get(url.as_str()).header(ACCEPT, "application/json");
         if let Some(ua) = user_agent_override
@@ -1136,50 +1286,36 @@ async fn fetch_json_with_client(
                         "proxy authentication failed (HTTP 407)".to_owned(),
                     ));
                 }
-                let retry_after = response
-                    .headers()
-                    .get(RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.trim().parse::<u64>().ok());
+                let retry_after = parse_retry_after_secs(response.headers());
+                let content_type = extract_media_type(response.headers());
                 let final_url = response.url().clone();
                 let raw_bytes =
-                    read_bounded_bytes(response, MAX_HTML_BYTES, &final_url, limiter).await?;
+                    read_bounded_bytes(response, MAX_HTML_BYTES, &final_url, ctx.limiter).await?;
+                let response_bytes = raw_bytes.len();
                 let body = String::from_utf8_lossy(&raw_bytes).into_owned();
 
                 if status.is_success() {
-                    debug!(%final_url, len = body.len(), service, "fetched json api response");
+                    debug!(%final_url, len = response_bytes, service, "fetched json api response");
                     return Ok(FetchedPage {
                         final_url,
                         html: body,
+                        status: status.as_u16(),
+                        content_type,
+                        response_bytes,
                     });
                 }
 
-                let err = if status == StatusCode::TOO_MANY_REQUESTS {
-                    ScrapeError::RateLimited {
-                        url: final_url.as_str().to_owned(),
-                        retry_after_secs: retry_after,
-                    }
-                } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                    let host = final_url.host_str().unwrap_or("unknown").to_owned();
-                    ScrapeError::AccessRestricted {
-                        host,
-                        url: final_url.as_str().to_owned(),
-                        status: status.as_u16(),
-                        detail: extract_api_error_snippet(&body),
-                    }
-                } else {
-                    ScrapeError::ApiFailure {
-                        service: service.to_owned(),
-                        url: final_url.as_str().to_owned(),
-                        status: Some(status.as_u16()),
-                        detail: extract_api_error_snippet(&body),
-                    }
-                };
-
-                if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
-                    && attempt < MAX_RETRIES
-                {
-                    warn!(%err, attempt, service, "transient api error, retrying");
+                let err = map_api_error_status(service, status, &final_url, retry_after, &body);
+                if should_retry_http_status(
+                    status,
+                    retry_after,
+                    attempt,
+                    url,
+                    &final_url,
+                    &ctx,
+                    &mut next_delay,
+                    &err,
+                ) {
                     last_err = Some(err);
                     continue;
                 }
@@ -1187,7 +1323,7 @@ async fn fetch_json_with_client(
             }
             Err(err) => {
                 let retryable = err.is_timeout() || err.is_connect();
-                let mapped = map_transport_err(err, proxy_ep, url, timeout_secs);
+                let mapped = map_transport_err(err, proxy_ep, url, ctx.timeout_secs);
                 if retryable && attempt < MAX_RETRIES {
                     warn!(%mapped, attempt, service, "transient api transport error, retrying");
                     last_err = Some(mapped);
@@ -1204,6 +1340,36 @@ async fn fetch_json_with_client(
         status: Some(500),
         detail: "exhausted api retries".to_owned(),
     }))
+}
+
+fn map_api_error_status(
+    service: &'static str,
+    status: StatusCode,
+    final_url: &Url,
+    retry_after: Option<u64>,
+    body: &str,
+) -> ScrapeError {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        ScrapeError::RateLimited {
+            url: final_url.as_str().to_owned(),
+            retry_after_secs: retry_after,
+        }
+    } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        let host = final_url.host_str().unwrap_or("unknown").to_owned();
+        ScrapeError::AccessRestricted {
+            host,
+            url: final_url.as_str().to_owned(),
+            status: status.as_u16(),
+            detail: extract_api_error_snippet(body),
+        }
+    } else {
+        ScrapeError::ApiFailure {
+            service: service.to_owned(),
+            url: final_url.as_str().to_owned(),
+            status: Some(status.as_u16()),
+            detail: extract_api_error_snippet(body),
+        }
+    }
 }
 
 fn extract_api_error_snippet(body: &str) -> String {
@@ -1233,26 +1399,66 @@ fn map_http_status_err(
     final_url: &Url,
     retry_after: Option<u64>,
     body: &str,
+    session_state: SessionCookieState,
 ) -> ScrapeError {
+    let host = final_url.host_str().unwrap_or("unknown").to_owned();
+    let snippet: String = body
+        .split_whitespace()
+        .take(24)
+        .collect::<Vec<_>>()
+        .join(" ");
+
     if status == StatusCode::TOO_MANY_REQUESTS {
         return ScrapeError::RateLimited {
             url: final_url.as_str().to_owned(),
             retry_after_secs: retry_after,
         };
     }
-    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        let host = final_url.host_str().unwrap_or("unknown").to_owned();
-        let snippet: String = body
-            .split_whitespace()
-            .take(24)
-            .collect::<Vec<_>>()
-            .join(" ");
+    if status == StatusCode::PAYMENT_REQUIRED {
+        return ScrapeError::classified(ClassifiedFailureDetail {
+            code: SourceErrorCode::PaywallOrSubscriptionRequired,
+            url: final_url.as_str().to_owned(),
+            host: Some(host),
+            status: Some(status.as_u16()),
+            stage: "http_response".to_owned(),
+            detail: format!("HTTP 402 payment/subscription required at {final_url}"),
+            evidence: vec![format!("http_status={}", status.as_u16())],
+        });
+    }
+    if status == StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS {
+        return ScrapeError::classified(ClassifiedFailureDetail {
+            code: SourceErrorCode::GeoRestriction,
+            url: final_url.as_str().to_owned(),
+            host: Some(host),
+            status: Some(status.as_u16()),
+            stage: "http_response".to_owned(),
+            detail: format!("HTTP 451 region/legal restriction at {final_url}"),
+            evidence: vec!["http_status=451".to_owned()],
+        });
+    }
+    if status == StatusCode::UNAUTHORIZED {
+        let code = if session_state == SessionCookieState::Present {
+            SourceErrorCode::SessionExpired
+        } else {
+            SourceErrorCode::LoginRequired
+        };
+        return ScrapeError::classified(ClassifiedFailureDetail {
+            code,
+            url: final_url.as_str().to_owned(),
+            host: Some(host),
+            status: Some(401),
+            stage: "http_response".to_owned(),
+            detail: format!("HTTP 401 authentication required at {final_url}"),
+            evidence: vec!["http_status=401".to_owned()],
+        });
+    }
+    if status == StatusCode::FORBIDDEN {
         return ScrapeError::AccessRestricted {
             host,
             url: final_url.as_str().to_owned(),
             status: status.as_u16(),
             detail: if snippet.is_empty() {
-                format!("HTTP {}", status.as_u16())
+                "HTTP 403".to_owned()
             } else {
                 snippet
             },
@@ -1264,24 +1470,37 @@ fn map_http_status_err(
     }
 }
 
+fn extract_image_content_type(headers: &HeaderMap, url: &Url) -> String {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map_or_else(
+            || guess_mime_from_url(url).to_owned(),
+            |s| {
+                s.split(';')
+                    .next()
+                    .unwrap_or("image/jpeg")
+                    .trim()
+                    .to_owned()
+            },
+        )
+}
+
 async fn fetch_image_with_client(
     client: &Client,
     url: &Url,
     referer: Option<&Url>,
     proxy_ep: Option<&ProxyEndpoint>,
-    limiter: &BandwidthLimiter,
-    timeout_secs: u64,
+    ctx: FetchCtx<'_>,
 ) -> Result<FetchedBytes, ScrapeError> {
     let mut last_err: Option<ScrapeError> = None;
+    let mut next_delay: Option<Duration> = None;
     for attempt in 0..=MAX_RETRIES {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_millis(300 * u64::from(attempt))).await;
-        }
+        sleep_before_attempt(attempt, &mut next_delay, url, ctx).await;
 
         let mut req = client
             .get(url.as_str())
             .header(ACCEPT, "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
-
         if let Some(ref_url) = referer
             && let Ok(val) = HeaderValue::from_str(ref_url.as_str())
         {
@@ -1296,46 +1515,22 @@ async fn fetch_image_with_client(
                         "proxy authentication failed (HTTP 407)".to_owned(),
                     ));
                 }
+                let retry_after = parse_retry_after_secs(response.headers());
+                let final_url = response.url().clone();
                 if status.is_success() {
-                    let content_type = response
-                        .headers()
-                        .get(CONTENT_TYPE)
-                        .and_then(|v| v.to_str().ok())
-                        .map_or_else(
-                            || guess_mime_from_url(url).to_owned(),
-                            |s| {
-                                s.split(';')
-                                    .next()
-                                    .unwrap_or("image/jpeg")
-                                    .trim()
-                                    .to_owned()
-                            },
-                        );
-                    if !is_acceptable_image_mime(&content_type) {
-                        return Err(ScrapeError::InvalidImageFormat {
-                            url: url.clone(),
-                            detail: format!("non-image MIME type '{content_type}'"),
-                        });
-                    }
-                    let bytes = read_bounded_bytes(response, MAX_IMAGE_BYTES, url, limiter).await?;
-                    if !has_valid_image_magic_bytes(&bytes) {
-                        return Err(ScrapeError::InvalidImageFormat {
-                            url: url.clone(),
-                            detail: "payload header is not a supported image format".to_owned(),
-                        });
-                    }
-                    return Ok(FetchedBytes {
-                        bytes,
-                        content_type,
-                    });
+                    return read_and_validate_image(response, url, ctx.limiter).await;
                 }
-                let err = ScrapeError::HttpStatus {
-                    status: status.as_u16(),
-                    url: url.clone(),
-                };
-                if (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error())
-                    && attempt < MAX_RETRIES
-                {
+                let err = map_image_status_err(status, url, &final_url, retry_after);
+                if should_retry_http_status(
+                    status,
+                    retry_after,
+                    attempt,
+                    url,
+                    &final_url,
+                    &ctx,
+                    &mut next_delay,
+                    &err,
+                ) {
                     last_err = Some(err);
                     continue;
                 }
@@ -1343,7 +1538,7 @@ async fn fetch_image_with_client(
             }
             Err(err) => {
                 let retryable = err.is_timeout() || err.is_connect();
-                let mapped = map_transport_err(err, proxy_ep, url, timeout_secs);
+                let mapped = map_transport_err(err, proxy_ep, url, ctx.timeout_secs);
                 if retryable && attempt < MAX_RETRIES {
                     last_err = Some(mapped);
                     continue;
@@ -1357,6 +1552,110 @@ async fn fetch_image_with_client(
         status: 500,
         url: url.clone(),
     }))
+}
+
+async fn read_and_validate_image(
+    response: reqwest::Response,
+    url: &Url,
+    limiter: &BandwidthLimiter,
+) -> Result<FetchedBytes, ScrapeError> {
+    let content_type = extract_image_content_type(response.headers(), url);
+    if !is_acceptable_image_mime(&content_type) {
+        return Err(ScrapeError::InvalidImageFormat {
+            url: url.clone(),
+            detail: format!("non-image MIME type '{content_type}'"),
+        });
+    }
+    let bytes = read_bounded_bytes(response, MAX_IMAGE_BYTES, url, limiter).await?;
+    let info = inspect_image_bytes(&bytes).map_err(|verr| match verr {
+        ImageValidationError::EmptyPayload => ScrapeError::classified(ClassifiedFailureDetail {
+            code: SourceErrorCode::ImageDecodeFailed,
+            url: url.as_str().to_owned(),
+            host: url.host_str().map(str::to_owned),
+            status: Some(200),
+            stage: "image_validation".to_owned(),
+            detail: "upstream returned empty 0-byte image payload".to_owned(),
+            evidence: vec!["byte_len=0".to_owned()],
+        }),
+        ImageValidationError::TruncatedOrCorrupted { format, detail } => {
+            ScrapeError::classified(ClassifiedFailureDetail {
+                code: SourceErrorCode::ImageDecodeFailed,
+                url: url.as_str().to_owned(),
+                host: url.host_str().map(str::to_owned),
+                status: Some(200),
+                stage: "image_validation".to_owned(),
+                detail: format!("corrupted/truncated {format} image: {detail}"),
+                evidence: vec![
+                    format!("format={format}"),
+                    format!("byte_len={}", bytes.len()),
+                ],
+            })
+        }
+        ImageValidationError::DimensionsTooSmall { width, height } => {
+            ScrapeError::classified(ClassifiedFailureDetail {
+                code: SourceErrorCode::ImageDecodeFailed,
+                url: url.as_str().to_owned(),
+                host: url.host_str().map(str::to_owned),
+                status: Some(200),
+                stage: "image_validation".to_owned(),
+                detail: format!(
+                    "image dimensions {width}x{height} below minimum comic page threshold"
+                ),
+                evidence: vec![format!("dimensions={width}x{height}")],
+            })
+        }
+        ImageValidationError::UnsupportedFormat { hint } => ScrapeError::InvalidImageFormat {
+            url: url.clone(),
+            detail: hint,
+        },
+    })?;
+    let canonical_ct =
+        if content_type == "application/octet-stream" || content_type == "binary/octet-stream" {
+            info.format.mime_type().to_owned()
+        } else {
+            content_type
+        };
+    Ok(FetchedBytes {
+        bytes,
+        content_type: canonical_ct,
+    })
+}
+
+fn map_image_status_err(
+    status: StatusCode,
+    url: &Url,
+    final_url: &Url,
+    retry_after: Option<u64>,
+) -> ScrapeError {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return ScrapeError::RateLimited {
+            url: final_url.as_str().to_owned(),
+            retry_after_secs: retry_after,
+        };
+    }
+    if status == StatusCode::FORBIDDEN || status == StatusCode::GONE {
+        return ScrapeError::classified(ClassifiedFailureDetail {
+            code: SourceErrorCode::ImageSourceChanged,
+            url: url.as_str().to_owned(),
+            host: url.host_str().map(str::to_owned),
+            status: Some(status.as_u16()),
+            stage: "image_request".to_owned(),
+            detail: format!(
+                "image CDN returned HTTP {} (expired token or hotlink block)",
+                status.as_u16()
+            ),
+            evidence: vec![format!("http_status={}", status.as_u16())],
+        });
+    }
+    ScrapeError::classified(ClassifiedFailureDetail {
+        code: SourceErrorCode::ImageRequestFailed,
+        url: url.as_str().to_owned(),
+        host: url.host_str().map(str::to_owned),
+        status: Some(status.as_u16()),
+        stage: "image_request".to_owned(),
+        detail: format!("HTTP {} fetching image {}", status.as_u16(), url),
+        evidence: vec![format!("http_status={}", status.as_u16())],
+    })
 }
 
 fn map_transport_err(
@@ -1635,46 +1934,6 @@ async fn read_bounded_bytes(
     }
 
     Ok(Bytes::from(buf))
-}
-
-/// Validates binary image magic headers so HTML error pages or corrupted responses disguised
-/// as `image/*` are rejected cleanly before caching or rendering.
-fn has_valid_image_magic_bytes(bytes: &[u8]) -> bool {
-    if bytes.len() < 4 {
-        return false;
-    }
-    // JPEG (FF D8 FF)
-    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return true;
-    }
-    // PNG (89 50 4E 47)
-    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-        return true;
-    }
-    // GIF (GIF8)
-    if bytes.starts_with(b"GIF8") {
-        return true;
-    }
-    // WebP (RIFF....WEBP)
-    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        return true;
-    }
-    // AVIF / HEIF / ISO BMFF (....ftyp)
-    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
-        return true;
-    }
-    // BMP (BM)
-    if bytes.starts_with(b"BM") {
-        return true;
-    }
-    // SVG / XML image
-    let trimmed = bytes
-        .iter()
-        .copied()
-        .skip_while(u8::is_ascii_whitespace)
-        .take(5)
-        .collect::<Vec<u8>>();
-    trimmed.eq_ignore_ascii_case(b"<svg ") || trimmed.eq_ignore_ascii_case(b"<svg>")
 }
 
 /// Detects whether an HTTP response looks like an anti-bot verification challenge page.
@@ -1982,7 +2241,7 @@ mod tests {
                         let n = sock.read(&mut buf).await.unwrap_or(0);
                         let req = String::from_utf8_lossy(&buf[..n]);
                         let resp: &[u8] = if req.contains("/img/") {
-                            b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\x89PNG"
+                            b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 33\r\nConnection: close\r\n\r\n\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x03\x20\x00\x00\x04\xb0\x08\x02\x00\x00\x00\x00\x00\x00\x00"
                         } else {
                             b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 19\r\nConnection: close\r\n\r\n<h1>Proxied OK</h1>"
                         };
@@ -2022,7 +2281,7 @@ mod tests {
 
         assert_eq!(page.unwrap().html, "<h1>Proxied OK</h1>");
         assert_eq!(img1.unwrap().content_type, "image/png");
-        assert_eq!(img2.unwrap().bytes.len(), 4);
+        assert_eq!(img2.unwrap().bytes.len(), 33);
 
         server.abort();
     }
@@ -2158,5 +2417,90 @@ mod tests {
         });
         assert!(!client.doh_config().enabled);
         assert!(client.is_direct_client_ready());
+    }
+
+    #[test]
+    fn rate_limit_delay_respects_retry_after_and_caps_maximum() {
+        assert_eq!(
+            compute_rate_limit_delay(Some(0), 0),
+            Duration::from_secs(1),
+            "zero Retry-After must clamp up to 1s"
+        );
+        assert_eq!(
+            compute_rate_limit_delay(Some(4), 0),
+            Duration::from_secs(4),
+            "moderate Retry-After must be honored verbatim"
+        );
+        assert_eq!(
+            compute_rate_limit_delay(Some(120), 0),
+            Duration::from_secs(MAX_RETRY_AFTER_SECS),
+            "excessive Retry-After must be capped"
+        );
+        assert_eq!(
+            compute_rate_limit_delay(None, 0),
+            Duration::from_millis(1_200),
+            "attempt 0 fallback backoff must be 1.2s"
+        );
+        assert_eq!(
+            compute_rate_limit_delay(None, 1),
+            Duration::from_millis(2_400),
+            "attempt 1 fallback backoff must double to 2.4s"
+        );
+    }
+
+    #[tokio::test]
+    async fn image_fetch_retries_after_http_429_and_recovers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            for idx in 0..2 {
+                if let Ok((mut sock, _)) = listener.accept().await {
+                    let mut buf = [0_u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let resp: &[u8] = if idx == 0 {
+                        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    } else {
+                        b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 33\r\nConnection: close\r\n\r\n\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x03\x20\x00\x00\x04\xb0\x08\x02\x00\x00\x00\x00\x00\x00\x00"
+                    };
+                    let _ = sock.write_all(resp).await;
+                }
+            }
+        });
+
+        let ep = ProxyEndpoint {
+            protocol: ProxyProtocol::Http,
+            host: "127.0.0.1".to_owned(),
+            port: addr.port(),
+            username: None,
+            password: None,
+        };
+        let client = HttpClient::with_policy(HttpPolicy {
+            proxy: ProxyConfig {
+                enabled: true,
+                default_proxy: ep,
+                allow_direct_fallback: false,
+                domain_rules: Vec::new(),
+            },
+            ..HttpPolicy::default()
+        })
+        .unwrap();
+
+        let started = Instant::now();
+        let img_url = Url::parse("http://rate-limit-test.example.com/page-1.png").unwrap();
+        let fetched = client
+            .fetch_image(&img_url, None)
+            .await
+            .expect("image fetch must recover after transient HTTP 429");
+        assert_eq!(
+            fetched.content_type, "image/png",
+            "recovered response must preserve image content-type"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(850),
+            "Retry-After: 1 must pause before retrying"
+        );
+
+        server.abort();
     }
 }

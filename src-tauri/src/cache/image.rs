@@ -1,4 +1,5 @@
-//! Disk-backed LRU image cache indexed in SQLite with atomic writes and single-flight dedup.
+//! Disk-backed LRU image cache indexed in SQLite with atomic writes, single-flight dedup,
+//! and strict separation between persistent cover thumbnails and transient chapter page images.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,6 +14,35 @@ use tracing::{debug, warn};
 
 use crate::error::AppError;
 use crate::repo::{Database, now_unix_secs};
+
+/// Subdirectory holding small persistent manga cover thumbnails (`is_cover = 1`).
+const COVERS_SUBDIR: &str = "covers";
+
+/// Subdirectory holding transient chapter page images (`is_cover = 0`), aggressively purged
+/// after finishing a chapter/manga or exiting the application.
+const PAGES_SUBDIR: &str = "pages";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheBucket {
+    Cover,
+    Page,
+}
+
+impl CacheBucket {
+    const fn other(self) -> Self {
+        match self {
+            Self::Cover => Self::Page,
+            Self::Page => Self::Cover,
+        }
+    }
+
+    const fn subdir(self) -> &'static str {
+        match self {
+            Self::Cover => COVERS_SUBDIR,
+            Self::Page => PAGES_SUBDIR,
+        }
+    }
+}
 
 /// Summary statistics for the local image cache.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -49,6 +79,8 @@ pub(crate) struct CacheMangaStats {
 pub(crate) struct CacheEntryMeta<'a> {
     pub site: Option<&'a str>,
     pub manga_id: Option<i64>,
+    pub is_cover: bool,
+    pub chapter_url: Option<&'a str>,
 }
 
 /// A cached image loaded from disk.
@@ -60,7 +92,8 @@ pub(crate) struct CachedImage {
     pub content_type: String,
 }
 
-/// Manages local image files under `<dir>/<xx>/<sha256>` with SQLite LRU eviction.
+/// Manages local image files under `<dir>/covers/<xx>/<sha256>` (persistent thumbnails) and
+/// `<dir>/pages/<xx>/<sha256>` (transient chapter pages) with SQLite LRU eviction.
 #[derive(Debug, Clone)]
 pub(crate) struct ImageCache {
     dir: PathBuf,
@@ -73,12 +106,17 @@ impl ImageCache {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::Internal`] if the cache directory cannot be created.
+    /// Returns [`AppError::Internal`] if the cache directories cannot be created.
     pub(crate) async fn new(dir: PathBuf, db: Database) -> Result<Self, AppError> {
-        tokio::fs::create_dir_all(&dir)
+        tokio::fs::create_dir_all(dir.join(COVERS_SUBDIR))
             .await
             .map_err(|e| AppError::Internal {
-                message: format!("failed to create image cache dir: {e}"),
+                message: format!("failed to create cover cache dir: {e}"),
+            })?;
+        tokio::fs::create_dir_all(dir.join(PAGES_SUBDIR))
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to create page cache dir: {e}"),
             })?;
         Ok(Self {
             dir,
@@ -101,18 +139,23 @@ impl ImageCache {
     }
 
     /// Reads a cached image if present on disk, refreshes its LRU timestamp, and backfills
-    /// missing `site` / `manga_id` ownership metadata.
+    /// missing ownership metadata.
     pub(crate) async fn get(&self, key: &str, meta: CacheEntryMeta<'_>) -> Option<CachedImage> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT content_type FROM image_cache WHERE key = ?")
+        let row: Option<(String, i64)> =
+            sqlx::query_as("SELECT content_type, is_cover FROM image_cache WHERE key = ?")
                 .bind(key)
                 .fetch_optional(self.db.pool())
                 .await
                 .ok()?;
 
-        let (content_type,) = row?;
-        let path = self.file_path(key);
-        let Ok(data) = tokio::fs::read(&path).await else {
+        let (content_type, stored_is_cover) = row?;
+        let bucket = if stored_is_cover != 0 || meta.is_cover {
+            CacheBucket::Cover
+        } else {
+            CacheBucket::Page
+        };
+        let data = self.read_existing_file(key, bucket).await;
+        let Some(data) = data else {
             let _ = sqlx::query("DELETE FROM image_cache WHERE key = ?")
                 .bind(key)
                 .execute(self.db.pool())
@@ -124,12 +167,16 @@ impl ImageCache {
             "UPDATE image_cache
              SET last_access = ?,
                  site = COALESCE(site, ?),
-                 manga_id = COALESCE(manga_id, ?)
+                 manga_id = COALESCE(manga_id, ?),
+                 is_cover = MAX(is_cover, ?),
+                 chapter_url = COALESCE(chapter_url, ?)
              WHERE key = ?",
         )
         .bind(now_unix_secs())
         .bind(meta.site)
         .bind(meta.manga_id)
+        .bind(i64::from(meta.is_cover))
+        .bind(meta.chapter_url)
         .bind(key)
         .execute(self.db.pool())
         .await;
@@ -140,8 +187,8 @@ impl ImageCache {
         })
     }
 
-    /// Writes an image to disk atomically, updates the LRU table with optional source/manga
-    /// ownership metadata, and evicts oldest entries if the cache exceeds `max_mb`.
+    /// Writes an image to disk atomically, updates the LRU table with ownership metadata,
+    /// and evicts oldest entries (pages first, covers last) if the cache exceeds `max_mb`.
     pub(crate) async fn put(
         &self,
         key: &str,
@@ -150,7 +197,12 @@ impl ImageCache {
         max_mb: u32,
         meta: CacheEntryMeta<'_>,
     ) {
-        let path = self.file_path(key);
+        let bucket = if meta.is_cover {
+            CacheBucket::Cover
+        } else {
+            CacheBucket::Page
+        };
+        let path = self.file_path(key, bucket);
         if let Some(parent) = path.parent()
             && let Err(err) = tokio::fs::create_dir_all(parent).await
         {
@@ -175,14 +227,16 @@ impl ImageCache {
         let now = now_unix_secs();
 
         let _ = sqlx::query(
-            "INSERT INTO image_cache (key, content_type, size, last_access, site, manga_id)
-             VALUES (?, ?, ?, ?, ?, ?)
+            "INSERT INTO image_cache (key, content_type, size, last_access, site, manga_id, is_cover, chapter_url)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(key) DO UPDATE SET
                 content_type = excluded.content_type,
                 size = excluded.size,
                 last_access = excluded.last_access,
                 site = COALESCE(excluded.site, image_cache.site),
-                manga_id = COALESCE(excluded.manga_id, image_cache.manga_id)",
+                manga_id = COALESCE(excluded.manga_id, image_cache.manga_id),
+                is_cover = MAX(image_cache.is_cover, excluded.is_cover),
+                chapter_url = COALESCE(excluded.chapter_url, image_cache.chapter_url)",
         )
         .bind(key)
         .bind(content_type)
@@ -190,6 +244,8 @@ impl ImageCache {
         .bind(now)
         .bind(meta.site)
         .bind(meta.manga_id)
+        .bind(i64::from(meta.is_cover))
+        .bind(meta.chapter_url)
         .execute(self.db.pool())
         .await;
 
@@ -197,9 +253,6 @@ impl ImageCache {
     }
 
     /// Coordinates concurrent requests for the same key so only one network fetch executes.
-    ///
-    /// Uses an atomic `DashMap::entry` paired with a latched `watch` channel so waiters never
-    /// miss a wakeup even if the fetch completes before `.await`.
     ///
     /// Returns `Some(guard)` when the caller owns the fetch, or `None` after waiting for an
     /// in-flight fetch to complete.
@@ -299,7 +352,7 @@ impl ImageCache {
     }
 
     /// Deletes cached image files belonging strictly to `site` without touching any library,
-    /// reading history, bookmarks, or user settings.
+    /// reading history, bookmarks, or per-manga/global user settings.
     ///
     /// # Errors
     ///
@@ -317,7 +370,7 @@ impl ImageCache {
         };
 
         for (key,) in &keys {
-            let _ = tokio::fs::remove_file(self.file_path(key)).await;
+            self.remove_all_locations(key).await;
         }
 
         if site == "unknown" {
@@ -331,11 +384,14 @@ impl ImageCache {
                 .await?;
         }
 
+        if !keys.is_empty() {
+            self.db.checkpoint_wal_truncate().await;
+        }
         self.info().await
     }
 
-    /// Deletes cached image files belonging strictly to `manga_id` without touching any library,
-    /// reading history, bookmarks, or user settings.
+    /// Deletes all cached image files belonging strictly to `manga_id` without touching any
+    /// library, reading history, bookmarks, or per-manga/global user settings.
     ///
     /// # Errors
     ///
@@ -347,7 +403,7 @@ impl ImageCache {
             .await?;
 
         for (key,) in &keys {
-            let _ = tokio::fs::remove_file(self.file_path(key)).await;
+            self.remove_all_locations(key).await;
         }
 
         sqlx::query("DELETE FROM image_cache WHERE manga_id = ?")
@@ -355,10 +411,139 @@ impl ImageCache {
             .execute(self.db.pool())
             .await?;
 
+        if !keys.is_empty() {
+            self.db.checkpoint_wal_truncate().await;
+        }
         self.info().await
     }
 
-    /// Deletes all cached image files on disk and clears the SQLite index.
+    /// Deletes cached chapter page images (`is_cover = 0`) for a single finished chapter
+    /// while preserving cover thumbnails and per-manga reader settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn clear_chapter_pages(
+        &self,
+        manga_id: i64,
+        chapter_url: &str,
+    ) -> Result<CacheInfo, AppError> {
+        let keys: Vec<(String,)> = sqlx::query_as(
+            "SELECT key FROM image_cache
+             WHERE manga_id = ? AND is_cover = 0
+               AND RTRIM(COALESCE(chapter_url, ''), '/') = RTRIM(?, '/')",
+        )
+        .bind(manga_id)
+        .bind(chapter_url)
+        .fetch_all(self.db.pool())
+        .await?;
+
+        for (key,) in &keys {
+            let _ = tokio::fs::remove_file(self.file_path(key, CacheBucket::Page)).await;
+            let _ = tokio::fs::remove_file(self.legacy_file_path(key)).await;
+        }
+
+        if !keys.is_empty() {
+            sqlx::query(
+                "DELETE FROM image_cache
+                 WHERE manga_id = ? AND is_cover = 0
+                   AND RTRIM(COALESCE(chapter_url, ''), '/') = RTRIM(?, '/')",
+            )
+            .bind(manga_id)
+            .bind(chapter_url)
+            .execute(self.db.pool())
+            .await?;
+            debug!(
+                manga_id,
+                removed = keys.len(),
+                "purged finished chapter page cache"
+            );
+        }
+
+        self.info().await
+    }
+
+    /// Deletes all transient chapter page images (`is_cover = 0`) for `manga_id` when exiting
+    /// the reader or completing the manga, while preserving its cover thumbnail and settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn clear_manga_pages(&self, manga_id: i64) -> Result<CacheInfo, AppError> {
+        let keys: Vec<(String,)> =
+            sqlx::query_as("SELECT key FROM image_cache WHERE manga_id = ? AND is_cover = 0")
+                .bind(manga_id)
+                .fetch_all(self.db.pool())
+                .await?;
+
+        for (key,) in &keys {
+            let _ = tokio::fs::remove_file(self.file_path(key, CacheBucket::Page)).await;
+            let _ = tokio::fs::remove_file(self.legacy_file_path(key)).await;
+        }
+
+        if !keys.is_empty() {
+            sqlx::query("DELETE FROM image_cache WHERE manga_id = ? AND is_cover = 0")
+                .bind(manga_id)
+                .execute(self.db.pool())
+                .await?;
+            self.db.checkpoint_wal_truncate().await;
+            debug!(
+                manga_id,
+                removed = keys.len(),
+                "purged manga chapter page cache while keeping cover"
+            );
+        }
+
+        self.info().await
+    }
+
+    /// Aggressively purges ALL transient chapter page images (`is_cover = 0`) across the app
+    /// while preserving small cover thumbnails (`is_cover = 1`) and all user/per-manga settings.
+    ///
+    /// Also sweeps any pre-migration flat shard directories outside `covers/` so upgrades
+    /// immediately reclaim disk space, then truncates the SQLite WAL file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] or [`AppError::Internal`] if cleanup fails.
+    pub(crate) async fn clear_all_chapter_pages(&self) -> Result<CacheInfo, AppError> {
+        sqlx::query("DELETE FROM image_cache WHERE is_cover = 0")
+            .execute(self.db.pool())
+            .await?;
+
+        let pages_dir = self.dir.join(PAGES_SUBDIR);
+        if pages_dir.exists() {
+            let _ = tokio::fs::remove_dir_all(&pages_dir).await;
+        }
+        tokio::fs::create_dir_all(&pages_dir)
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to recreate page cache dir: {e}"),
+            })?;
+
+        // Sweep legacy flat shard folders (<dir>/<hex>) left from before cover/page separation.
+        if let Ok(mut entries) = tokio::fs::read_dir(&self.dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str == COVERS_SUBDIR || name_str == PAGES_SUBDIR {
+                    continue;
+                }
+                let path = entry.path();
+                if path.is_dir() {
+                    let _ = tokio::fs::remove_dir_all(&path).await;
+                } else {
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+            }
+        }
+
+        self.db.checkpoint_wal_truncate().await;
+        self.info().await
+    }
+
+    /// Deletes all cached image files on disk (both covers and pages) and clears the SQLite
+    /// `image_cache` index without touching manga metadata or per-manga settings.
     ///
     /// # Errors
     ///
@@ -371,20 +556,50 @@ impl ImageCache {
         if self.dir.exists() {
             let _ = tokio::fs::remove_dir_all(&self.dir).await;
         }
-        tokio::fs::create_dir_all(&self.dir)
+        tokio::fs::create_dir_all(self.dir.join(COVERS_SUBDIR))
             .await
             .map_err(|e| AppError::Internal {
-                message: format!("failed to recreate image cache dir: {e}"),
+                message: format!("failed to recreate cover cache dir: {e}"),
             })?;
+        tokio::fs::create_dir_all(self.dir.join(PAGES_SUBDIR))
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to recreate page cache dir: {e}"),
+            })?;
+        self.db.checkpoint_wal_truncate().await;
         Ok(())
     }
 
-    fn file_path(&self, key: &str) -> PathBuf {
+    fn file_path(&self, key: &str, bucket: CacheBucket) -> PathBuf {
+        let prefix = key.get(0..2).unwrap_or("00");
+        self.dir.join(bucket.subdir()).join(prefix).join(key)
+    }
+
+    fn legacy_file_path(&self, key: &str) -> PathBuf {
         let prefix = key.get(0..2).unwrap_or("00");
         self.dir.join(prefix).join(key)
     }
 
-    /// Evicts oldest cached images until total disk usage is within `max_mb`.
+    async fn read_existing_file(&self, key: &str, preferred: CacheBucket) -> Option<Vec<u8>> {
+        let primary = self.file_path(key, preferred);
+        if let Ok(data) = tokio::fs::read(&primary).await {
+            return Some(data);
+        }
+        let secondary = self.file_path(key, preferred.other());
+        if let Ok(data) = tokio::fs::read(&secondary).await {
+            return Some(data);
+        }
+        tokio::fs::read(self.legacy_file_path(key)).await.ok()
+    }
+
+    async fn remove_all_locations(&self, key: &str) {
+        let _ = tokio::fs::remove_file(self.file_path(key, CacheBucket::Page)).await;
+        let _ = tokio::fs::remove_file(self.file_path(key, CacheBucket::Cover)).await;
+        let _ = tokio::fs::remove_file(self.legacy_file_path(key)).await;
+    }
+
+    /// Evicts oldest cached images until total disk usage is within `max_mb`, always evicting
+    /// transient chapter pages before small cover thumbnails.
     pub(crate) async fn evict_if_needed(&self, max_mb: u32) {
         let limit_bytes = i64::from(max_mb).saturating_mul(1024 * 1024);
         let Ok((mut total,)) =
@@ -400,12 +615,15 @@ impl ImageCache {
         }
 
         let target = (limit_bytes * 9) / 10;
+        let mut evicted_any = false;
         for _ in 0..50 {
             if total <= target {
                 break;
             }
-            let Ok(candidates) = sqlx::query_as::<_, (String, i64)>(
-                "SELECT key, size FROM image_cache ORDER BY last_access ASC LIMIT 200",
+            let Ok(candidates) = sqlx::query_as::<_, (String, i64, i64)>(
+                "SELECT key, size, is_cover FROM image_cache
+                 ORDER BY is_cover ASC, last_access ASC
+                 LIMIT 200",
             )
             .fetch_all(self.db.pool())
             .await
@@ -417,19 +635,28 @@ impl ImageCache {
                 break;
             }
 
-            for (key, size) in candidates {
+            for (key, size, is_cover) in candidates {
                 if total <= target {
                     break;
                 }
-                let path = self.file_path(&key);
-                let _ = tokio::fs::remove_file(&path).await;
+                let bucket = if is_cover != 0 {
+                    CacheBucket::Cover
+                } else {
+                    CacheBucket::Page
+                };
+                let _ = tokio::fs::remove_file(self.file_path(&key, bucket)).await;
+                let _ = tokio::fs::remove_file(self.legacy_file_path(&key)).await;
                 let _ = sqlx::query("DELETE FROM image_cache WHERE key = ?")
                     .bind(&key)
                     .execute(self.db.pool())
                     .await;
                 total = total.saturating_sub(size);
-                debug!(%key, "evicted lru cached image");
+                evicted_any = true;
+                debug!(%key, is_cover, "evicted lru cached image");
             }
+        }
+        if evicted_any {
+            self.db.checkpoint_wal_truncate().await;
         }
     }
 }
@@ -451,7 +678,76 @@ impl Drop for SingleFlightGuard {
 
 #[cfg(test)]
 mod tests {
+    use mangacore::{ChapterRef, Manga, SiteId};
+    use url::Url;
+
     use super::*;
+
+    async fn seed_manga_and_cache(
+        db: &Database,
+        cache: &ImageCache,
+        custom_json: &str,
+    ) -> (i64, String, String, String) {
+        let manga = Manga::minimal(
+            Url::parse("https://example.org/manga/alpha").unwrap(),
+            SiteId::generic("example.org"),
+            "Alpha".to_owned(),
+            Some(Url::parse("https://cdn.example.org/alpha-cover.jpg").unwrap()),
+            vec![
+                ChapterRef::simple(
+                    Url::parse("https://example.org/manga/alpha/ch-1").unwrap(),
+                    "Ch 1".to_owned(),
+                    Some(1.0),
+                ),
+                ChapterRef::simple(
+                    Url::parse("https://example.org/manga/alpha/ch-2").unwrap(),
+                    "Ch 2".to_owned(),
+                    Some(2.0),
+                ),
+            ],
+        );
+        let manga_id = db.upsert_manga(&manga).await.unwrap();
+        db.set_manga_reader_settings(manga_id, Some(custom_json))
+            .await
+            .unwrap();
+
+        let cover_key = ImageCache::key_for_url("https://cdn.example.org/alpha-cover.jpg");
+        let ch1_key = ImageCache::key_for_url("https://cdn.example.org/alpha-ch1-p1.jpg");
+        let ch2_key = ImageCache::key_for_url("https://cdn.example.org/alpha-ch2-p1.jpg");
+
+        let entries = [
+            (&cover_key, b"COVER_BYTES".as_slice(), true, None),
+            (
+                &ch1_key,
+                b"CH1_PAGE_BYTES".as_slice(),
+                false,
+                Some("https://example.org/manga/alpha/ch-1"),
+            ),
+            (
+                &ch2_key,
+                b"CH2_PAGE_BYTES".as_slice(),
+                false,
+                Some("https://example.org/manga/alpha/ch-2"),
+            ),
+        ];
+        for (key, payload, is_cover, chapter_url) in entries {
+            cache
+                .put(
+                    key,
+                    &Bytes::copy_from_slice(payload),
+                    "image/jpeg",
+                    128,
+                    CacheEntryMeta {
+                        site: Some("example.org"),
+                        manga_id: Some(manga_id),
+                        is_cover,
+                        chapter_url,
+                    },
+                )
+                .await;
+        }
+        (manga_id, cover_key, ch1_key, ch2_key)
+    }
 
     #[tokio::test]
     async fn single_flight_wakes_concurrent_waiter_without_hang() {
@@ -478,6 +774,98 @@ mod tests {
         assert!(
             outcome.is_none(),
             "second caller should wait and receive None"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn page_purges_and_full_cache_clear_preserve_covers_and_per_manga_settings() {
+        let db = Database::open_in_memory().await.unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("rtmaga_cache_purge_test_{}", rand::random::<u64>()));
+        let cache = ImageCache::new(dir.clone(), db.clone()).await.unwrap();
+        let custom_json = r#"{"orientation":"horizontal"}"#;
+        let (manga_id, cover_key, ch1_key, ch2_key) =
+            seed_manga_and_cache(&db, &cache, custom_json).await;
+        let cover_meta = CacheEntryMeta {
+            is_cover: true,
+            ..CacheEntryMeta::default()
+        };
+
+        // 1. Clearing finished chapter 1 deletes only ch1 pages, keeping ch2 and cover.
+        let after_ch1 = cache
+            .clear_chapter_pages(manga_id, "https://example.org/manga/alpha/ch-1/")
+            .await
+            .unwrap();
+        assert_eq!(after_ch1.files, 2, "only ch1 page must be purged");
+        assert!(
+            cache
+                .get(&ch1_key, CacheEntryMeta::default())
+                .await
+                .is_none(),
+            "ch1 page must be gone after chapter purge"
+        );
+        assert!(
+            cache
+                .get(&ch2_key, CacheEntryMeta::default())
+                .await
+                .is_some(),
+            "ch2 page must remain cached"
+        );
+        assert!(
+            cache.get(&cover_key, cover_meta.clone()).await.is_some(),
+            "cover thumbnail must remain cached"
+        );
+
+        // 2. Clearing manga pages deletes remaining pages while keeping cover.
+        let after_manga = cache.clear_manga_pages(manga_id).await.unwrap();
+        assert_eq!(after_manga.files, 1, "only cover thumbnail should remain");
+        assert!(
+            cache
+                .get(&ch2_key, CacheEntryMeta::default())
+                .await
+                .is_none(),
+            "ch2 page must be purged on manga exit"
+        );
+        assert!(
+            cache.get(&cover_key, cover_meta).await.is_some(),
+            "cover thumbnail must survive manga page purge"
+        );
+
+        // 3. Re-add a transient page and verify global page sweep preserves covers.
+        cache
+            .put(
+                &ch1_key,
+                &Bytes::from_static(b"TRANSIENT"),
+                "image/jpeg",
+                128,
+                CacheEntryMeta {
+                    site: Some("example.org"),
+                    manga_id: Some(manga_id),
+                    is_cover: false,
+                    chapter_url: Some("https://example.org/manga/alpha/ch-1"),
+                },
+            )
+            .await;
+        let after_sweep = cache.clear_all_chapter_pages().await.unwrap();
+        assert_eq!(
+            after_sweep.files, 1,
+            "global page sweep must keep cover thumbnails"
+        );
+
+        // 4. Full manual cache clear must NEVER wipe per-manga reader settings.
+        cache.clear().await.unwrap();
+        assert_eq!(
+            cache.info().await.unwrap().files,
+            0,
+            "full cache clear must empty image_cache"
+        );
+        let reloaded = db.get_manga_by_id(manga_id).await.unwrap().unwrap();
+        assert_eq!(
+            reloaded.reader_settings_json.as_deref(),
+            Some(custom_json),
+            "per-manga reader settings must survive all cache clears"
         );
 
         let _ = tokio::fs::remove_dir_all(&dir).await;

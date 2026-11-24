@@ -232,8 +232,8 @@
         <button
           type="button"
           onclick={retry}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium text-white"
-          style="background-color: var(--accent);"
+          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium"
+          style="background-color: var(--accent); color: var(--accent-fg);"
         >
           <RotateCcw size={13} />
           {settingsStore.t.retry}

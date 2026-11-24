@@ -23,11 +23,11 @@ use crate::services::library::{
     BookmarkItemView, FetchMode, HiddenMangaView, HistoryItemView, MangaView, NotificationItemView,
     ResolveResponse,
 };
-use crate::services::reader::ChapterView;
+use crate::services::reader::{ChapterLoadPriority, ChapterView};
 use crate::services::sync::{SyncDecision, SyncSenderMode, SyncStatusView};
 use crate::services::updater::{CheckScope, UpdateSummary};
 use crate::services::{app_release, library, reader, sync, updater};
-use crate::settings::{Settings, SettingsSection};
+use crate::settings::{ReaderSettings, Settings, SettingsSection};
 use crate::state::AppState;
 
 /// Resolves any pasted manga or chapter URL and persists the manga metadata locally.
@@ -57,6 +57,16 @@ pub(crate) async fn refresh_manga(
     library::get_manga(&state, id, FetchMode::RefreshFromWeb).await
 }
 
+/// Outcome returned after starting an interactive browser authentication flow.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BrowserAuthOutcome {
+    /// `"integrated_session"` when Chromium synced cookies directly, or `"external_browser"`.
+    pub mode: &'static str,
+    /// `true` when domain session cookies were synchronized back into `HttpClient`.
+    pub cookies_synced: bool,
+}
+
 /// Opens a visible browser window so the user can manually complete a site verification check.
 #[tauri::command]
 pub(crate) async fn open_manual_verification(
@@ -66,14 +76,53 @@ pub(crate) async fn open_manual_verification(
     library::open_manual_verification(&state, &url).await
 }
 
+/// Opens an interactive browser sign-in flow for `url`, synchronizing domain cookies back into
+/// the app on desktop when Chromium is available, or opening the system browser on mobile.
+#[tauri::command]
+pub(crate) async fn open_browser_login_session(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<BrowserAuthOutcome, AppError> {
+    let normalized = mangacore::normalize_url(&url).map_err(AppError::from)?;
+    mangacore::http::validate_public_http_url(&normalized).map_err(AppError::from)?;
+
+    match state.registry.open_user_login_session(&normalized).await {
+        Ok(()) => Ok(BrowserAuthOutcome {
+            mode: "integrated_session",
+            cookies_synced: true,
+        }),
+        Err(mangacore::ScrapeError::Headless(msg))
+            if {
+                let lower = msg.to_ascii_lowercase();
+                lower.contains("unavailable")
+                    || lower.contains("executable")
+                    || lower.contains("disabled")
+            } =>
+        {
+            app.opener()
+                .open_url(normalized.as_str(), None::<&str>)
+                .map_err(|e| AppError::Internal {
+                    message: format!("failed to open external login URL: {e}"),
+                })?;
+            Ok(BrowserAuthOutcome {
+                mode: "external_browser",
+                cookies_synced: false,
+            })
+        }
+        Err(err) => Err(AppError::from(err)),
+    }
+}
+
 /// Fetches ordered image tokens and neighbor chapter links for a chapter URL.
 #[tauri::command]
 pub(crate) async fn get_chapter(
     state: State<'_, Arc<AppState>>,
     url: String,
     manga_id: Option<i64>,
+    priority: Option<ChapterLoadPriority>,
 ) -> Result<ChapterView, AppError> {
-    reader::get_chapter(&state, &url, manga_id).await
+    reader::get_chapter(&state, &url, manga_id, priority.unwrap_or_default()).await
 }
 
 /// Saves the user's current reading position (including exact `page_index`) into `history`.
@@ -131,6 +180,38 @@ pub(crate) async fn set_manga_reader_override(
     override_mode: Option<String>,
 ) -> Result<(), AppError> {
     library::set_manga_reader_override(&state, manga_id, override_mode.as_deref()).await
+}
+
+/// Persists or clears a manga's full per-title reader settings configuration.
+#[tauri::command]
+pub(crate) async fn set_manga_reader_settings(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+    reader_settings: Option<ReaderSettings>,
+) -> Result<Option<ReaderSettings>, AppError> {
+    library::set_manga_reader_settings(&state, manga_id, reader_settings).await
+}
+
+/// Reads plain text from the native OS clipboard (Android `ClipboardManager` / Windows Win32).
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "tauri::command extracts owned AppHandle"
+)]
+pub(crate) fn read_clipboard_text(app: AppHandle) -> Result<Option<String>, AppError> {
+    crate::android_env::read_clipboard_text(&app)
+}
+
+/// Opens a validated public `http://` or `https://` manga/chapter URL in the external browser.
+#[tauri::command]
+pub(crate) async fn open_external_url(app: AppHandle, url: String) -> Result<(), AppError> {
+    let normalized = mangacore::normalize_url(&url).map_err(AppError::from)?;
+    mangacore::http::validate_public_http_url(&normalized).map_err(AppError::from)?;
+    app.opener()
+        .open_url(normalized.as_str(), None::<&str>)
+        .map_err(|e| AppError::Internal {
+            message: format!("failed to open external URL: {e}"),
+        })
 }
 
 /// Persists that passive Webtoon / Long-Strip detection matched a manga.
@@ -788,7 +869,40 @@ pub(crate) async fn cache_info(state: State<'_, Arc<AppState>>) -> Result<CacheI
     state.images.info().await
 }
 
-/// Clears both the local disk image cache and the in-memory chapter cache.
+/// Purges cached chapter page images for a single finished chapter while preserving covers and settings.
+#[tauri::command]
+pub(crate) async fn purge_chapter_page_cache(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+    chapter_url: String,
+) -> Result<CacheInfo, AppError> {
+    state
+        .images
+        .clear_chapter_pages(manga_id, &chapter_url)
+        .await
+}
+
+/// Purges all transient chapter page images for a manga (on exiting reader / finishing manga),
+/// while keeping its cover thumbnail and per-manga reader settings intact.
+#[tauri::command]
+pub(crate) async fn purge_manga_page_cache(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+) -> Result<CacheInfo, AppError> {
+    state.chapters.invalidate_all();
+    state.images.clear_manga_pages(manga_id).await
+}
+
+/// Purges all transient chapter page images across the entire app while preserving covers and settings.
+#[tauri::command]
+pub(crate) async fn purge_all_page_cache(
+    state: State<'_, Arc<AppState>>,
+) -> Result<CacheInfo, AppError> {
+    state.chapters.invalidate_all();
+    state.images.clear_all_chapter_pages().await
+}
+
+/// Clears both the local disk image cache and the in-memory chapter cache (never touches manga settings).
 #[tauri::command]
 pub(crate) async fn clear_image_cache(
     state: State<'_, Arc<AppState>>,

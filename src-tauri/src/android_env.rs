@@ -140,6 +140,11 @@ mod imp {
         sent: bool,
     }
 
+    #[derive(Debug, Deserialize)]
+    struct ClipboardTextReply {
+        text: Option<String>,
+    }
+
     pub(crate) fn init_plugin<R: Runtime>() -> TauriPlugin<R> {
         PluginBuilder::new("device_env")
             .setup(|app, api| {
@@ -246,12 +251,31 @@ mod imp {
             )
             .is_ok_and(|r| r.sent)
     }
+
+    pub(crate) fn read_clipboard_text(app: &AppHandle) -> Result<Option<String>, AppError> {
+        let state = app.state::<DeviceEnvState<tauri::Wry>>();
+        let reply: ClipboardTextReply = state
+            .0
+            .run_mobile_plugin("readClipboardText", serde_json::json!({}))
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to read Android clipboard: {e}"),
+            })?;
+        Ok(reply.text.and_then(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        }))
+    }
 }
 
 #[cfg(target_os = "android")]
 pub(crate) use imp::{
-    check_notification_permission, get_device_env, init_plugin, request_notification_permission,
-    send_android_notification, set_immersive, set_keep_screen_on, set_orientation_lock,
+    check_notification_permission, get_device_env, init_plugin, read_clipboard_text,
+    request_notification_permission, send_android_notification, set_immersive, set_keep_screen_on,
+    set_orientation_lock,
 };
 
 #[cfg(not(target_os = "android"))]
@@ -318,4 +342,111 @@ pub(crate) fn request_notification_permission(
     _app: &AppHandle,
 ) -> Result<NotificationPermissionInfo, AppError> {
     Ok(NotificationPermissionInfo::default())
+}
+
+#[cfg(target_os = "windows")]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "matches fallible Android clipboard bridge signature"
+)]
+pub(crate) fn read_clipboard_text(_app: &AppHandle) -> Result<Option<String>, AppError> {
+    Ok(read_windows_clipboard_text())
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_clipboard_text() -> Option<String> {
+    use std::ffi::c_void;
+
+    const CF_UNICODETEXT: u32 = 13;
+    const MAX_CLIPBOARD_UTF16_UNITS: usize = 16_384;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn OpenClipboard(hwnd_new_owner: *mut c_void) -> i32;
+        fn CloseClipboard() -> i32;
+        fn GetClipboardData(format: u32) -> *mut c_void;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalLock(hmem: *mut c_void) -> *const u16;
+        fn GlobalUnlock(hmem: *mut c_void) -> i32;
+    }
+
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            // SAFETY: ClipboardGuard is only created after OpenClipboard succeeds on this thread.
+            unsafe {
+                let _ = CloseClipboard();
+            }
+        }
+    }
+
+    struct GlobalLockGuard(*mut c_void);
+    impl Drop for GlobalLockGuard {
+        fn drop(&mut self) {
+            // SAFETY: GlobalLockGuard wraps a non-null handle locked by GlobalLock on the open clipboard.
+            unsafe {
+                let _ = GlobalUnlock(self.0);
+            }
+        }
+    }
+
+    let mut opened = false;
+    for _ in 0..5 {
+        // SAFETY: Passing a null HWND associates the opened clipboard with the current task.
+        let ok = unsafe { OpenClipboard(std::ptr::null_mut()) };
+        if ok != 0 {
+            opened = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(12));
+    }
+    if !opened {
+        return None;
+    }
+    let _clip_guard = ClipboardGuard;
+
+    // SAFETY: Clipboard is open on the current thread; CF_UNICODETEXT yields a UTF-16 handle or null.
+    let handle = unsafe { GetClipboardData(CF_UNICODETEXT) };
+    if handle.is_null() {
+        return None;
+    }
+
+    // SAFETY: `handle` is a valid non-null HGLOBAL returned by GetClipboardData while clipboard is open.
+    let ptr = unsafe { GlobalLock(handle) };
+    if ptr.is_null() {
+        return None;
+    }
+    let _lock_guard = GlobalLockGuard(handle);
+
+    let mut units = Vec::new();
+    for offset in 0..MAX_CLIPBOARD_UTF16_UNITS {
+        // SAFETY: `offset` walks sequentially within the NUL-terminated UTF-16 clipboard buffer.
+        let elem_ptr = unsafe { ptr.add(offset) };
+        // SAFETY: `elem_ptr` is valid and aligned while `_lock_guard` holds the HGLOBAL lock.
+        let ch = unsafe { elem_ptr.read() };
+        if ch == 0 {
+            break;
+        }
+        units.push(ch);
+    }
+
+    let text = String::from_utf16_lossy(&units);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+#[cfg(all(not(target_os = "android"), not(target_os = "windows")))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "matches fallible Android clipboard bridge signature"
+)]
+pub(crate) fn read_clipboard_text(_app: &AppHandle) -> Result<Option<String>, AppError> {
+    Ok(None)
 }

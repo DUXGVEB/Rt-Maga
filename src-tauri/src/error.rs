@@ -1,7 +1,7 @@
 //! Application-level error type serialized across the Tauri IPC boundary with structured
 //! diagnostic categories and actionable hints.
 
-use mangacore::ScrapeError;
+use mangacore::{ScrapeError, SourceDiagnosticReport, SourceErrorCode};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -65,6 +65,14 @@ pub(crate) enum AppError {
     #[error("site requires verification: {host}")]
     Blocked { host: String, url: String },
 
+    /// Chapter uses browser-only display protection (e.g. IMGX) and cannot be rendered as plain images.
+    #[error("content display protection on {host}: {message}")]
+    ContentProtected {
+        host: String,
+        url: String,
+        message: String,
+    },
+
     /// Page loaded, but parser failed to recognize manga metadata or chapter layout.
     #[error("parser failure: {message}")]
     NotRecognized { message: String },
@@ -93,12 +101,34 @@ pub(crate) enum AppError {
     #[error("database error: {message}")]
     Db { message: String },
 
+    /// Rich classified source resolution, extraction, format, or access failure with diagnostic report.
+    #[error("{message}")]
+    SourceFailure {
+        code: SourceErrorCode,
+        message: String,
+        report: Box<SourceDiagnosticReport>,
+    },
+
     /// Unexpected internal error.
     #[error("internal error: {message}")]
     Internal { message: String },
 }
 
 impl AppError {
+    /// Constructs [`Self::SourceFailure`] carrying a 27-code classification and full sanitized report.
+    pub(crate) fn from_scrape_and_report(
+        err: &ScrapeError,
+        report: SourceDiagnosticReport,
+    ) -> Self {
+        let code = report.error_code.unwrap_or_else(|| err.error_code());
+        let message = err.to_string();
+        Self::SourceFailure {
+            code,
+            message,
+            report: Box::new(report),
+        }
+    }
+
     /// Returns a stable machine-readable error category string for diagnostic logging.
     pub(crate) const fn category(&self) -> &'static str {
         match self {
@@ -113,6 +143,7 @@ impl AppError {
             Self::HttpError { .. } => "http_error",
             Self::Network { .. } => "network",
             Self::Blocked { .. } => "blocked",
+            Self::ContentProtected { .. } => "content_protected",
             Self::NotRecognized { .. } => "parser_failure",
             Self::MissingMetadata { .. } => "missing_metadata",
             Self::MissingImages { .. } => "missing_images",
@@ -120,18 +151,8 @@ impl AppError {
             Self::CorruptedData { .. } => "corrupted_data",
             Self::NotFound { .. } => "not_found",
             Self::Db { .. } => "database",
+            Self::SourceFailure { .. } => "source_failure",
             Self::Internal { .. } => "internal",
-        }
-    }
-
-    /// Returns the HTTP status code attached to this error, if any.
-    pub(crate) const fn http_status(&self) -> Option<u16> {
-        match self {
-            Self::HttpError { status, .. } | Self::AccessRestricted { status, .. } => Some(*status),
-            Self::ApiFailure { status, .. } => *status,
-            Self::RateLimited { .. } => Some(429),
-            Self::Blocked { .. } => Some(403),
-            _ => None,
         }
     }
 }
@@ -192,6 +213,11 @@ impl From<ScrapeError> for AppError {
                 host,
                 url: url.into(),
             },
+            ScrapeError::ContentProtected { host, url, detail } => Self::ContentProtected {
+                host,
+                url,
+                message: detail,
+            },
             ScrapeError::NotRecognized { reason, url } => {
                 if reason.contains("image") {
                     Self::MissingImages {
@@ -234,5 +260,19 @@ impl From<sqlx::Error> for AppError {
         Self::Db {
             message: err.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppError;
+
+    #[test]
+    fn app_error_size_is_within_clippy_limit() {
+        assert!(
+            std::mem::size_of::<AppError>() <= 128,
+            "AppError exceeded clippy::result_large_err limit: {} bytes",
+            std::mem::size_of::<AppError>()
+        );
     }
 }

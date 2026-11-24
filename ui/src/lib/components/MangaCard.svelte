@@ -69,8 +69,8 @@
     <div class="pointer-events-none absolute top-2 left-2 flex flex-col items-start gap-1">
       {#if item.hasNew}
         <span
-          class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm"
-          style="background-color: var(--accent);"
+          class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold shadow-sm"
+          style="background-color: var(--accent); color: var(--accent-fg);"
         >
           <Sparkles size={11} />
           {t.badgeNew}

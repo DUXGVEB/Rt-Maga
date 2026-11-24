@@ -7,21 +7,26 @@ use async_trait::async_trait;
 use scraper::{Html, Selector};
 use url::Url;
 
+use crate::ExtractionStrategyKind;
+use crate::detect::{PageInspectInput, SessionPresence, analyze_html_page};
 use crate::error::ScrapeError;
+use crate::extract::{
+    HtmlMinimumPolicy, extract_chapter_html_adaptive, extract_structured_chapter,
+    extract_structured_manga,
+};
 use crate::http::HttpClient;
 use crate::model::{
     CatalogEntry, CatalogPage, Chapter, ChapterRef, Manga, PaginationInfo, Resolved, SiteId,
 };
 use crate::parse::chapters::{extract_chapter_number, extract_chapters, format_chapter_num};
-use crate::parse::classify::{MIN_CHAPTER_IMAGES, PageKind, classify_page};
+use crate::parse::classify::{PageKind, classify_page};
 use crate::parse::dom::{
     abs_url, clean_text, effective_base_url, image_candidates, is_inside_chrome,
 };
-use crate::parse::images::extract_chapter_images;
 use crate::parse::meta::{extract_cover, extract_title};
 use crate::parse::nav::{extract_manga_url_from_chapter, extract_prev_next};
 use crate::recognize::{UrlKind, classify_normalized_url};
-use crate::source::Source;
+use crate::source::{AdapterAuthSupport, AdapterMetadata, Source};
 
 static DESC_SEL: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("meta[property='og:description'], meta[name='description']")
@@ -37,7 +42,7 @@ static IMG_SEL: LazyLock<Selector> =
 pub struct GenericSource;
 
 impl GenericSource {
-    /// Parses a manga overview page using generic heuristics.
+    /// Parses a manga overview page using generic HTML heuristics and structured JSON-LD / Next.js fallback.
     ///
     /// # Errors
     ///
@@ -48,6 +53,9 @@ impl GenericSource {
 
         let chapters = extract_chapters(&doc, &base);
         if chapters.is_empty() {
+            if let Some(structured) = extract_structured_manga(&doc, page_url, &base) {
+                return Ok(structured);
+            }
             return Err(ScrapeError::NotRecognized {
                 url: page_url.clone(),
                 reason: "generic parser found no chapter list",
@@ -73,39 +81,69 @@ impl GenericSource {
         Ok(manga)
     }
 
-    /// Parses a chapter reading page using generic image scoring and navigation heuristics.
+    /// Parses a chapter reading page using Strategy C structured data, upgraded Strategy A DOM
+    /// extraction (`<img>`, `<picture>`, CSS `background-image`, lazy attrs), and confidence-aware
+    /// page thresholds.
     ///
     /// # Errors
     ///
-    /// Returns [`ScrapeError::NotRecognized`] if fewer than [`MIN_CHAPTER_IMAGES`] images are found.
+    /// Returns [`ScrapeError::NotRecognized`] if no readable comic chapter images are found.
     pub fn parse_chapter_html(html: &str, page_url: &Url) -> Result<Chapter, ScrapeError> {
         let doc = Html::parse_document(html);
         let base = effective_base_url(&doc, page_url);
 
-        let images = extract_chapter_images(&doc, page_url, &base);
-        if images.len() < MIN_CHAPTER_IMAGES {
-            return Err(ScrapeError::NotRecognized {
+        if let Some(structured) = extract_structured_chapter(&doc, html, page_url, &base) {
+            return Ok(structured.chapter);
+        }
+
+        let analysis = analyze_html_page(PageInspectInput {
+            submitted_url: page_url,
+            final_url: page_url,
+            status: 200,
+            content_type: Some("text/html"),
+            html,
+            doc: &doc,
+            session: SessionPresence::NoCookies,
+        });
+        let policy = if analysis.page_kind == UrlKind::ChapterPage && analysis.confidence >= 0.70 {
+            HtmlMinimumPolicy::ConfidentChapterOneOrMore
+        } else {
+            HtmlMinimumPolicy::StandardThree
+        };
+
+        let adaptive = extract_chapter_html_adaptive(&doc, page_url, &base, policy);
+        if let Some(chapter) = adaptive.chapter {
+            return Ok(chapter);
+        }
+
+        let script_images = crate::parse::images::extract_chapter_images(&doc, page_url, &base);
+        let min_needed = if policy == HtmlMinimumPolicy::ConfidentChapterOneOrMore {
+            1
+        } else {
+            crate::parse::classify::MIN_CHAPTER_IMAGES
+        };
+        if script_images.len() >= min_needed {
+            let nav = extract_prev_next(&doc, page_url, &base);
+            let manga_url = extract_manga_url_from_chapter(&doc, page_url, &base);
+            let name = extract_title(&doc).unwrap_or_else(|| {
+                extract_chapter_number(page_url.path()).map_or_else(
+                    || "Chapter".to_owned(),
+                    |n| format!("Chapter {}", format_chapter_num(n)),
+                )
+            });
+            return Ok(Chapter {
                 url: page_url.clone(),
-                reason: "generic parser found too few chapter images",
+                name,
+                images: script_images,
+                prev: nav.prev,
+                next: nav.next,
+                manga_url,
             });
         }
 
-        let nav = extract_prev_next(&doc, page_url, &base);
-        let manga_url = extract_manga_url_from_chapter(&doc, page_url, &base);
-        let name = extract_title(&doc).unwrap_or_else(|| {
-            extract_chapter_number(page_url.path()).map_or_else(
-                || "Chapter".to_owned(),
-                |n| format!("Chapter {}", format_chapter_num(n)),
-            )
-        });
-
-        Ok(Chapter {
+        Err(ScrapeError::NotRecognized {
             url: page_url.clone(),
-            name,
-            images,
-            prev: nav.prev,
-            next: nav.next,
-            manga_url,
+            reason: "generic parser found too few chapter images",
         })
     }
 
@@ -319,6 +357,24 @@ impl GenericSource {
 impl Source for GenericSource {
     fn id(&self) -> &'static str {
         "generic"
+    }
+
+    fn metadata(&self) -> AdapterMetadata {
+        AdapterMetadata {
+            id: "generic",
+            name: "Universal Heuristic Engine",
+            version: "2.0.0",
+            domains: &["*"],
+            auth_support: AdapterAuthSupport::OptionalUserSession,
+            strategies: &[
+                ExtractionStrategyKind::StructuredDataAndApi,
+                ExtractionStrategyKind::NativeHtml,
+                ExtractionStrategyKind::BrowserRendering,
+            ],
+            known_limitations: &[
+                "Sites with heavy obfuscation, paid accounts, or canvas DRM may require authorized browser reading.",
+            ],
+        }
     }
 
     fn matches(&self, _url: &Url) -> bool {

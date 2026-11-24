@@ -18,10 +18,12 @@
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { updatesStore } from "../stores/updates.svelte";
+  import { normalizeNavOrder } from "../themeAccent";
 
   const isDark = $derived(settingsStore.resolvedTheme === "dark");
   const t = $derived(settingsStore.t);
   const checkingAny = $derived(updatesStore.checking || appReleaseStore.checking);
+  const navOrder = $derived(normalizeNavOrder(settingsStore.value.ui.navOrder));
 
   function toggleTheme() {
     settingsStore.update((d) => {
@@ -66,8 +68,8 @@
         <Bell size={18} />
         {#if notificationsStore.unreadCount > 0}
           <span
-            class="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white"
-            style="background-color: var(--accent);"
+            class="absolute top-0.5 right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold"
+            style="background-color: var(--accent); color: var(--accent-fg);"
           >
             {notificationsStore.unreadCount > 99 ? "99+" : notificationsStore.unreadCount}
           </span>
@@ -75,58 +77,70 @@
       </button>
     </div>
 
-    <!-- Navigation: Home | Bookmarks | History (double-tap resume) | Settings -->
-    <nav class="flex flex-col gap-1">
-      <button
-        type="button"
-        onclick={() => router.goHome()}
-        class="nav-item"
-        class:active={router.current.name === "home" ||
-          router.current.name === "manga" ||
-          router.current.name === "browse"}
-      >
-        <Home size={18} />
-        <span>{t.navHome}</span>
-        {#if updatesStore.newCount > 0}
-          <span
-            class="ml-auto rounded-full px-2 py-0.5 text-[11px] font-semibold text-white"
-            style="background-color: var(--accent);"
+    <!-- Navigation: user-ordered destinations -->
+    <nav class="flex flex-col gap-1" aria-label={t.navOrderSection}>
+      {#each navOrder as dest (dest)}
+        {#if dest === "home"}
+          <button
+            type="button"
+            onclick={() => router.goHome()}
+            class="nav-item"
+            class:active={router.current.name === "home" ||
+              router.current.name === "manga" ||
+              router.current.name === "browse"}
+            aria-current={router.current.name === "home" ||
+            router.current.name === "manga" ||
+            router.current.name === "browse"
+              ? "page"
+              : undefined}
           >
-            {updatesStore.newCount}
-          </span>
+            <Home size={18} />
+            <span>{t.navHome}</span>
+            {#if updatesStore.newCount > 0}
+              <span
+                class="ml-auto rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                style="background-color: var(--accent); color: var(--accent-fg);"
+              >
+                {updatesStore.newCount}
+              </span>
+            {/if}
+          </button>
+        {:else if dest === "bookmarks"}
+          <button
+            type="button"
+            onclick={() => router.goBookmarks()}
+            class="nav-item"
+            class:active={router.current.name === "bookmarks"}
+            aria-current={router.current.name === "bookmarks" ? "page" : undefined}
+          >
+            <Bookmark size={18} />
+            <span>{t.navBookmarks}</span>
+          </button>
+        {:else if dest === "history"}
+          <button
+            type="button"
+            onclick={() => void router.goHistoryOrResume()}
+            class="nav-item"
+            class:active={router.current.name === "history"}
+            aria-current={router.current.name === "history" ? "page" : undefined}
+            title={t.historyResumeHint}
+          >
+            <Clock size={18} />
+            <span>{t.navHistory}</span>
+          </button>
+        {:else}
+          <button
+            type="button"
+            onclick={() => router.goSettings()}
+            class="nav-item"
+            class:active={router.current.name === "settings"}
+            aria-current={router.current.name === "settings" ? "page" : undefined}
+          >
+            <Settings size={18} />
+            <span>{t.navSettings}</span>
+          </button>
         {/if}
-      </button>
-
-      <button
-        type="button"
-        onclick={() => router.goBookmarks()}
-        class="nav-item"
-        class:active={router.current.name === "bookmarks"}
-      >
-        <Bookmark size={18} />
-        <span>{t.navBookmarks}</span>
-      </button>
-
-      <button
-        type="button"
-        onclick={() => void router.goHistoryOrResume()}
-        class="nav-item"
-        class:active={router.current.name === "history"}
-        title={t.historyResumeHint}
-      >
-        <Clock size={18} />
-        <span>{t.navHistory}</span>
-      </button>
-
-      <button
-        type="button"
-        onclick={() => router.goSettings()}
-        class="nav-item"
-        class:active={router.current.name === "settings"}
-      >
-        <Settings size={18} />
-        <span>{t.navSettings}</span>
-      </button>
+      {/each}
     </nav>
   </div>
 

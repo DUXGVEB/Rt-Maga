@@ -1,3 +1,6 @@
+// Copyright (c) 2025-2026 RtMaga (DUXGVEB). Source-available, not Open Source.
+// See LICENSE and COPYRIGHT.md in the repository root for permitted uses and restrictions.
+
 //! `RtMaga` application library shared by desktop (Windows) and mobile (Android) entry points.
 
 mod android_env;
@@ -60,6 +63,7 @@ pub fn run() {
             commands::get_manga,
             commands::refresh_manga,
             commands::open_manual_verification,
+            commands::open_browser_login_session,
             commands::get_chapter,
             commands::save_progress,
             commands::get_last_reading_destination,
@@ -73,7 +77,10 @@ pub fn run() {
             commands::list_hidden_manga,
             commands::delete_manga_permanently,
             commands::set_manga_reader_override,
+            commands::set_manga_reader_settings,
             commands::mark_manga_detected_webtoon,
+            commands::read_clipboard_text,
+            commands::open_external_url,
             commands::list_notifications,
             commands::mark_notification_read,
             commands::mark_all_notifications_read,
@@ -119,12 +126,37 @@ pub fn run() {
             commands::list_cache_by_manga,
             commands::clear_cache_by_source,
             commands::clear_cache_by_manga,
+            commands::purge_chapter_page_cache,
+            commands::purge_manga_page_cache,
+            commands::purge_all_page_cache,
             commands::clear_image_cache,
         ]);
 
-    builder
-        .run(tauri::generate_context!())
-        .expect("error while running RtMaga application");
+    let app = builder
+        .build(tauri::generate_context!())
+        .expect("error while building RtMaga application");
+
+    app.run(|handle, event| handle_run_event(handle, &event));
+}
+
+fn handle_run_event(handle: &tauri::AppHandle, event: &tauri::RunEvent) {
+    let should_purge = matches!(
+        event,
+        tauri::RunEvent::Exit
+            | tauri::RunEvent::ExitRequested { .. }
+            | tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed,
+                ..
+            }
+    );
+    if should_purge && let Some(state) = handle.try_state::<Arc<AppState>>() {
+        let images = state.images.clone();
+        let chapters = state.chapters.clone();
+        let _ = tauri::async_runtime::block_on(async move {
+            chapters.invalidate_all();
+            images.clear_all_chapter_pages().await
+        });
+    }
 }
 
 #[expect(
@@ -155,6 +187,12 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let http = HttpClient::with_policy(policy).map_err(error::AppError::from)?;
         let registry = Registry::with_http(http);
         let images = ImageCache::new(cache_dir, db.clone()).await?;
+
+        // Reclaim any transient chapter pages left behind by prior sessions or OS force-kills,
+        // while keeping small cover thumbnails and all per-manga settings intact.
+        if let Err(err) = images.clear_all_chapter_pages().await {
+            warn!(%err, "failed to sweep transient chapter page cache on startup");
+        }
 
         match db.prune_stale_manga(STALE_MANGA_RETENTION_DAYS).await {
             Ok(pruned_ids) if !pruned_ids.is_empty() => {

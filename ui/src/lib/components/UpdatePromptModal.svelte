@@ -208,8 +208,8 @@
           <button
             type="button"
             onclick={() => appReleaseStore.installNow()}
-            class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90"
-            style="background-color: var(--accent);"
+            class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition-opacity hover:opacity-90"
+            style="background-color: var(--accent); color: var(--accent-fg);"
           >
             <Download size={14} />
             <span>

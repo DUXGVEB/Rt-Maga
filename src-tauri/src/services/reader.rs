@@ -1,16 +1,31 @@
-//! Chapter loading, neighbor-chapter fallback from SQLite, and image token signing.
+//! Chapter loading, obsolete-scrape cancellation, neighbor-chapter fallback from SQLite,
+//! and image token signing.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use mangacore::normalize_url;
-use serde::Serialize;
+use mangacore::{normalize_url, redact_url_for_diagnostics};
+use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::image_proxy::encode_page_token;
 use crate::repo::diagnostics::NewDiagnosticLog;
 use crate::state::AppState;
 
-/// Resolved chapter payload delivered to the Svelte vertical reader.
+/// Priority distinguishing user-initiated chapter loads (which cancel older obsolete scrapes)
+/// from background next-chapter prefetches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum ChapterLoadPriority {
+    /// Active chapter requested directly by the user.
+    #[default]
+    Primary,
+    /// Speculative prefetch for seamless auto-append reading.
+    Prefetch,
+}
+
+/// Resolved chapter payload delivered to the Svelte vertical/horizontal reader.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ChapterView {
@@ -22,16 +37,17 @@ pub(crate) struct ChapterView {
     pub manga_id: Option<i64>,
 }
 
-/// Fetches a chapter's ordered image tokens and neighbor URLs, using the in-memory chapter cache
-/// and filling any missing `prev`/`next` links from the stored manga chapter list.
+/// Fetches a chapter's ordered image tokens and neighbor URLs, cancelling obsolete in-flight
+/// primary loads if the user switches chapters rapidly.
 ///
 /// # Errors
 ///
-/// Returns [`AppError`] on invalid URL, scraping failure, or database error.
+/// Returns [`AppError`] on invalid URL, scraping failure, superseded cancellation, or database error.
 pub(crate) async fn get_chapter(
     state: &AppState,
     raw_url: &str,
     known_manga_id: Option<i64>,
+    priority: ChapterLoadPriority,
 ) -> Result<ChapterView, AppError> {
     let url = normalize_url(raw_url)?;
 
@@ -39,26 +55,32 @@ pub(crate) async fn get_chapter(
         cached
     } else {
         let policy = state.current_settings().await.headless_policy();
-        let fetched = match state.registry.chapter(&url, policy).await {
-            Ok(c) => Arc::new(c),
-            Err(err) => {
-                let app_err = AppError::from(err);
+        let scrape_res = fetch_chapter_respecting_cancel(state, &url, policy, priority).await?;
+        let fetched = match scrape_res {
+            Ok((c, _report)) => Arc::new(c),
+            Err(boxed) => {
+                let (err, report) = *boxed;
+                let detail_json =
+                    serde_json::to_string_pretty(&report).unwrap_or_else(|_| err.to_string());
+                let app_err = AppError::from_scrape_and_report(&err, report.clone());
                 let src = url
                     .host_str()
                     .map(|h| h.trim_start_matches("www.").to_ascii_lowercase());
+                let redacted_url = redact_url_for_diagnostics(url.as_str());
                 let _ = state
                     .db
                     .record_diagnostic_log(&NewDiagnosticLog {
                         level: "error".to_owned(),
                         category: app_err.category().to_owned(),
-                        message: "Failed to load chapter pages".to_owned(),
-                        detail: Some(app_err.to_string()),
+                        message: format!("Failed to load chapter pages ({:?})", report.error_code),
+                        detail: Some(detail_json),
                         source: src,
-                        chapter_url: Some(url.as_str().to_owned()),
-                        failed_url: Some(url.as_str().to_owned()),
-                        resolved_url: Some(url.as_str().to_owned()),
-                        http_status: app_err.http_status().map(i64::from),
-                        parsing_stage: Some("chapter_image_extraction".to_owned()),
+                        chapter_url: Some(redacted_url.clone()),
+                        failed_url: Some(redacted_url),
+                        resolved_url: report.final_url.clone(),
+                        http_status: report.http_status.map(i64::from),
+                        adapter: report.adapter_name.clone(),
+                        parsing_stage: report.failed_stage.clone(),
                         ..NewDiagnosticLog::default()
                     })
                     .await;
@@ -72,6 +94,48 @@ pub(crate) async fn get_chapter(
         fetched
     };
 
+    build_chapter_view(state, &chapter, known_manga_id).await
+}
+
+async fn fetch_chapter_respecting_cancel(
+    state: &AppState,
+    url: &url::Url,
+    policy: mangacore::HeadlessPolicy,
+    priority: ChapterLoadPriority,
+) -> Result<
+    Result<
+        (mangacore::Chapter, mangacore::SourceDiagnosticReport),
+        Box<(mangacore::ScrapeError, mangacore::SourceDiagnosticReport)>,
+    >,
+    AppError,
+> {
+    if priority != ChapterLoadPriority::Primary {
+        return Ok(state.registry.chapter_with_diagnostics(url, policy).await);
+    }
+
+    let my_seq = state.chapter_load_seq.fetch_add(1, Ordering::AcqRel) + 1;
+    let _ = state.chapter_cancel_tx.send(my_seq);
+    let mut rx = state.chapter_cancel_tx.subscribe();
+
+    tokio::select! {
+        res = state.registry.chapter_with_diagnostics(url, policy) => Ok(res),
+        () = async move {
+            while rx.changed().await.is_ok() {
+                if *rx.borrow() != my_seq {
+                    break;
+                }
+            }
+        } => Err(AppError::Internal {
+            message: "chapter load cancelled because user switched chapters".to_owned(),
+        }),
+    }
+}
+
+async fn build_chapter_view(
+    state: &AppState,
+    chapter: &mangacore::Chapter,
+    known_manga_id: Option<i64>,
+) -> Result<ChapterView, AppError> {
     let manga_id = match known_manga_id {
         Some(id) => Some(id),
         None => {
@@ -116,7 +180,15 @@ pub(crate) async fn get_chapter(
     let images = chapter
         .images
         .iter()
-        .map(|img| encode_page_token(img, manga_id, site_for_cache.as_deref(), &state.proxy_key))
+        .map(|img| {
+            encode_page_token(
+                img,
+                manga_id,
+                site_for_cache.as_deref(),
+                Some(chapter.url.as_str()),
+                &state.proxy_key,
+            )
+        })
         .collect();
 
     Ok(ChapterView {

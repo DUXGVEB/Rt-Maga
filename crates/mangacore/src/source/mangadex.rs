@@ -909,6 +909,23 @@ impl Source for MangaDexSource {
         "mangadex"
     }
 
+    fn metadata(&self) -> crate::source::AdapterMetadata {
+        crate::source::AdapterMetadata {
+            id: "mangadex",
+            name: "MangaDex",
+            version: "1.2.0",
+            domains: &["mangadex.org", "api.mangadex.org"],
+            auth_support: crate::source::AdapterAuthSupport::PublicOnly,
+            strategies: &[
+                crate::ExtractionStrategyKind::SiteAdapter,
+                crate::ExtractionStrategyKind::StructuredDataAndApi,
+            ],
+            known_limitations: &[
+                "Chapters linked externally (externalUrl) open on publisher websites instead of MangaDex@Home.",
+            ],
+        }
+    }
+
     fn matches(&self, url: &Url) -> bool {
         url.host_str()
             .is_some_and(|h| is_mangadex_host(&h.to_ascii_lowercase()))

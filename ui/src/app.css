@@ -11,6 +11,7 @@
   --accent: #e11d48;
   --accent-hover: #be123c;
   --accent-soft: rgba(225, 29, 72, 0.1);
+  --accent-fg: #ffffff;
   --danger: #dc2626;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.08);
@@ -21,6 +22,7 @@
   --gesture-left: 0px;
   --gesture-right: 0px;
   --ime-bottom: 0px;
+  --app-height: 100dvh;
   color-scheme: light;
 }
 
@@ -35,6 +37,7 @@
   --accent: #f43f5e;
   --accent-hover: #fb7185;
   --accent-soft: rgba(244, 63, 94, 0.14);
+  --accent-fg: #ffffff;
   --danger: #ef4444;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.45);
@@ -49,7 +52,9 @@ html,
 body,
 #app {
   height: 100%;
-  height: 100dvh;
+  height: var(--app-height, 100dvh);
+  min-height: 0;
+  overflow: hidden;
   margin: 0;
   padding: 0;
   background-color: var(--bg);
@@ -57,6 +62,12 @@ body,
   font-family: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
+}
+
+input[type="range"],
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
 }
 
 ::-webkit-scrollbar {
@@ -77,11 +88,28 @@ body,
   background: var(--text-muted);
 }
 
-/* On desktop/landscape viewports where the mobile Top App Bar is hidden and Sidebar is shown,
-   preserve top safe-area clearance inside <main>. On mobile (<768px), the Top App Bar itself
-   paints seamlessly behind --safe-top so <main> needs zero extra top padding. */
+/* Hide reading viewport scrollbar cleanly on both Mobile and PC while keeping smooth scroll. */
+.reader-no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.reader-no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Natural scroll container accounting for safe areas, virtual keyboard, and mobile bottom nav (<768px).
+   On width >= 768px (desktop & phone landscape), Sidebar takes over navigation so bottom nav clears cleanly. */
+.main-scroll-area {
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(4.75rem + var(--safe-bottom) + var(--ime-bottom));
+}
+
 @media (min-width: 768px) {
-  .main-desktop-safe-top {
+  .main-scroll-area {
     padding-top: var(--safe-top);
+    padding-bottom: calc(1.5rem + var(--safe-bottom) + var(--ime-bottom));
   }
 }

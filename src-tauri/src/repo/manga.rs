@@ -29,6 +29,7 @@ pub(crate) struct MangaRow {
     pub(crate) has_new: i64,
     pub(crate) checked_at: Option<i64>,
     pub(crate) reader_mode_override: Option<String>,
+    pub(crate) reader_settings_json: Option<String>,
     pub(crate) detected_webtoon: i64,
     pub(crate) hidden: i64,
     pub(crate) source_id: Option<String>,
@@ -500,6 +501,36 @@ impl Database {
             .bind(manga_id)
             .execute(self.pool())
             .await?;
+        Ok(())
+    }
+
+    /// Persists or clears the full per-manga [`crate::settings::ReaderSettings`] JSON snapshot.
+    ///
+    /// Clearing (`None`) also resets the legacy `reader_mode_override` column so the manga
+    /// cleanly falls back to the global reader settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn set_manga_reader_settings(
+        &self,
+        manga_id: i64,
+        settings_json: Option<&str>,
+    ) -> Result<(), AppError> {
+        if settings_json.is_some() {
+            sqlx::query("UPDATE manga SET reader_settings_json = ? WHERE id = ?")
+                .bind(settings_json)
+                .bind(manga_id)
+                .execute(self.pool())
+                .await?;
+        } else {
+            sqlx::query(
+                "UPDATE manga SET reader_settings_json = NULL, reader_mode_override = NULL WHERE id = ?",
+            )
+            .bind(manga_id)
+            .execute(self.pool())
+            .await?;
+        }
         Ok(())
     }
 

@@ -6,15 +6,18 @@ import type {
   AppReleaseInfo,
   BookmarkItemView,
   BookmarkSort,
+  BrowserAuthOutcome,
   CacheInfo,
   CacheMangaStats,
   CacheSourceStats,
+  ChapterLoadPriority,
   ChapterView,
   CrashRecoverySession,
   DeviceEnvInfo,
   DiagnosticLogEntry,
   DohConfig,
   DohTestResult,
+  FormattedAppError,
   FoundUpdate,
   HiddenMangaView,
   HideAction,
@@ -32,6 +35,7 @@ import type {
   ProxyEndpoint,
   ProxyTestResult,
   ReaderModeOverride,
+  ReaderSettings,
   ResolveResponse,
   SavedDiagnosticFile,
   Settings,
@@ -57,100 +61,187 @@ export function imgProxyUrl(token: string, retry = false): string {
 export function formatAppError(
   err: unknown,
   lang: Language = "en"
-): {
-  title: string;
-  detail: string;
-  blockedUrl?: string;
-} {
+): FormattedAppError {
   const t = getDict(lang);
+  const isVi = lang === "vi";
   if (typeof err === "object" && err !== null && "kind" in err) {
     const e = err as AppError;
     switch (e.kind) {
+      case "source_failure": {
+        const rep = e.report;
+        const targetUrl = rep.finalUrl || rep.originalUrl;
+        const title =
+          (isVi ? rep.titleVi : rep.titleEn) ?? rep.titleEn ?? rep.titleVi ?? t.errGenericTitle;
+        const detail =
+          (isVi ? rep.explanationVi : rep.explanationEn) ??
+          rep.explanationEn ??
+          rep.explanationVi ??
+          e.message;
+        const suggestedAction =
+          (isVi ? rep.suggestedActionVi : rep.suggestedActionEn) ?? undefined;
+        const blockedUrl =
+          e.code === "VERIFICATION_REQUIRED" ||
+          rep.recoveryActions.includes("complete_verification")
+            ? targetUrl
+            : undefined;
+        const loginUrl =
+          e.code === "LOGIN_REQUIRED" ||
+          e.code === "SESSION_EXPIRED" ||
+          rep.recoveryActions.includes("sign_in_via_browser")
+            ? targetUrl
+            : undefined;
+        const externalUrl = rep.browserReadingAvailable ? targetUrl : undefined;
+        return {
+          title,
+          detail,
+          blockedUrl,
+          loginUrl,
+          externalUrl,
+          code: e.code,
+          failureGroup: rep.failureGroup ?? undefined,
+          suggestedAction,
+          retryable: rep.retryable,
+          userInteractionRequired: rep.userInteractionRequired,
+          browserReadingAvailable: rep.browserReadingAvailable,
+          report: rep,
+        };
+      }
       case "invalid_url":
         return {
           title: t.errInvalidUrlTitle,
           detail: `${t.errInvalidUrlDetail} (${e.message})`,
+          code: "INVALID_URL",
+          failureGroup: "source_detection",
         };
       case "unsupported_source":
         return {
           title: t.errUnsupportedSourceTitle(e.host),
           detail: e.message,
+          code: "UNSUPPORTED_WEBSITE",
+          failureGroup: "source_detection",
         };
       case "timeout":
         return {
           title: t.errTimeoutTitle,
           detail: e.message,
+          code: "NETWORK_TIMEOUT",
+          failureGroup: "network",
+          retryable: true,
         };
       case "dns_failure":
         return {
           title: t.errDnsFailureTitle(e.host),
           detail: e.message,
+          failureGroup: "network",
+          retryable: true,
         };
       case "tls_failure":
         return {
           title: t.errTlsFailureTitle(e.host),
           detail: e.message,
+          failureGroup: "network",
+          retryable: true,
         };
       case "rate_limited":
         return {
           title: t.errRateLimitedTitle,
           detail: e.message,
+          code: "RATE_LIMITED",
+          failureGroup: "network",
+          retryable: true,
         };
       case "access_restricted":
         return {
           title: t.errAccessRestrictedTitle(e.host, e.status),
           detail: e.message,
+          code: e.status === 401 ? "LOGIN_REQUIRED" : "ACCESS_DENIED",
+          failureGroup: "access_permission",
         };
       case "api_failure":
         return {
           title: t.errApiFailureTitle(e.service),
           detail: e.message,
+          code: "UNSUPPORTED_API_FORMAT",
+          failureGroup: "unsupported_format",
         };
       case "http_error":
         return {
           title: t.errHttpStatusTitle(e.status),
           detail: e.message,
+          code: e.status >= 500 ? "SERVER_ERROR" : "UNKNOWN_SOURCE_ERROR",
+          failureGroup: "network",
         };
       case "blocked":
         return {
           title: t.errBlockedTitle(e.host),
           detail: t.errBlockedDetail,
           blockedUrl: e.url,
+          externalUrl: e.url,
+          code: "VERIFICATION_REQUIRED",
+          failureGroup: "access_permission",
+          userInteractionRequired: true,
+          browserReadingAvailable: true,
+        };
+      case "content_protected":
+        return {
+          title: t.errContentProtectedTitle(e.host),
+          detail: t.errContentProtectedDetail,
+          externalUrl: e.url,
+          code: "DRM_PROTECTED_CONTENT",
+          failureGroup: "access_permission",
+          userInteractionRequired: true,
+          browserReadingAvailable: true,
         };
       case "missing_metadata":
         return {
           title: t.errMissingMetadataTitle,
           detail: e.message,
+          code: "SOURCE_DETECTION_FAILED",
+          failureGroup: "source_detection",
         };
       case "not_recognized":
         return {
           title: t.errNotRecognizedTitle,
           detail: `${t.errNotRecognizedDetail} (${e.message})`,
+          code: "SOURCE_DETECTION_FAILED",
+          failureGroup: "source_detection",
         };
       case "missing_images":
         return {
           title: t.errMissingImagesTitle,
           detail: e.message,
+          code: "CHAPTER_CONTENT_NOT_LOADED",
+          failureGroup: "image_extraction",
+          retryable: true,
         };
       case "invalid_image_format":
         return {
           title: t.errInvalidImageTitle,
           detail: e.message,
+          code: "UNSUPPORTED_IMAGE_FORMAT",
+          failureGroup: "unsupported_format",
         };
       case "corrupted_data":
         return {
           title: t.errCorruptedDataTitle,
           detail: e.message,
+          code: "IMAGE_DECODE_FAILED",
+          failureGroup: "image_extraction",
+          retryable: true,
         };
       case "network":
         return {
           title: t.errNetworkTitle,
           detail: e.message,
+          failureGroup: "network",
+          retryable: true,
         };
       case "not_found":
         return {
           title: t.errNotFoundTitle,
           detail: e.message,
+          code: "CHAPTER_NOT_FOUND",
+          failureGroup: "chapter_identification",
         };
       case "db":
       case "internal":
@@ -172,8 +263,10 @@ export const api = {
   refreshManga: (id: number) => invoke<MangaView>("refresh_manga", { id }),
   openManualVerification: (url: string) =>
     invoke<void>("open_manual_verification", { url }),
-  getChapter: (url: string, mangaId?: number | null) =>
-    invoke<ChapterView>("get_chapter", { url, mangaId: mangaId ?? null }),
+  openBrowserLoginSession: (url: string) =>
+    invoke<BrowserAuthOutcome>("open_browser_login_session", { url }),
+  getChapter: (url: string, mangaId?: number | null, priority?: ChapterLoadPriority) =>
+    invoke<ChapterView>("get_chapter", { url, mangaId: mangaId ?? null, priority: priority ?? "primary" }),
   saveProgress: (
     mangaId: number,
     chapterUrl: string,
@@ -206,8 +299,12 @@ export const api = {
     invoke<void>("delete_manga_permanently", { mangaId }),
   setMangaReaderOverride: (mangaId: number, overrideMode: ReaderModeOverride) =>
     invoke<void>("set_manga_reader_override", { mangaId, overrideMode }),
+  setMangaReaderSettings: (mangaId: number, readerSettings: ReaderSettings | null) =>
+    invoke<ReaderSettings | null>("set_manga_reader_settings", { mangaId, readerSettings }),
   markMangaDetectedWebtoon: (mangaId: number) =>
     invoke<void>("mark_manga_detected_webtoon", { mangaId }),
+  readClipboardText: () => invoke<string | null>("read_clipboard_text"),
+  openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
 
   listNotifications: () => invoke<NotificationItemView[]>("list_notifications"),
   markNotificationRead: (id: number) => invoke<void>("mark_notification_read", { id }),
@@ -286,6 +383,11 @@ export const api = {
   listCacheByManga: () => invoke<CacheMangaStats[]>("list_cache_by_manga"),
   clearCacheBySource: (site: string) => invoke<CacheInfo>("clear_cache_by_source", { site }),
   clearCacheByManga: (mangaId: number) => invoke<CacheInfo>("clear_cache_by_manga", { mangaId }),
+  purgeChapterPageCache: (mangaId: number, chapterUrl: string) =>
+    invoke<CacheInfo>("purge_chapter_page_cache", { mangaId, chapterUrl }),
+  purgeMangaPageCache: (mangaId: number) =>
+    invoke<CacheInfo>("purge_manga_page_cache", { mangaId }),
+  purgeAllPageCache: () => invoke<CacheInfo>("purge_all_page_cache"),
   clearImageCache: () => invoke<CacheInfo>("clear_image_cache"),
 
   onUpdatesFound: (cb: (found: FoundUpdate[]) => void): Promise<UnlistenFn> =>

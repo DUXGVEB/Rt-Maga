@@ -93,6 +93,13 @@ impl Database {
         &self.pool
     }
 
+    /// Truncates the SQLite WAL file back into the main database file to keep disk footprint lean.
+    pub(crate) async fn checkpoint_wal_truncate(&self) {
+        let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&self.pool)
+            .await;
+    }
+
     /// Flushes the SQLite WAL journal into the primary database file and writes an atomic
     /// pre-update backup copy next to `rtmaga.db`.
     ///
@@ -864,6 +871,7 @@ mod tests {
                 CacheEntryMeta {
                     site: Some("example.com"),
                     manga_id: Some(id),
+                    ..CacheEntryMeta::default()
                 },
             )
             .await;
@@ -876,6 +884,7 @@ mod tests {
                 CacheEntryMeta {
                     site: Some("other.org"),
                     manga_id: None,
+                    ..CacheEntryMeta::default()
                 },
             )
             .await;
@@ -917,6 +926,7 @@ mod tests {
                 CacheEntryMeta {
                     site: Some("example.com"),
                     manga_id: Some(id),
+                    ..CacheEntryMeta::default()
                 },
             )
             .await;

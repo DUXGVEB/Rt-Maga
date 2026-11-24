@@ -26,6 +26,101 @@ pub(crate) enum Language {
     Th,
 }
 
+/// Default primary accent color for Light mode (`#rrggbb`).
+pub(crate) const DEFAULT_LIGHT_ACCENT: &str = "#e11d48";
+
+/// Default primary accent color for Dark mode (`#rrggbb`).
+pub(crate) const DEFAULT_DARK_ACCENT: &str = "#f43f5e";
+
+/// Primary top-level navigation destinations displayed in desktop sidebar and mobile bottom bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum NavDestination {
+    /// Home library & link input.
+    Home,
+    /// Bookmarked series collection.
+    Bookmarks,
+    /// Reading history & quick resume.
+    History,
+    /// Application settings.
+    Settings,
+}
+
+const DEFAULT_NAV_ORDER: [NavDestination; 4] = [
+    NavDestination::Home,
+    NavDestination::Bookmarks,
+    NavDestination::History,
+    NavDestination::Settings,
+];
+
+/// Validates and normalizes `#RGB` or `#RRGGBB` colors to lowercase `#rrggbb`, returning
+/// `fallback` if malformed.
+fn normalize_hex_color(raw: &str, fallback: &str) -> String {
+    let trimmed = raw.trim().trim_start_matches('#');
+    if trimmed.len() == 6 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return format!("#{}", trimmed.to_ascii_lowercase());
+    }
+    if trimmed.len() == 3 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let mut expanded = String::with_capacity(7);
+        expanded.push('#');
+        for ch in trimmed.chars() {
+            let low = ch.to_ascii_lowercase();
+            expanded.push(low);
+            expanded.push(low);
+        }
+        return expanded;
+    }
+    fallback.to_owned()
+}
+
+/// Ensures every primary navigation destination appears exactly once, preserving user order.
+fn normalize_nav_order(input: &[NavDestination]) -> Vec<NavDestination> {
+    let mut out = Vec::with_capacity(DEFAULT_NAV_ORDER.len());
+    for dest in input {
+        if !out.contains(dest) {
+            out.push(*dest);
+        }
+    }
+    for dest in DEFAULT_NAV_ORDER {
+        if !out.contains(&dest) {
+            out.push(dest);
+        }
+    }
+    out
+}
+
+/// Lightweight UI appearance & navigation customization persisted globally.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct UiCustomizationSettings {
+    /// Custom primary/accent color (`#rrggbb`) applied in Light mode.
+    pub light_accent: String,
+    /// Custom primary/accent color (`#rrggbb`) applied in Dark mode.
+    pub dark_accent: String,
+    /// Display order of the four main navigation destinations.
+    pub nav_order: Vec<NavDestination>,
+}
+
+impl Default for UiCustomizationSettings {
+    fn default() -> Self {
+        Self {
+            light_accent: DEFAULT_LIGHT_ACCENT.to_owned(),
+            dark_accent: DEFAULT_DARK_ACCENT.to_owned(),
+            nav_order: DEFAULT_NAV_ORDER.to_vec(),
+        }
+    }
+}
+
+impl UiCustomizationSettings {
+    pub(crate) fn sanitized(mut self) -> Self {
+        self.light_accent = normalize_hex_color(&self.light_accent, DEFAULT_LIGHT_ACCENT);
+        self.dark_accent = normalize_hex_color(&self.dark_accent, DEFAULT_DARK_ACCENT);
+        self.nav_order = normalize_nav_order(&self.nav_order);
+        self
+    }
+}
+
 /// Application UI color theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -432,6 +527,47 @@ impl Default for ReaderSettings {
     }
 }
 
+impl ReaderSettings {
+    /// Clamps numeric fields into safe operational bounds and reconciles legacy fields.
+    pub(crate) fn sanitized(mut self) -> Self {
+        self.width = match self.width {
+            ImageWidth::FitWindow => ImageWidth::FitWindow,
+            ImageWidth::Percent(p) => ImageWidth::Percent(p.clamp(30, 100)),
+            ImageWidth::Px(px) => ImageWidth::Px(px.clamp(400, 2000)),
+        };
+
+        // Reconcile legacy `gap_px` if loaded from pre-2.0 JSON where `vertical` was omitted.
+        let default_gap = VerticalModeSettings::default().page_gap_px;
+        if self.vertical.page_gap_px == default_gap && self.gap_px != default_gap && self.gap_px > 0
+        {
+            self.vertical.page_gap_px = self.gap_px;
+        }
+        // Vertical reading always uses continuous vertical scroll (legacy `vertical_grouped` normalizes safely).
+        self.vertical.layout_mode = VerticalLayoutMode::ContinuousStrip;
+        self.vertical.pages_per_group = self.vertical.pages_per_group.clamp(1, 8);
+        self.vertical.page_gap_px = self.vertical.page_gap_px.min(48);
+        self.vertical.group_gap_px = self.vertical.group_gap_px.clamp(8, 96);
+        self.vertical.dim_level = self.vertical.dim_level.min(100);
+        self.gap_px = self.vertical.page_gap_px;
+
+        self.horizontal.pages_per_group = self.horizontal.pages_per_group.clamp(1, 8);
+        self.horizontal.page_gap_px = self.horizontal.page_gap_px.min(48);
+        self.horizontal.group_gap_px = self.horizontal.group_gap_px.clamp(8, 96);
+        self.horizontal.dim_level = self.horizontal.dim_level.min(100);
+
+        // Enforce controlled 5-8 image preload window to balance smoothness and low RAM usage.
+        self.preload_images = self.preload_images.clamp(5, 8);
+        self.behavior.toolbar_auto_hide_secs = if self.behavior.toolbar_auto_hide_secs == 0 {
+            0
+        } else {
+            self.behavior.toolbar_auto_hide_secs.clamp(2, 15)
+        };
+        self.behavior.vertical_margin_px = self.behavior.vertical_margin_px.min(64);
+        self.behavior.navigation_speed = self.behavior.navigation_speed.clamp(1, 10);
+        self
+    }
+}
+
 /// Background new-chapter and app-release checker settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -504,7 +640,7 @@ pub(crate) struct CacheSettings {
 
 impl Default for CacheSettings {
     fn default() -> Self {
-        Self { max_mb: 1024 }
+        Self { max_mb: 128 }
     }
 }
 
@@ -516,6 +652,8 @@ pub(crate) struct Settings {
     pub language: Language,
     /// UI color theme.
     pub theme: Theme,
+    /// Customized Light/Dark accent colors and main navigation order.
+    pub ui: UiCustomizationSettings,
     /// Device identity settings (real + custom display name).
     pub device: DeviceSettings,
     /// Vertical & Horizontal reader settings.
@@ -542,6 +680,7 @@ fn sanitize_floating_pos(pos: &mut FloatingButtonPosition) {
 impl Settings {
     /// Clamps numeric fields into safe operational bounds and reconciles legacy fields.
     pub(crate) fn sanitized(mut self) -> Self {
+        self.ui = self.ui.sanitized();
         self.device.custom_name = self.device.custom_name.and_then(|raw| {
             let trimmed: String = raw.trim().chars().take(48).collect();
             if trimmed.is_empty() {
@@ -551,43 +690,7 @@ impl Settings {
             }
         });
 
-        self.reader.width = match self.reader.width {
-            ImageWidth::FitWindow => ImageWidth::FitWindow,
-            ImageWidth::Percent(p) => ImageWidth::Percent(p.clamp(30, 100)),
-            ImageWidth::Px(px) => ImageWidth::Px(px.clamp(400, 2000)),
-        };
-
-        // Reconcile legacy `gap_px` if loaded from pre-2.0 JSON where `vertical` was omitted.
-        let default_gap = VerticalModeSettings::default().page_gap_px;
-        if self.reader.vertical.page_gap_px == default_gap
-            && self.reader.gap_px != default_gap
-            && self.reader.gap_px > 0
-        {
-            self.reader.vertical.page_gap_px = self.reader.gap_px;
-        }
-        // Vertical reading always uses continuous vertical scroll (legacy `vertical_grouped` normalizes safely).
-        self.reader.vertical.layout_mode = VerticalLayoutMode::ContinuousStrip;
-        self.reader.vertical.pages_per_group = self.reader.vertical.pages_per_group.clamp(1, 8);
-        self.reader.vertical.page_gap_px = self.reader.vertical.page_gap_px.min(48);
-        self.reader.vertical.group_gap_px = self.reader.vertical.group_gap_px.clamp(8, 96);
-        self.reader.vertical.dim_level = self.reader.vertical.dim_level.min(100);
-        self.reader.gap_px = self.reader.vertical.page_gap_px;
-
-        self.reader.horizontal.pages_per_group = self.reader.horizontal.pages_per_group.clamp(1, 8);
-        self.reader.horizontal.page_gap_px = self.reader.horizontal.page_gap_px.min(48);
-        self.reader.horizontal.group_gap_px = self.reader.horizontal.group_gap_px.clamp(8, 96);
-        self.reader.horizontal.dim_level = self.reader.horizontal.dim_level.min(100);
-
-        // Enforce controlled 5-8 image preload window to balance smoothness and low RAM usage.
-        self.reader.preload_images = self.reader.preload_images.clamp(5, 8);
-        self.reader.behavior.toolbar_auto_hide_secs =
-            if self.reader.behavior.toolbar_auto_hide_secs == 0 {
-                0
-            } else {
-                self.reader.behavior.toolbar_auto_hide_secs.clamp(2, 15)
-            };
-        self.reader.behavior.vertical_margin_px = self.reader.behavior.vertical_margin_px.min(64);
-        self.reader.behavior.navigation_speed = self.reader.behavior.navigation_speed.clamp(1, 10);
+        self.reader = self.reader.sanitized();
 
         // Sanitize floating controls screens & bounds.
         let mut clean_screens: Vec<String> = Vec::with_capacity(VALID_FLOATING_SCREENS.len());
@@ -617,6 +720,7 @@ impl Settings {
             SettingsSection::Appearance => {
                 self.language = Language::default();
                 self.theme = Theme::default();
+                self.ui = UiCustomizationSettings::default();
             }
             SettingsSection::Device => {
                 self.device = DeviceSettings::default();
@@ -648,6 +752,11 @@ impl Settings {
         serde_json::json!({
             "language": self.language,
             "theme": self.theme,
+            "ui": {
+                "lightAccent": self.ui.light_accent,
+                "darkAccent": self.ui.dark_accent,
+                "navOrder": self.ui.nav_order,
+            },
             "reader": {
                 "orientation": self.reader.orientation,
                 "preloadImages": self.reader.preload_images,
@@ -791,5 +900,54 @@ mod tests {
         assert!(!net.doh.enabled);
         assert_eq!(net.doh.provider_id, "cloudflare");
         assert!(!net.proxy.enabled);
+    }
+
+    #[test]
+    fn ui_customization_sanitizes_independent_accents_and_nav_order() {
+        let legacy = serde_json::from_str::<Settings>(r#"{"theme":"light"}"#)
+            .expect("valid legacy payload")
+            .sanitized();
+        assert_eq!(legacy.ui.light_accent, DEFAULT_LIGHT_ACCENT);
+        assert_eq!(legacy.ui.dark_accent, DEFAULT_DARK_ACCENT);
+        assert_eq!(legacy.ui.nav_order, DEFAULT_NAV_ORDER);
+
+        let custom_json = r#"{
+            "ui": {
+                "lightAccent": "25F",
+                "darkAccent": "not-a-color",
+                "navOrder": ["settings", "home", "home"]
+            }
+        }"#;
+        let sanitized = serde_json::from_str::<Settings>(custom_json)
+            .expect("valid custom UI payload")
+            .sanitized();
+        assert_eq!(
+            sanitized.ui.light_accent, "#2255ff",
+            "3-digit hex must expand without clobbering dark_accent"
+        );
+        assert_eq!(
+            sanitized.ui.dark_accent, DEFAULT_DARK_ACCENT,
+            "invalid dark accent must fall back independently"
+        );
+        assert_eq!(
+            sanitized.ui.nav_order,
+            vec![
+                NavDestination::Settings,
+                NavDestination::Home,
+                NavDestination::Bookmarks,
+                NavDestination::History,
+            ],
+            "nav_order must deduplicate and preserve all four destinations"
+        );
+
+        let mut resettable = sanitized;
+        resettable.theme = Theme::Dark;
+        resettable.reset_section(SettingsSection::Appearance);
+        assert_eq!(resettable.ui.light_accent, DEFAULT_LIGHT_ACCENT);
+        assert_eq!(resettable.ui.dark_accent, DEFAULT_DARK_ACCENT);
+        assert_eq!(resettable.ui.nav_order, DEFAULT_NAV_ORDER);
+
+        let diag = resettable.redacted_for_diagnostics();
+        assert_eq!(diag["ui"]["lightAccent"], DEFAULT_LIGHT_ACCENT);
     }
 }

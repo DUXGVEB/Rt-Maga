@@ -1,5 +1,6 @@
 package com.rtmaga.reader
 
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
@@ -55,15 +56,31 @@ class MainActivity : TauriActivity() {
     attachInsetsListener()
     registerBackHandler()
     applyImmersiveMode()
+    try {
+      startService(Intent(this, TaskRemovedCleanupService::class.java))
+    } catch (_: Exception) {
+      // Safe fallback if OS restricts background service startup; startup & onDestroy sweeps still run.
+    }
   }
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     webViewRef = webView
+    webView.isVerticalScrollBarEnabled = false
+    webView.isHorizontalScrollBarEnabled = false
+    webView.clearCache(true)
     mainHandler.postDelayed({
       applyImmersiveMode()
       pushEnvToWebView(orientationChanged = false)
     }, 150)
+  }
+
+  override fun onStop() {
+    super.onStop()
+    webViewRef?.clearCache(true)
+    if (isFinishing) {
+      StorageCleaner.purgeTransientPageCache(applicationContext)
+    }
   }
 
   override fun onResume() {
@@ -109,6 +126,8 @@ class MainActivity : TauriActivity() {
 
   override fun onDestroy() {
     mainHandler.removeCallbacksAndMessages(null)
+    webViewRef?.clearCache(true)
+    StorageCleaner.purgeTransientPageCache(applicationContext)
     restoreSystemBars()
     super.onDestroy()
   }
@@ -207,6 +226,9 @@ class MainActivity : TauriActivity() {
 
       if (wasImeVisible && !imeVisible && immersiveEnabled) {
         mainHandler.postDelayed({ applyImmersiveMode() }, 100)
+      }
+      if (wasImeVisible != imeVisible) {
+        webViewRef?.requestLayout()
       }
 
       pushEnvToWebView(orientationChanged = false)

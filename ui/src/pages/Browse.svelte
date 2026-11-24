@@ -1,21 +1,20 @@
 <script lang="ts">
   import {
-    AlertCircle,
     ArrowLeft,
     BookOpen,
     ChevronLeft,
     ChevronRight,
-    ExternalLink,
     Globe,
     Loader2,
     RefreshCw,
     Search,
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
+  import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
-  import type { CatalogEntryView, CatalogPageView } from "../lib/types";
+  import type { CatalogEntryView, CatalogPageView, FormattedAppError } from "../lib/types";
 
   let {
     url,
@@ -30,8 +29,9 @@
   let openingEntryUrl = $state<string | null>(null);
   let searchQuery = $state("");
   let failedCovers = $state<Record<string, boolean>>({});
-  let errorState = $state<{ title: string; detail: string; blockedUrl?: string } | null>(null);
+  let errorState = $state<FormattedAppError | null>(null);
   let verifying = $state(false);
+  let loggingIn = $state(false);
   let loadSeq = 0;
 
   const t = $derived(settingsStore.t);
@@ -111,18 +111,49 @@
     router.goBrowse(nextUrl, undefined, false);
   }
 
-  async function handleManualVerify() {
-    if (!errorState?.blockedUrl || verifying) return;
+  async function handleManualVerify(targetUrl?: string) {
+    const target = targetUrl || errorState?.blockedUrl || url;
+    if (!target || verifying) return;
     verifying = true;
     try {
       toasts.push(t.toastOpeningVerify, "info", 4500);
-      await api.openManualVerification(errorState.blockedUrl);
+      await api.openManualVerification(target);
       toasts.push(t.toastVerifyDone, "success");
-      await loadCatalogUrl(errorState.blockedUrl);
+      await loadCatalogUrl(target);
     } catch (err) {
       errorState = formatAppError(err, settingsStore.value.language);
     } finally {
       verifying = false;
+    }
+  }
+
+  async function handleBrowserLogin(targetUrl: string) {
+    const target = targetUrl || url;
+    if (!target || loggingIn) return;
+    loggingIn = true;
+    try {
+      toasts.push(t.errActionOpeningLogin, "info", 4500);
+      const outcome = await api.openBrowserLoginSession(target);
+      if (outcome.cookiesSynced) {
+        toasts.push(t.toastLoginSynced, "success");
+        await loadCatalogUrl(target);
+      } else {
+        toasts.push(t.toastLoginExternalOpened, "info", 4500);
+      }
+    } catch (err) {
+      errorState = formatAppError(err, settingsStore.value.language);
+    } finally {
+      loggingIn = false;
+    }
+  }
+
+  async function handleOpenExternal(targetUrl: string) {
+    const target = targetUrl || errorState?.externalUrl || url;
+    if (!target) return;
+    try {
+      await api.openExternalUrl(target);
+    } catch (err) {
+      toasts.push(formatAppError(err, settingsStore.value.language).detail, "error");
     }
   }
 </script>
@@ -200,8 +231,8 @@
           <button
             type="submit"
             disabled={!searchQuery.trim() || loading}
-            class="shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-45"
-            style="background-color: var(--accent);"
+            class="shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold disabled:opacity-45"
+            style="background-color: var(--accent); color: var(--accent-fg);"
           >
             {t.browseSearchBtn}
           </button>
@@ -243,38 +274,17 @@
       {/each}
     </div>
   {:else if errorState}
-    <div
-      class="flex flex-col items-center gap-3 rounded-2xl border p-6 text-center"
-      style="background-color: var(--surface); border-color: var(--danger);"
-    >
-      <AlertCircle size={26} style="color: var(--danger);" />
-      <div class="text-sm font-semibold">{errorState.title}</div>
-      <p class="max-w-lg text-xs leading-relaxed" style="color: var(--text-muted);">
-        {errorState.detail}
-      </p>
-      <div class="flex flex-wrap justify-center gap-2 pt-1">
-        {#if errorState.blockedUrl}
-          <button
-            type="button"
-            disabled={verifying}
-            onclick={handleManualVerify}
-            class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white"
-            style="background-color: var(--accent);"
-          >
-            <ExternalLink size={14} />
-            <span>{verifying ? t.waitingVerification : t.openVerification}</span>
-          </button>
-        {/if}
-        <button
-          type="button"
-          onclick={() => void loadCatalogUrl(url)}
-          class="rounded-xl border px-4 py-2 text-xs font-medium"
-          style="border-color: var(--border); background-color: var(--surface-subtle);"
-        >
-          {t.retry}
-        </button>
-      </div>
-    </div>
+    <SourceDiagnosticCard
+      error={errorState}
+      fallbackUrl={url}
+      {verifying}
+      {loggingIn}
+      onRetry={() => void loadCatalogUrl(url)}
+      onVerify={(u) => void handleManualVerify(u)}
+      onLogin={(u) => void handleBrowserLogin(u)}
+      onOpenExternal={(u) => void handleOpenExternal(u)}
+      onOpenNetworkSettings={() => router.goSettings("network")}
+    />
   {:else if !catalog || catalog.entries.length === 0}
     <div
       class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-16 text-center"

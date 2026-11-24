@@ -395,8 +395,8 @@
           type="button"
           disabled={busy}
           onclick={() => respondHost("approve")}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
-          style="background-color: var(--accent);"
+          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+          style="background-color: var(--accent); color: var(--accent-fg);"
         >
           <CheckCircle2 size={14} />
           <span>{t.syncApproveBtn}</span>
@@ -437,8 +437,8 @@
           type="button"
           disabled={busy}
           onclick={() => respondReceiver("approve")}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
-          style="background-color: var(--accent);"
+          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+          style="background-color: var(--accent); color: var(--accent-fg);"
         >
           <CheckCircle2 size={14} />
           <span>{t.syncApproveBtn}</span>
@@ -627,8 +627,8 @@
             type="button"
             disabled={busy || isActiveFlow}
             onclick={startSender}
-            class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold text-white disabled:opacity-45"
-            style="background-color: var(--accent);"
+            class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
+            style="background-color: var(--accent); color: var(--accent-fg);"
           >
             <QrCode size={15} />
             <span>{t.syncStartQrBtn}</span>
@@ -655,8 +655,8 @@
                 type="button"
                 disabled={busy || pinInput.replace(/\D/g, "").length !== 6}
                 onclick={connectWithPin}
-                class="inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-semibold text-white disabled:opacity-45"
-                style="background-color: var(--accent);"
+                class="inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-semibold disabled:opacity-45"
+                style="background-color: var(--accent); color: var(--accent-fg);"
               >
                 {#if busy}
                   <Loader2 size={13} class="animate-spin" />
@@ -700,8 +700,8 @@
                 type="button"
                 disabled={busy}
                 onclick={startCameraScanner}
-                class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-45"
-                style="background-color: var(--accent);"
+                class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold disabled:opacity-45"
+                style="background-color: var(--accent); color: var(--accent-fg);"
               >
                 <Camera size={14} />
                 <span>{t.syncStartCamera}</span>
@@ -783,8 +783,8 @@
             type="button"
             disabled={busy || isActiveFlow}
             onclick={startSender}
-            class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold text-white disabled:opacity-45"
-            style="background-color: var(--accent);"
+            class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
+            style="background-color: var(--accent); color: var(--accent-fg);"
           >
             <Wifi size={15} />
             <span>{t.syncStartPinBtn}</span>
@@ -813,8 +813,8 @@
   .settings-card {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
-    padding: 1.25rem;
+    gap: 0.8rem;
+    padding: 1rem 1.15rem;
     border-radius: 1rem;
     border: 1px solid var(--border);
     background-color: var(--surface);

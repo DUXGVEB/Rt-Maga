@@ -687,6 +687,40 @@ fn moetruyen_detail_and_embedded_media_chapter_parsers() {
         chap.images[1].url.as_str(),
         "https://cdn.example.invalid/page2.png"
     );
+
+    let imgx_html = r#"<!doctype html>
+    <html>
+      <body>
+        <h1>Chapter 2</h1>
+        <script>
+          const taintImage = new Image();
+          taintImage.src = "https://t.truyen.moe/taint.png";
+          const err = new Error("IMGX display protection requires cross-origin taint");
+          window.__CHAPTER__ = {
+            media: [
+              {"pageIndex": 1, "storageKey": "chapters/manga-88/001_abc.js", "primaryUrl": "https://cdn.example.invalid/imgx1", "downloadUrl": "https://i.truyen.moe/chapters/manga-88/001_abc.js", "allowFallback": false}
+            ]
+          };
+        </script>
+      </body>
+    </html>"#;
+    let imgx_url = parse_url("https://moetruyen.net/manga/88-synthetic-comedy/chapters/2");
+    let err = moetruyen::parse_chapter_html(imgx_html, &imgx_url)
+        .expect_err("IMGX-protected chapter must be classified as ContentProtected");
+    assert!(
+        matches!(err, ScrapeError::ContentProtected { ref host, .. } if host == "moetruyen.net"),
+        "expected ContentProtected, got {err:?}"
+    );
+    let diag = diagnostic_from_error(
+        &err,
+        imgx_url.as_str(),
+        Some(&imgx_url),
+        UrlKind::ChapterPage,
+        Some("MoeTruyen"),
+        Some("moetruyen"),
+        "parse_chapter",
+    );
+    assert_eq!(diag.status, RecognitionStatus::ContentProtected);
 }
 
 #[tokio::test]

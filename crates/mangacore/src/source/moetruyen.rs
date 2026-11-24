@@ -634,12 +634,26 @@ struct MoeMediaItem {
 ///
 /// # Errors
 ///
-/// Returns [`ScrapeError::MissingImages`] if zero readable chapter page images are found.
+/// Returns [`ScrapeError::ContentProtected`] if the chapter enforces browser-only IMGX display
+/// protection, or [`ScrapeError::MissingImages`] if zero readable chapter page images are found.
 pub fn parse_chapter_html(html: &str, page_url: &Url) -> Result<Chapter, ScrapeError> {
     let doc = Html::parse_document(html);
     let base = effective_base_url(&doc, page_url);
 
-    let mut images = extract_embedded_media_images(html, page_url);
+    let (mut images, imgx_protected) = extract_embedded_media_images(html, page_url);
+
+    if imgx_protected {
+        let host = page_url
+            .host_str()
+            .unwrap_or("moetruyen.net")
+            .to_ascii_lowercase();
+        return Err(ScrapeError::ContentProtected {
+            host,
+            url: page_url.as_str().to_owned(),
+            detail: "MoeTruyen IMGX display protection requires an interactive web browser"
+                .to_owned(),
+        });
+    }
 
     // Fallback to DOM <img> elements if a chapter uses server-rendered image tags.
     if images.is_empty() {
@@ -664,6 +678,18 @@ pub fn parse_chapter_html(html: &str, page_url: &Url) -> Result<Chapter, ScrapeE
     }
 
     if images.is_empty() {
+        if has_imgx_protection_markers(html) {
+            let host = page_url
+                .host_str()
+                .unwrap_or("moetruyen.net")
+                .to_ascii_lowercase();
+            return Err(ScrapeError::ContentProtected {
+                host,
+                url: page_url.as_str().to_owned(),
+                detail: "MoeTruyen IMGX display protection requires an interactive web browser"
+                    .to_owned(),
+            });
+        }
         return Err(ScrapeError::MissingImages {
             url: page_url.clone(),
         });
@@ -692,13 +718,39 @@ pub fn parse_chapter_html(html: &str, page_url: &Url) -> Result<Chapter, ScrapeE
     })
 }
 
-fn extract_embedded_media_images(html: &str, page_url: &Url) -> Vec<PageImage> {
+fn has_imgx_protection_markers(html: &str) -> bool {
+    html.contains("IMGX display protection")
+        || html.contains("t.truyen.moe/taint.png")
+        || (html.contains("taintImage") && html.contains("cross-origin taint"))
+}
+
+fn has_protected_js_media(items: &[MoeMediaItem]) -> bool {
+    items.iter().any(|item| {
+        let js_storage = item.storage_key.as_deref().is_some_and(|k| {
+            std::path::Path::new(k)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("js"))
+                && !k.eq_ignore_ascii_case("0.js")
+        });
+        let js_download = item
+            .download_url
+            .as_deref()
+            .is_some_and(|u| u.to_ascii_lowercase().contains(".js"));
+        js_storage || js_download
+    })
+}
+
+fn extract_embedded_media_images(html: &str, page_url: &Url) -> (Vec<PageImage>, bool) {
     let Some(json_slice) = find_json_array_after(html, "media:") else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let Ok(mut items) = serde_json::from_str::<Vec<MoeMediaItem>>(json_slice) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
+
+    if has_imgx_protection_markers(html) && has_protected_js_media(&items) {
+        return (Vec::new(), true);
+    }
 
     items.sort_by_key(|it| {
         (
@@ -766,7 +818,7 @@ fn extract_embedded_media_images(html: &str, page_url: &Url) -> Vec<PageImage> {
             referer: page_url.clone(),
         });
     }
-    images
+    (images, false)
 }
 
 fn find_json_array_after<'a>(haystack: &'a str, marker: &str) -> Option<&'a str> {
@@ -846,6 +898,8 @@ impl MoeTruyenSource {
                 .collect();
 
             for p in 2..=max_page {
+                // Polite inter-page delay avoids tripping per-IP HTTP 429 rate limits on large manga.
+                tokio::time::sleep(std::time::Duration::from_millis(350)).await;
                 let mut page_url = manga.url.clone();
                 page_url
                     .query_pairs_mut()
@@ -878,6 +932,24 @@ impl MoeTruyenSource {
 impl Source for MoeTruyenSource {
     fn id(&self) -> &'static str {
         "moetruyen"
+    }
+
+    fn metadata(&self) -> crate::source::AdapterMetadata {
+        crate::source::AdapterMetadata {
+            id: "moetruyen",
+            name: "MoeTruyen",
+            version: "1.3.0",
+            domains: &["moetruyen.net", "www.moetruyen.net", "m.moetruyen.net"],
+            auth_support: crate::source::AdapterAuthSupport::OptionalUserSession,
+            strategies: &[
+                crate::ExtractionStrategyKind::SiteAdapter,
+                crate::ExtractionStrategyKind::StructuredDataAndApi,
+            ],
+            known_limitations: &[
+                "Chapters using IMGX cross-origin canvas protection cannot be extracted as direct images and open in browser mode.",
+                "Strict upstream rate limits (HTTP 429) may enforce per-host cooldown waits.",
+            ],
+        }
     }
 
     fn matches(&self, url: &Url) -> bool {

@@ -3359,6 +3359,33 @@ export interface V5Dictionary {
   zoneToggleHudLabel: string;
   horizontalNoGapLabel: string;
   horizontalNoGapDesc: string;
+
+  // Compact Settings Tabs & Mobile Hub
+  settingsTabGeneral: string;
+  settingsTabReader: string;
+  settingsTabFloating: string;
+  settingsTabNetwork: string;
+  settingsTabStorage: string;
+  settingsTabSystem: string;
+  settingsAutoSavedChip: string;
+  settingsQuickDnsOn: string;
+  settingsQuickDnsOff: string;
+  settingsFloatPreviewTitle: string;
+  settingsBySourceTabLabel: (count: number) => string;
+  settingsByMangaTabLabel: (count: number) => string;
+  settingsHiddenTabLabel: (count: number) => string;
+  settingsSearchOpenBtn: string;
+  settingsActiveButtonsCount: (count: number) => string;
+  settingsUpToDateShort: string;
+
+  // Content display protection & per-manga settings
+  errContentProtectedTitle: (host: string) => string;
+  errContentProtectedDetail: string;
+  openInBrowserBtn: string;
+  perMangaSettingsBadge: string;
+  perMangaSettingsHint: string;
+  resetMangaSettingsBtn: string;
+  toastMangaSettingsReset: string;
 }
 
 const V5_EN: V5Dictionary = {
@@ -3428,6 +3455,32 @@ const V5_EN: V5Dictionary = {
   zoneToggleHudLabel: "Toggle reader toolbar",
   horizontalNoGapLabel: "Join pages seamlessly",
   horizontalNoGapDesc: "Attach horizontal pages edge-to-edge with zero spacing between pages.",
+
+  settingsTabGeneral: "General",
+  settingsTabReader: "Reader",
+  settingsTabFloating: "Floating",
+  settingsTabNetwork: "Network & LAN",
+  settingsTabStorage: "Storage",
+  settingsTabSystem: "System",
+  settingsAutoSavedChip: "Auto-saved",
+  settingsQuickDnsOn: "DNS On",
+  settingsQuickDnsOff: "DNS Off",
+  settingsFloatPreviewTitle: "Edge preview",
+  settingsBySourceTabLabel: (count) => `By source (${count})`,
+  settingsByMangaTabLabel: (count) => `By manga (${count})`,
+  settingsHiddenTabLabel: (count) => `Hidden (${count})`,
+  settingsSearchOpenBtn: "Open",
+  settingsActiveButtonsCount: (count) => `${count} active`,
+  settingsUpToDateShort: "Up to date",
+
+  errContentProtectedTitle: (host) => `${host} uses browser-only display protection`,
+  errContentProtectedDetail:
+    "This chapter uses IMGX / canvas display protection that prevents direct image reading inside third-party apps. Open the chapter in your browser to read it.",
+  openInBrowserBtn: "Open in browser",
+  perMangaSettingsBadge: "Custom settings for this manga",
+  perMangaSettingsHint: "Changes here apply only to this manga.",
+  resetMangaSettingsBtn: "Reset to global default",
+  toastMangaSettingsReset: "Restored global default reader settings for this manga.",
 };
 
 const V5_VI: V5Dictionary = {
@@ -3497,6 +3550,32 @@ const V5_VI: V5Dictionary = {
   zoneToggleHudLabel: "Ẩn/hiện thanh công cụ",
   horizontalNoGapLabel: "Dính liền các trang",
   horizontalNoGapDesc: "Nối liền các trang sát mép nhau không có khoảng cách ở chế độ cuộn ngang.",
+
+  settingsTabGeneral: "Chung",
+  settingsTabReader: "Trình đọc",
+  settingsTabFloating: "Nút nổi",
+  settingsTabNetwork: "Mạng & LAN",
+  settingsTabStorage: "Lưu trữ",
+  settingsTabSystem: "Hệ thống",
+  settingsAutoSavedChip: "Tự lưu",
+  settingsQuickDnsOn: "DNS bật",
+  settingsQuickDnsOff: "DNS tắt",
+  settingsFloatPreviewTitle: "Vị trí thực tế",
+  settingsBySourceTabLabel: (count) => `Theo nguồn (${count})`,
+  settingsByMangaTabLabel: (count) => `Theo truyện (${count})`,
+  settingsHiddenTabLabel: (count) => `Truyện ẩn (${count})`,
+  settingsSearchOpenBtn: "Mở",
+  settingsActiveButtonsCount: (count) => `${count} đang bật`,
+  settingsUpToDateShort: "Bản mới nhất",
+
+  errContentProtectedTitle: (host) => `${host} bảo vệ hiển thị chỉ trên trình duyệt`,
+  errContentProtectedDetail:
+    "Chương này dùng cơ chế bảo vệ hiển thị IMGX / canvas khiến ứng dụng ngoài không thể đọc trực tiếp ảnh gốc. Hãy mở chương trên trình duyệt ngoài để đọc.",
+  openInBrowserBtn: "Mở trên trình duyệt",
+  perMangaSettingsBadge: "Cài đặt riêng truyện này",
+  perMangaSettingsHint: "Thay đổi ở đây chỉ áp dụng riêng cho truyện này.",
+  resetMangaSettingsBtn: "Về mặc định chung",
+  toastMangaSettingsReset: "Đã khôi phục cài đặt đọc mặc định chung cho truyện này.",
 };
 
 const V5_DICTIONARIES: Record<Language, V5Dictionary> = {
@@ -3509,7 +3588,174 @@ const V5_DICTIONARIES: Record<Language, V5Dictionary> = {
   th: V5_EN,
 };
 
-export type FullDictionary = Dictionary & V3Dictionary & V4Dictionary & V5Dictionary;
+export interface V6Dictionary {
+  errGroupSourceDetection: string;
+  errGroupChapterId: string;
+  errGroupContentLoading: string;
+  errGroupImageExtraction: string;
+  errGroupAccessPermission: string;
+  errGroupUnsupportedFormat: string;
+  errGroupNetwork: string;
+
+  errActionSignIn: string;
+  errActionOpeningLogin: string;
+  errActionOpenBrowserReading: string;
+  errActionOpenOriginalSite: string;
+  errActionNetworkSettings: string;
+  errActionCopyDiagnostics: string;
+  errDiagnosticsCopied: string;
+
+  errTechDetailsToggle: string;
+  errTechCode: string;
+  errTechDomain: string;
+  errTechPageType: string;
+  errTechConfidence: string;
+  errTechStage: string;
+  errTechHttpStatus: string;
+  errTechContentType: string;
+  errTechBytes: string;
+  errTechCandidates: string;
+  errTechValidated: string;
+  errTechAdapter: string;
+  errTechStrategies: string;
+  errTechFinalUrl: string;
+  errTechBrowserErrors: string;
+  errTechEvidence: string;
+
+  toastLoginSynced: string;
+  toastLoginExternalOpened: string;
+
+  accentColorTitle: string;
+  accentColorDesc: string;
+  accentModeLight: string;
+  accentModeDark: string;
+  accentCustomLabel: string;
+  accentLowContrastHint: string;
+  accentResetModeBtn: string;
+  navOrderSection: string;
+  navOrderDesc: string;
+  navMoveUp: string;
+  navMoveDown: string;
+  navResetOrderBtn: string;
+}
+
+const V6_EN: V6Dictionary = {
+  errGroupSourceDetection: "Source detection failure",
+  errGroupChapterId: "Chapter identification failure",
+  errGroupContentLoading: "Content loading failure",
+  errGroupImageExtraction: "Image extraction failure",
+  errGroupAccessPermission: "Access permission failure",
+  errGroupUnsupportedFormat: "Unsupported technical format",
+  errGroupNetwork: "Network & server issue",
+
+  errActionSignIn: "Sign in via website",
+  errActionOpeningLogin: "Waiting for sign-in...",
+  errActionOpenBrowserReading: "Open in browser reading mode",
+  errActionOpenOriginalSite: "Open original website",
+  errActionNetworkSettings: "Network / Proxy Settings",
+  errActionCopyDiagnostics: "Copy diagnostic report",
+  errDiagnosticsCopied: "Sanitized diagnostic report copied.",
+
+  errTechDetailsToggle: "Diagnostic details (for developers)",
+  errTechCode: "Error code",
+  errTechDomain: "Domain",
+  errTechPageType: "Page type",
+  errTechConfidence: "Confidence",
+  errTechStage: "Failed stage",
+  errTechHttpStatus: "HTTP status",
+  errTechContentType: "Content-Type",
+  errTechBytes: "Response size",
+  errTechCandidates: "Image candidates",
+  errTechValidated: "Validated images",
+  errTechAdapter: "Adapter",
+  errTechStrategies: "Strategies attempted",
+  errTechFinalUrl: "Final URL (redacted)",
+  errTechBrowserErrors: "Browser execution errors",
+  errTechEvidence: "Inspected signals & evidence",
+
+  toastLoginSynced: "Signed in! Session cookies synced, retrying...",
+  toastLoginExternalOpened: "Opened sign-in page in external browser.",
+
+  accentColorTitle: "Accent color",
+  accentColorDesc: "Separate saved colors for Light and Dark modes",
+  accentModeLight: "Light palette",
+  accentModeDark: "Dark palette",
+  accentCustomLabel: "Custom",
+  accentLowContrastHint: "Low contrast on current surface — pick a stronger tone for better clarity.",
+  accentResetModeBtn: "Default",
+  navOrderSection: "Navigation order",
+  navOrderDesc: "Reorder sidebar & bottom navigation tabs",
+  navMoveUp: "Move up",
+  navMoveDown: "Move down",
+  navResetOrderBtn: "Reset order",
+};
+
+const V6_VI: V6Dictionary = {
+  errGroupSourceDetection: "Lỗi nhận diện nguồn",
+  errGroupChapterId: "Lỗi xác định chương",
+  errGroupContentLoading: "Lỗi tải nội dung",
+  errGroupImageExtraction: "Lỗi trích xuất ảnh",
+  errGroupAccessPermission: "Lỗi quyền truy cập",
+  errGroupUnsupportedFormat: "Định dạng kỹ thuật không hỗ trợ",
+  errGroupNetwork: "Lỗi mạng & máy chủ",
+
+  errActionSignIn: "Đăng nhập qua trang web",
+  errActionOpeningLogin: "Đang chờ đăng nhập...",
+  errActionOpenBrowserReading: "Đọc qua trình duyệt",
+  errActionOpenOriginalSite: "Mở trang web gốc",
+  errActionNetworkSettings: "Cài đặt Mạng / Proxy",
+  errActionCopyDiagnostics: "Sao chép báo cáo chẩn đoán",
+  errDiagnosticsCopied: "Đã sao chép báo cáo chẩn đoán (đã ẩn dữ liệu nhạy cảm).",
+
+  errTechDetailsToggle: "Chi tiết chẩn đoán kỹ thuật (dành cho nhà phát triển)",
+  errTechCode: "Mã lỗi",
+  errTechDomain: "Tên miền",
+  errTechPageType: "Loại trang",
+  errTechConfidence: "Độ tin cậy",
+  errTechStage: "Giai đoạn lỗi",
+  errTechHttpStatus: "Mã HTTP",
+  errTechContentType: "Content-Type",
+  errTechBytes: "Kích thước phản hồi",
+  errTechCandidates: "Ứng viên ảnh phát hiện",
+  errTechValidated: "Ảnh xác thực hợp lệ",
+  errTechAdapter: "Bộ nguồn (Adapter)",
+  errTechStrategies: "Các chiến lược đã thử",
+  errTechFinalUrl: "URL đích (đã ẩn bí mật)",
+  errTechBrowserErrors: "Lỗi thực thi trình duyệt",
+  errTechEvidence: "Bằng chứng & tín hiệu đã quét",
+
+  toastLoginSynced: "Đã đăng nhập và đồng bộ phiên trình duyệt, đang thử lại...",
+  toastLoginExternalOpened: "Đã mở trang đăng nhập trên trình duyệt ngoài.",
+
+  accentColorTitle: "Màu chủ đạo",
+  accentColorDesc: "Lưu màu riêng biệt cho chế độ Sáng và Tối",
+  accentModeLight: "Màu nền sáng",
+  accentModeDark: "Màu nền tối",
+  accentCustomLabel: "Tùy chọn",
+  accentLowContrastHint: "Độ tương phản hơi thấp so với nền hiện tại — nên chọn màu đậm/sáng hơn.",
+  accentResetModeBtn: "Mặc định",
+  navOrderSection: "Thứ tự thanh điều hướng",
+  navOrderDesc: "Sắp xếp vị trí các mục Trang chủ, Đã lưu, Lịch sử, Cài đặt",
+  navMoveUp: "Đưa lên",
+  navMoveDown: "Đưa xuống",
+  navResetOrderBtn: "Đặt lại thứ tự",
+};
+
+const V6_DICTIONARIES: Record<Language, V6Dictionary> = {
+  en: V6_EN,
+  vi: V6_VI,
+  zh: V6_EN,
+  ja: V6_EN,
+  ru: V6_EN,
+  ko: V6_EN,
+  th: V6_EN,
+};
+
+export type FullDictionary = Dictionary &
+  V3Dictionary &
+  V4Dictionary &
+  V5Dictionary &
+  V6Dictionary;
 
 const DICTIONARIES: Record<Language, Dictionary> = { en, vi, zh, ja, ru, ko, th };
 
@@ -3519,6 +3765,7 @@ export function getDict(lang: Language): FullDictionary {
     ...(V3_DICTIONARIES[lang] ?? V3_EN),
     ...(V4_DICTIONARIES[lang] ?? V4_EN),
     ...(V5_DICTIONARIES[lang] ?? V5_EN),
+    ...(V6_DICTIONARIES[lang] ?? V6_EN),
   };
 }
 

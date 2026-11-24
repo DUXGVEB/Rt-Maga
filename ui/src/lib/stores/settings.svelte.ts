@@ -1,6 +1,14 @@
 import { api } from "../api";
 import { getDict, getLocale } from "../i18n";
-import type { FloatingScreenKey, Language, Settings, SettingsSection, Theme } from "../types";
+import {
+  computeAccentTokens,
+  DEFAULT_DARK_ACCENT,
+  DEFAULT_LIGHT_ACCENT,
+  DEFAULT_NAV_ORDER,
+  normalizeHexColor,
+  normalizeNavOrder,
+} from "../themeAccent";
+import type { FloatingScreenKey, Settings, SettingsSection, Theme } from "../types";
 import { toasts } from "./toast.svelte";
 
 const ALL_FLOATING_SCREENS: FloatingScreenKey[] = [
@@ -16,6 +24,11 @@ const ALL_FLOATING_SCREENS: FloatingScreenKey[] = [
 export const DEFAULT_SETTINGS: Settings = {
   language: "en",
   theme: "system",
+  ui: {
+    lightAccent: DEFAULT_LIGHT_ACCENT,
+    darkAccent: DEFAULT_DARK_ACCENT,
+    navOrder: [...DEFAULT_NAV_ORDER],
+  },
   device: {
     customName: null,
   },
@@ -113,11 +126,12 @@ export const DEFAULT_SETTINGS: Settings = {
     domainRules: [],
   },
   cache: {
-    maxMb: 1024,
+    maxMb: 128,
   },
 };
 
 function mergeSettings(raw: Partial<Settings>): Settings {
+  const rawUi = raw.ui ?? ({} as Partial<Settings["ui"]>);
   const rawReader = raw.reader ?? ({} as Partial<Settings["reader"]>);
   const rawFloating = raw.floating ?? ({} as Partial<Settings["floating"]>);
   const rawProxy = raw.proxy ?? ({} as Partial<Settings["proxy"]>);
@@ -139,6 +153,11 @@ function mergeSettings(raw: Partial<Settings>): Settings {
   return {
     language: raw.language ?? DEFAULT_SETTINGS.language,
     theme: raw.theme ?? DEFAULT_SETTINGS.theme,
+    ui: {
+      lightAccent: normalizeHexColor(rawUi.lightAccent, DEFAULT_LIGHT_ACCENT),
+      darkAccent: normalizeHexColor(rawUi.darkAccent, DEFAULT_DARK_ACCENT),
+      navOrder: normalizeNavOrder(rawUi.navOrder),
+    },
     device: {
       ...DEFAULT_SETTINGS.device,
       ...(raw.device ?? {}),
@@ -210,30 +229,43 @@ class SettingsStore {
   private saveTimer: number | null = null;
   private saveVersion = 0;
   private inFlightSaves = 0;
+  private lastAppearanceKey = "";
 
-  private applyAppearance(theme: Theme, language: Language) {
-    const resolved = resolveTheme(theme);
+  private applyAppearance(settings: Settings) {
+    const resolved = resolveTheme(settings.theme);
+    const activeAccentHex =
+      resolved === "dark" ? settings.ui.darkAccent : settings.ui.lightAccent;
+    const tokens = computeAccentTokens(activeAccentHex, resolved);
+    const key = `${resolved}|${settings.language}|${tokens.accent}`;
     this.resolvedTheme = resolved;
-    document.documentElement.setAttribute("data-theme", resolved);
-    document.documentElement.setAttribute("lang", language);
+    if (key === this.lastAppearanceKey) return;
+    this.lastAppearanceKey = key;
+
+    const root = document.documentElement;
+    root.setAttribute("data-theme", resolved);
+    root.setAttribute("lang", settings.language);
+    root.style.setProperty("--accent", tokens.accent);
+    root.style.setProperty("--accent-hover", tokens.accentHover);
+    root.style.setProperty("--accent-soft", tokens.accentSoft);
+    root.style.setProperty("--accent-fg", tokens.accentFg);
   }
 
   async init() {
     if (this.initialized) return;
     this.initialized = true;
 
-    this.applyAppearance(this.value.theme, this.value.language);
+    this.applyAppearance(this.value);
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     mq.addEventListener("change", () => {
       if (this.value.theme === "system") {
-        this.applyAppearance("system", this.value.language);
+        this.applyAppearance(this.value);
       }
     });
 
     try {
       const s = await api.getSettings();
       this.value = mergeSettings(s);
-      this.applyAppearance(this.value.theme, this.value.language);
+      this.applyAppearance(this.value);
     } catch {
       // Fallback to defaults when running UI standalone in browser preview.
     } finally {
@@ -244,7 +276,7 @@ class SettingsStore {
       await api.onSettingsChanged((s) => {
         if (this.saveTimer !== null || this.inFlightSaves > 0) return;
         this.value = mergeSettings(s);
-        this.applyAppearance(this.value.theme, this.value.language);
+        this.applyAppearance(this.value);
       });
     } catch {
       // Outside Tauri runtime.
@@ -258,8 +290,13 @@ class SettingsStore {
   update(mutator: (draft: Settings) => void, debounceMs = 0) {
     const draft = $state.snapshot(this.value) as Settings;
     mutator(draft);
+    draft.ui = {
+      lightAccent: normalizeHexColor(draft.ui?.lightAccent, DEFAULT_LIGHT_ACCENT),
+      darkAccent: normalizeHexColor(draft.ui?.darkAccent, DEFAULT_DARK_ACCENT),
+      navOrder: normalizeNavOrder(draft.ui?.navOrder),
+    };
     this.value = draft;
-    this.applyAppearance(draft.theme, draft.language);
+    this.applyAppearance(draft);
     this.schedulePersist(draft, debounceMs);
   }
 
@@ -273,7 +310,7 @@ class SettingsStore {
       const saved = await api.resetSettingsSection(section);
       if (version === this.saveVersion && this.saveTimer === null) {
         this.value = mergeSettings(saved);
-        this.applyAppearance(this.value.theme, this.value.language);
+        this.applyAppearance(this.value);
       }
       toasts.push(this.t.toastSectionReset, "success", 2000);
     } catch {
@@ -291,7 +328,7 @@ class SettingsStore {
       const saved = await api.resetAllSettings();
       if (version === this.saveVersion && this.saveTimer === null) {
         this.value = mergeSettings(saved);
-        this.applyAppearance(this.value.theme, this.value.language);
+        this.applyAppearance(this.value);
       }
       toasts.push(this.t.toastAllSettingsReset, "success", 2400);
     } catch {
@@ -313,7 +350,7 @@ class SettingsStore {
         const saved = await api.setSettings(payload);
         if (version === this.saveVersion && this.saveTimer === null) {
           this.value = mergeSettings(saved);
-          this.applyAppearance(this.value.theme, this.value.language);
+          this.applyAppearance(this.value);
         }
       } catch (err) {
         if ("__TAURI_INTERNALS__" in window) {

@@ -33,6 +33,12 @@ struct TokenPayload {
     /// Optional owning source site hostname for scoped cache management.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     s: Option<String>,
+    /// `true` for persistent cover thumbnails, `false` for transient chapter page images.
+    #[serde(default)]
+    c: bool,
+    /// Optional owning chapter URL for post-chapter cache reclamation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ch: Option<String>,
 }
 
 /// Encodes a [`PageImage`] into an HMAC-signed token safe for the `img://` protocol.
@@ -40,6 +46,7 @@ pub(crate) fn encode_page_token(
     image: &PageImage,
     manga_id: Option<i64>,
     site: Option<&str>,
+    chapter_url: Option<&str>,
     key: &[u8; 32],
 ) -> String {
     let derived_site = site.map(str::to_owned).or_else(|| {
@@ -58,6 +65,8 @@ pub(crate) fn encode_page_token(
         r: image.referer.as_str().to_owned(),
         m: manga_id,
         s: derived_site,
+        c: false,
+        ch: chapter_url.map(str::to_owned),
     };
     sign_payload(&payload, key)
 }
@@ -82,6 +91,8 @@ pub(crate) fn encode_cover_token(
         r: referer_url.to_owned(),
         m: manga_id,
         s: derived_site,
+        c: true,
+        ch: None,
     };
     sign_payload(&payload, key)
 }
@@ -109,6 +120,12 @@ fn decode_and_verify(token: &str, key: &[u8; 32]) -> Option<TokenPayload> {
     serde_json::from_slice(&json_bytes).ok()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseCachePolicy {
+    Cover,
+    NoStorePage,
+}
+
 /// Handles an incoming `img://` (or `http://img.localhost/`) protocol request asynchronously.
 pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Response<Vec<u8>> {
     let Ok(parsed_uri) = Url::parse(uri) else {
@@ -124,17 +141,23 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
         return error_response(StatusCode::FORBIDDEN, "invalid image token");
     };
 
+    let policy = if payload.c {
+        ResponseCachePolicy::Cover
+    } else {
+        ResponseCachePolicy::NoStorePage
+    };
     let cache_key = ImageCache::key_for_url(&payload.u);
     let meta = CacheEntryMeta {
         site: payload.s.as_deref(),
         manga_id: payload.m,
+        is_cover: payload.c,
+        chapter_url: payload.ch.as_deref(),
     };
 
     if !bypass_cache && let Some(hit) = state.images.get(&cache_key, meta.clone()).await {
-        return image_ok_response(hit.bytes.to_vec(), &hit.content_type);
+        return image_ok_response(hit.bytes.to_vec(), &hit.content_type, policy);
     }
 
-    // Deduplicate concurrent downloads of the same image.
     let _flight_guard = if bypass_cache {
         None
     } else {
@@ -142,11 +165,21 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
         if guard.is_none()
             && let Some(hit) = state.images.get(&cache_key, meta.clone()).await
         {
-            return image_ok_response(hit.bytes.to_vec(), &hit.content_type);
+            return image_ok_response(hit.bytes.to_vec(), &hit.content_type, policy);
         }
         guard
     };
 
+    fetch_and_cache_image(state, &payload, &cache_key, meta, policy).await
+}
+
+async fn fetch_and_cache_image(
+    state: &AppState,
+    payload: &TokenPayload,
+    cache_key: &str,
+    meta: CacheEntryMeta<'_>,
+    policy: ResponseCachePolicy,
+) -> Response<Vec<u8>> {
     let referer = Url::parse(&payload.r).ok();
     let max_mb = state.current_settings().await.cache.max_mb;
 
@@ -171,21 +204,17 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
             .await
         {
             Ok(fetched) if !fetched.bytes.is_empty() => {
-                let meta = CacheEntryMeta {
-                    site: payload.s.as_deref(),
-                    manga_id: payload.m,
-                };
                 state
                     .images
                     .put(
-                        &cache_key,
+                        cache_key,
                         &fetched.bytes,
                         &fetched.content_type,
                         max_mb,
-                        meta,
+                        meta.clone(),
                     )
                     .await;
-                return image_ok_response(fetched.bytes.to_vec(), &fetched.content_type);
+                return image_ok_response(fetched.bytes.to_vec(), &fetched.content_type, policy);
             }
             Ok(_) => {
                 warn!(%candidate_url, "image response was empty");
@@ -225,8 +254,29 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
 fn classify_image_fetch_err(err: &ScrapeError) -> (StatusCode, &'static str) {
     match err {
         ScrapeError::Timeout { .. } => (StatusCode::REQUEST_TIMEOUT, "timeout"),
+        ScrapeError::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         ScrapeError::InvalidImageFormat { .. } => {
             (StatusCode::UNSUPPORTED_MEDIA_TYPE, "invalid_image_format")
+        }
+        ScrapeError::CorruptedData { .. } => (StatusCode::UNPROCESSABLE_ENTITY, "corrupted_data"),
+        ScrapeError::Classified(detail) => {
+            let status = detail
+                .status
+                .and_then(|code| StatusCode::from_u16(code).ok())
+                .unwrap_or(match detail.code {
+                    mangacore::SourceErrorCode::ImageSourceChanged => StatusCode::GONE,
+                    mangacore::SourceErrorCode::ImageDecodeFailed => {
+                        StatusCode::UNPROCESSABLE_ENTITY
+                    }
+                    _ => StatusCode::BAD_GATEWAY,
+                });
+            let cat = match detail.code {
+                mangacore::SourceErrorCode::ImageSourceChanged => "image_source_changed",
+                mangacore::SourceErrorCode::ImageDecodeFailed => "image_decode_failed",
+                mangacore::SourceErrorCode::ImageRequestFailed => "image_request_failed",
+                _ => "network",
+            };
+            (status, cat)
         }
         ScrapeError::HttpStatus { status, .. } => (
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
@@ -236,13 +286,23 @@ fn classify_image_fetch_err(err: &ScrapeError) -> (StatusCode, &'static str) {
     }
 }
 
-fn image_ok_response(body: Vec<u8>, content_type: &str) -> Response<Vec<u8>> {
+fn image_ok_response(
+    body: Vec<u8>,
+    content_type: &str,
+    policy: ResponseCachePolicy,
+) -> Response<Vec<u8>> {
     let safe_ct = http::HeaderValue::from_str(content_type)
         .unwrap_or_else(|_| http::HeaderValue::from_static("application/octet-stream"));
+    // Chapter pages return `no-store` so Android WebView / WebView2 never duplicate large chapter
+    // images into their own opaque HTTP disk cache; small covers remain cacheable for instant lists.
+    let cache_control = match policy {
+        ResponseCachePolicy::Cover => "private, max-age=86400",
+        ResponseCachePolicy::NoStorePage => "no-store",
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", safe_ct)
-        .header("Cache-Control", "public, max-age=86400")
+        .header("Cache-Control", cache_control)
         .header("Access-Control-Allow-Origin", "*")
         .body(body)
         .expect("valid static response headers")
@@ -270,13 +330,35 @@ mod tests {
             referer: Url::parse("https://example.com/series/demo-chap-44").unwrap(),
         };
 
-        let token = encode_page_token(&img, Some(7), Some("example.com"), &key);
+        let token = encode_page_token(
+            &img,
+            Some(7),
+            Some("example.com"),
+            Some("https://example.com/series/demo-chap-44"),
+            &key,
+        );
         let decoded = decode_and_verify(&token, &key).expect("valid token must decode");
         assert_eq!(decoded.u, img.url.as_str());
         assert_eq!(decoded.f.len(), 1);
         assert_eq!(decoded.r, img.referer.as_str());
         assert_eq!(decoded.m, Some(7));
         assert_eq!(decoded.s.as_deref(), Some("example.com"));
+        assert!(!decoded.c, "page tokens must not be marked as cover");
+        assert_eq!(
+            decoded.ch.as_deref(),
+            Some("https://example.com/series/demo-chap-44"),
+            "page tokens must carry chapter url for post-chapter cache cleanup"
+        );
+
+        let cover_token = encode_cover_token(
+            "https://cdn.example.com/cover.jpg",
+            "https://example.com/series/demo",
+            Some(7),
+            Some("example.com"),
+            &key,
+        );
+        let cover_decoded = decode_and_verify(&cover_token, &key).expect("cover token decodes");
+        assert!(cover_decoded.c, "cover tokens must be marked as cover");
 
         let tampered = format!("{token}x");
         assert!(decode_and_verify(&tampered, &key).is_none());

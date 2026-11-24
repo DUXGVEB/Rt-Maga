@@ -8,7 +8,6 @@
     Check,
     CheckCircle2,
     CornerDownLeft,
-    ExternalLink,
     EyeOff,
     Loader2,
     Play,
@@ -17,11 +16,12 @@
     Trash2,
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
+  import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
-  import type { MangaView } from "../lib/types";
+  import type { FormattedAppError, MangaView } from "../lib/types";
 
   let { id }: { id: number } = $props();
 
@@ -29,11 +29,12 @@
   let loading = $state(true);
   let refreshing = $state(false);
   let verifying = $state(false);
+  let loggingIn = $state(false);
   let hiding = $state(false);
   let deleting = $state(false);
   let showDeleteModal = $state(false);
-  let errorState = $state<{ title: string; detail: string; blockedUrl?: string } | null>(null);
-  let blockedRefreshUrl = $state<string | null>(null);
+  let errorState = $state<FormattedAppError | null>(null);
+  let refreshErrorState = $state<FormattedAppError | null>(null);
   let coverError = $state(false);
   let query = $state("");
   let jumpInput = $state("");
@@ -47,7 +48,7 @@
     const seq = ++loadSeq;
     loading = true;
     errorState = null;
-    blockedRefreshUrl = null;
+    refreshErrorState = null;
     coverError = false;
     showDeleteModal = false;
     try {
@@ -69,7 +70,7 @@
     const targetId = id;
     const seq = ++loadSeq;
     refreshing = true;
-    blockedRefreshUrl = null;
+    refreshErrorState = null;
     try {
       const updated = await api.refreshManga(targetId);
       if (seq !== loadSeq) return;
@@ -79,7 +80,7 @@
     } catch (err) {
       if (seq === loadSeq) {
         const f = formatAppError(err, settingsStore.value.language);
-        blockedRefreshUrl = f.blockedUrl ?? null;
+        refreshErrorState = f;
         toasts.push(f.detail || f.title, "error");
       }
     } finally {
@@ -94,13 +95,55 @@
       toasts.push(t.toastOpeningVerify, "info", 4500);
       await api.openManualVerification(targetUrl);
       toasts.push(t.toastVerifyDone, "success");
-      blockedRefreshUrl = null;
-      await refresh();
+      refreshErrorState = null;
+      if (manga) {
+        await refresh();
+      } else {
+        await load(id);
+      }
     } catch (err) {
       const f = formatAppError(err, settingsStore.value.language);
+      if (manga) refreshErrorState = f;
+      else errorState = f;
       toasts.push(f.detail || f.title, "error");
     } finally {
       verifying = false;
+    }
+  }
+
+  async function handleBrowserLogin(targetUrl: string) {
+    if (!targetUrl || loggingIn) return;
+    loggingIn = true;
+    try {
+      toasts.push(t.errActionOpeningLogin, "info", 4500);
+      const outcome = await api.openBrowserLoginSession(targetUrl);
+      if (outcome.cookiesSynced) {
+        toasts.push(t.toastLoginSynced, "success");
+        refreshErrorState = null;
+        if (manga) {
+          await refresh();
+        } else {
+          await load(id);
+        }
+      } else {
+        toasts.push(t.toastLoginExternalOpened, "info", 4500);
+      }
+    } catch (err) {
+      const f = formatAppError(err, settingsStore.value.language);
+      if (manga) refreshErrorState = f;
+      else errorState = f;
+      toasts.push(f.detail || f.title, "error");
+    } finally {
+      loggingIn = false;
+    }
+  }
+
+  async function handleOpenExternal(targetUrl: string) {
+    if (!targetUrl) return;
+    try {
+      await api.openExternalUrl(targetUrl);
+    } catch (err) {
+      toasts.push(formatAppError(err, settingsStore.value.language).detail, "error");
     }
   }
 
@@ -256,23 +299,6 @@
 
     {#if manga}
       <div class="flex flex-wrap items-center gap-2">
-        {#if blockedRefreshUrl}
-          <button
-            type="button"
-            disabled={verifying}
-            onclick={() => blockedRefreshUrl && handleManualVerify(blockedRefreshUrl)}
-            class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-            style="background-color: var(--accent);"
-          >
-            {#if verifying}
-              <Loader2 size={14} class="animate-spin" />
-              <span>{t.waitingVerification}</span>
-            {:else}
-              <ExternalLink size={14} />
-              <span>{t.openVerification}</span>
-            {/if}
-          </button>
-        {/if}
         <button
           type="button"
           onclick={refresh}
@@ -321,31 +347,32 @@
       </div>
     </div>
   {:else if errorState}
-    <div
-      class="flex flex-col items-center gap-3 rounded-xl border p-6 text-center text-sm"
-      style="background-color: var(--surface); border-color: var(--danger);"
-    >
-      <div class="font-semibold">{errorState.title}</div>
-      <div class="text-xs" style="color: var(--text-muted);">{errorState.detail}</div>
-      {#if errorState.blockedUrl}
-        <button
-          type="button"
-          disabled={verifying}
-          onclick={() => errorState?.blockedUrl && handleManualVerify(errorState.blockedUrl)}
-          class="mt-1 inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-          style="background-color: var(--accent);"
-        >
-          {#if verifying}
-            <Loader2 size={14} class="animate-spin" />
-            <span>{t.waitingVerification}</span>
-          {:else}
-            <ExternalLink size={14} />
-            <span>{t.openVerification}</span>
-          {/if}
-        </button>
-      {/if}
-    </div>
+    <SourceDiagnosticCard
+      error={errorState}
+      fallbackUrl={manga?.url}
+      {verifying}
+      {loggingIn}
+      onRetry={() => void load(id)}
+      onVerify={(u) => void handleManualVerify(u)}
+      onLogin={(u) => void handleBrowserLogin(u)}
+      onOpenExternal={(u) => void handleOpenExternal(u)}
+      onOpenNetworkSettings={() => router.goSettings("network")}
+    />
   {:else if manga}
+    {#if refreshErrorState}
+      <SourceDiagnosticCard
+        compact
+        error={refreshErrorState}
+        fallbackUrl={manga.url}
+        {verifying}
+        {loggingIn}
+        onRetry={() => void refresh()}
+        onVerify={(u) => void handleManualVerify(u)}
+        onLogin={(u) => void handleBrowserLogin(u)}
+        onOpenExternal={(u) => void handleOpenExternal(u)}
+        onOpenNetworkSettings={() => router.goSettings("network")}
+      />
+    {/if}
     <!-- Manga Header -->
     <section
       class="flex flex-col gap-6 rounded-2xl border p-6 sm:flex-row"
@@ -477,8 +504,8 @@
             type="button"
             onclick={startPrimary}
             disabled={manga.chapters.length === 0}
-            class="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-45"
-            style="background-color: var(--accent);"
+            class="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-45"
+            style="background-color: var(--accent); color: var(--accent-fg);"
           >
             <Play size={16} fill="currentColor" />
             <span>
@@ -543,8 +570,8 @@
             />
             <button
               type="submit"
-              class="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-white transition-opacity hover:opacity-90"
-              style="background-color: var(--accent);"
+              class="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold transition-opacity hover:opacity-90"
+              style="background-color: var(--accent); color: var(--accent-fg);"
               title={t.quickChapterJump}
             >
               <CornerDownLeft size={12} />

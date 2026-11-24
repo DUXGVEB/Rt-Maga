@@ -1,0 +1,171 @@
+# RtMaga Source-Available License (Version 1.0)
+
+Copyright (c) 2025-2026 RtMaga (DUXGVEB). All rights reserved.
+Official Repository: https://github.com/DUXGVEB/Rt-Maga
+Official Releases:   https://github.com/DUXGVEB/Rt-Maga/releases
+
+> **Maintainer Confirmation Notice:** The copyright holder's full legal name
+> (individual or corporate entity), direct legal/licensing contact email, and
+> designated governing jurisdiction have not been pre-filled from repository
+> history and must be confirmed by the project maintainer prior to relying on
+> this document for formal enforcement.
+
+---
+
+## 1. Source-Available Notice (Not Open Source)
+
+This Software is made **source-available** strictly under the terms of this
+**RtMaga Source-Available License (Version 1.0)** ("License"). **This License
+is NOT an Open Source license** as defined by the Open Source Initiative (OSI)
+and is not compatible with MIT, Apache-2.0, GPL, or other OSI-approved terms.
+Source visibility is provided solely so users may inspect how the software
+works, verify behavior, study the codebase, build private local copies for
+permitted personal use, and report bugs, subject to all restrictions below.
+
+---
+
+## 2. Definitions
+
+- **"Copyright Holder"** / **"Licensor"** refers to the copyright owner(s) of
+  RtMaga identified in `COPYRIGHT.md` and associated with `DUXGVEB` / `RtMaga`.
+- **"Covered Work"** means the original RtMaga source code, user interface,
+  documentation, build scripts, original visual assets, icons, logos, and
+  **Official Builds** compiled and distributed by or on behalf of the Copyright
+  Holder (including builds targeting **Windows**, **Linux**, **macOS**, and
+  **Android**, to the extent applicable), excluding Third-Party Components.
+- **"Official Build"** means an unmodified binary installer, package, archive,
+  or executable published directly by the Copyright Holder through Official
+  Releases (`https://github.com/DUXGVEB/Rt-Maga/releases`).
+- **"Third-Party Components"** means external libraries, crates, packages,
+  frameworks, fonts, or runtimes governed by their own separate licenses as
+  documented in `THIRD-PARTY-LICENSES.md` and `NOTICE`.
+- **"You"** means any individual or legal entity exercising permissions under
+  this License.
+
+---
+
+## 3. Permitted Uses
+
+Subject to complete compliance with this License (including Section 4 and
+Section 5), the Copyright Holder grants You a limited, non-exclusive,
+non-transferable, non-sublicensable, revocable license to:
+
+1. **Inspect and Study:** View, read, and analyze the Covered Work source code
+   and documentation for personal learning, security/privacy review, or
+   non-commercial academic/educational study.
+2. **Download and Run Official Builds:** Download and execute unmodified
+   Official Builds on Windows, Linux, macOS, or Android devices for **personal,
+   non-commercial, or educational use**.
+3. **Private Local Compilation and Modification:** Compile the Covered Work from
+   source and make private local modifications solely for **Your own personal,
+   non-commercial, non-distributed evaluation or local use** on devices You
+   control, provided that neither those modifications nor any binaries built
+   from them are distributed, published, hosted, or made available to others.
+4. **Report Issues and Submit Contributions:** Submit bug reports, feature
+   feedback, and pull requests to the official repository subject to
+   `CONTRIBUTING.md`.
+
+---
+
+## 4. Restrictions and Prohibited Uses
+
+Except with **prior written permission** signed or issued by an authorized
+representative of the Copyright Holder, You must **NOT**:
+
+1. **Redistribute Original or Modified Source Code:** Copy, mirror, repackage,
+   publish, upload, or redistribute the Covered Work (in whole or in
+   substantial part), or any modified version of the Covered Work, through public
+   or private channels other than standard repository inspection permitted on
+   the official hosting platform without distributing derivative artifacts.
+2. **Distribute Unofficial or Modified Binaries:** Publish, distribute,
+   sublicense, host, sideload-distribute, or upload compiled installers, APKs,
+   packages, executables, or containers built from original or modified Covered
+   Work across Windows, Linux, macOS, Android, app stores, or third-party
+   download portals.
+3. **Commercial Exploitation:** Sell, license, sublicense, rent, lease,
+   monetize, bundle with paid/ad-supported products, or use the Covered Work (or
+   any substantially derived software incorporating protected code from the
+   Covered Work) to deliver a commercial product or paid hosted service.
+4. **Substantially Derived Products:** Create and distribute standalone
+   applications, forks, forks-as-a-product, SDKs, or derivative software
+   substantially derived from or incorporating protected RtMaga source code,
+   architecture-specific original modules, or UI components without prior
+   written authorization.
+5. **Rebranding and Misrepresentation of Origin:** Remove, alter, obscure, or
+   replace copyright notices, `LICENSE`, `COPYRIGHT.md`, `NOTICE`, or
+   attribution; rename or rebrand the Covered Work as another product for
+   distribution; or distribute any build in a way that implies official
+   endorsement, sponsorship, or origin from RtMaga.
+
+---
+
+## 5. Name, Logos, Icons, and Brand Identity
+
+Nothing in this License grants any trademark rights or permission to use the
+names **"RtMaga"**, **"Gt-Maga"**, **"DUXGVEB"**, application logos, or icons
+(including `ui/src/assets/logo.png`, `src-tauri/icons/`, and Android launcher
+icons) except as strictly necessary for truthful, factual reference to the
+official project (for example, linking to Official Releases or preserving
+required unmodified notices). Creating confusingly similar branding or
+repackaged distributions under official icons is strictly prohibited.
+
+---
+
+## 6. Third-Party Components and Scope Clarification
+
+1. **Third-Party Licenses Govern External Code:** This License applies **only**
+   to original RtMaga materials in the Covered Work. Third-Party Components
+   included or linked alongside RtMaga remain licensed exclusively under their
+   respective third-party licenses (such as MIT, Apache-2.0, ISC, BSD, MPL-2.0,
+   Unicode-3.0, and CDLA-Permissive-2.0). Nothing in this License imposes extra
+   restrictions that conflict with the rights granted to You directly by those
+   upstream third-party licenses in relation to those separate components.
+2. **Independent Development and Mandatory Law:** This License protects
+   copyrighted expression and branding within the Covered Work. Nothing in this
+   License purports to prohibit independent creation of software with similar
+   functionality, ideas, protocols, or user workflows created without copying
+   protected RtMaga expression, nor does it restrict automated indexing or
+   rights explicitly preserved by mandatory applicable law (such as statutory
+   interoperability, fair dealing/fair use, or consumer rights that cannot be
+   waived by contract).
+
+---
+
+## 7. Requests for Additional Permissions
+
+For permission to redistribute builds, deploy RtMaga commercially, integrate
+protected RtMaga modules into another distributed product, or request a bespoke
+commercial license, contact the Copyright Holder through the official repository
+channel (`https://github.com/DUXGVEB/Rt-Maga`) to request written terms prior
+to any such use.
+
+---
+
+## 8. Copyright Retention and Termination
+
+The Copyright Holder retains all right, title, and copyright interest in the
+Covered Work not expressly granted here. Your rights under this License
+**terminate automatically and immediately** if You fail to comply with any
+material term of this License. Upon termination, You must promptly cease all
+use and distribution of the Covered Work and destroy copies in Your possession
+or control beyond statutory archival exceptions.
+
+---
+
+## 9. Disclaimer of Warranty and Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW:
+
+1. **AS-IS Disclaimer:** THE COVERED WORK IS PROVIDED **"AS IS"** AND **"AS
+   AVAILABLE"**, WITHOUT WARRANTY OF ANY KIND, EXPRESS, IMPLIED, OR STATUTORY,
+   INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AVAILABILITY, OR ACCURACY.
+2. **Limitation of Liability:** IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+   CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+   EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL DAMAGES (INCLUDING LOSS OF DATA,
+   PROFITS, GOODWILL, OR DEVICE/SYSTEM FAILURE) ARISING OUT OF OR IN CONNECTION
+   WITH THE COVERED WORK OR THIS LICENSE, EVEN IF ADVISED OF THE POSSIBILITY OF
+   SUCH DAMAGES.
+3. **User Content Responsibility:** RtMaga is a local client reader without a
+   hosted media backend. Users are solely responsible for ensuring that URLs,
+   network configurations, and content they access comply with applicable law.

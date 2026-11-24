@@ -6,10 +6,11 @@ members = [
 ]
 
 [workspace.package]
-version = "2.4.3"
+version = "2.5.0"
 edition = "2024"
 rust-version = "1.85"
-license = "MIT"
+license-file = "LICENSE"
+publish = false
 authors = ["RtMaga"]
 
 [workspace.dependencies]

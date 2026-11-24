@@ -98,8 +98,8 @@
         <button
           type="button"
           onclick={resumeCrashSession}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-semibold text-white transition-opacity hover:opacity-90"
-          style="background-color: var(--accent);"
+          class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-semibold transition-opacity hover:opacity-90"
+          style="background-color: var(--accent); color: var(--accent-fg);"
         >
           <Play size={12} fill="currentColor" />
           <span>{t.crashRecoveryResume}</span>

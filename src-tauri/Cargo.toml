@@ -4,7 +4,8 @@ description = "RtMaga desktop manga reader built with Tauri 2 and Rust."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
+publish.workspace = true
 
 [lib]
 name = "rtmaga_lib"

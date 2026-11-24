@@ -18,6 +18,7 @@
   import { toasts } from "../stores/toast.svelte";
   import type { DohTestResult, NetworkProviderInfo, NetworkServiceType } from "../types";
   import ProxySettingsPanel from "./ProxySettingsPanel.svelte";
+  import ToggleSwitch from "./ToggleSwitch.svelte";
 
   let providers = $state<NetworkProviderInfo[]>([]);
   let testing = $state(false);
@@ -162,9 +163,9 @@
         disabled={resetting}
         class="net-reset-btn"
         title={t.resetSectionBtn}
+        aria-label={t.resetSectionBtn}
       >
-        <RotateCcw size={12} />
-        <span>{t.resetSectionBtn}</span>
+        <RotateCcw size={13} />
       </button>
     </div>
   </div>
@@ -280,14 +281,13 @@
               {t.netSystemFallbackDesc}
             </div>
           </div>
-          <input
-            type="checkbox"
+          <ToggleSwitch
+            size="sm"
             checked={doh.allowSystemFallback}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
+            ariaLabel={t.netSystemFallbackLabel}
+            onchange={(checked) => {
               settingsStore.update((d) => (d.doh.allowSystemFallback = checked));
             }}
-            class="h-4 w-4 accent-rose-500"
           />
         </div>
 
@@ -372,8 +372,8 @@
   .net-card {
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
-    padding: 1.25rem;
+    gap: 0.75rem;
+    padding: 1rem 1.15rem;
     border-radius: 1rem;
     border: 1px solid var(--border);
     background-color: var(--surface);

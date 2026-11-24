@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -222,6 +223,26 @@ class DeviceEnvPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.resolve(res)
     } catch (ex: Exception) {
       invoke.reject(ex.message ?: ex.toString())
+    }
+  }
+
+  @Command
+  fun readClipboardText(invoke: Invoke) {
+    activity.runOnUiThread {
+      try {
+        val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        val clip = clipboard?.primaryClip
+        val raw = if (clip != null && clip.itemCount > 0) {
+          clip.getItemAt(0)?.coerceToText(activity)?.toString()?.trim()
+        } else {
+          null
+        }
+        val res = JSObject()
+        res.put("text", raw ?: "")
+        invoke.resolve(res)
+      } catch (ex: Exception) {
+        invoke.reject(ex.message ?: ex.toString())
+      }
     }
   }
 }

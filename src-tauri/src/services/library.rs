@@ -10,6 +10,7 @@ use crate::repo::diagnostics::NewDiagnosticLog;
 use crate::repo::history::{HistoryEntryRow, HistoryProgressRow, LastReadingDestination};
 use crate::repo::manga::{ChapterRow, HideAction, MangaRow};
 use crate::repo::notification::NotificationRow;
+use crate::settings::ReaderSettings;
 use crate::state::AppState;
 
 /// Controls whether loading a manga uses local DB data or refetches from the remote website.
@@ -66,6 +67,7 @@ pub(crate) struct MangaView {
     pub unread_count: i64,
     pub is_completed: bool,
     pub reader_mode_override: Option<String>,
+    pub reader_settings: Option<ReaderSettings>,
     pub detected_webtoon: bool,
     pub latest_chapter_name: Option<String>,
     pub source_id: Option<String>,
@@ -239,16 +241,24 @@ pub(crate) async fn resolve_url(
         Ok(pair) => pair,
         Err(boxed) => {
             let (err, diag) = *boxed;
-            let app_err = AppError::from(err);
+            let report_json = diag
+                .report
+                .as_ref()
+                .and_then(|r| serde_json::to_string_pretty(r).ok())
+                .unwrap_or_else(|| diag.detail.clone());
+            let app_err = match diag.report.clone() {
+                Some(report) => AppError::from_scrape_and_report(&err, report),
+                None => AppError::from(err),
+            };
             let _ = state
                 .db
                 .record_diagnostic_log(&NewDiagnosticLog {
                     level: "error".to_owned(),
                     category: app_err.category().to_owned(),
                     message: format!("Failed to resolve URL ({:?})", diag.status),
-                    detail: Some(diag.detail.clone()),
+                    detail: Some(report_json),
                     source: diag.website.clone(),
-                    chapter_url: Some(raw_url.to_owned()),
+                    chapter_url: Some(diag.submitted_url.clone()),
                     failed_url: Some(diag.submitted_url.clone()),
                     resolved_url: diag.resolved_url.clone(),
                     http_status: diag.http_status.map(i64::from),
@@ -388,22 +398,37 @@ pub(crate) async fn get_manga(
 
     if mode == FetchMode::RefreshFromWeb {
         let policy = state.current_settings().await.headless_policy();
-        let resolved = match state.registry.resolve(&row.url, policy).await {
-            Ok(r) => r,
-            Err(err) => {
-                let app_err = AppError::from(err);
+        let (resolved, _diag) = match state
+            .registry
+            .resolve_with_diagnostics(&row.url, policy)
+            .await
+        {
+            Ok(pair) => pair,
+            Err(boxed) => {
+                let (err, diag) = *boxed;
+                let report_json = diag
+                    .report
+                    .as_ref()
+                    .and_then(|r| serde_json::to_string_pretty(r).ok())
+                    .unwrap_or_else(|| diag.detail.clone());
+                let app_err = match diag.report.clone() {
+                    Some(report) => AppError::from_scrape_and_report(&err, report),
+                    None => AppError::from(err),
+                };
                 let _ = state
                     .db
                     .record_diagnostic_log(&NewDiagnosticLog {
                         level: "error".to_owned(),
                         category: app_err.category().to_owned(),
                         message: format!("Failed to refresh chapter list for '{}'", row.title),
-                        detail: Some(app_err.to_string()),
+                        detail: Some(report_json),
                         source: Some(row.site.clone()),
-                        chapter_url: Some(row.url.clone()),
-                        failed_url: Some(row.url.clone()),
-                        http_status: app_err.http_status().map(i64::from),
-                        parsing_stage: Some("manga_refresh".to_owned()),
+                        chapter_url: Some(diag.submitted_url.clone()),
+                        failed_url: Some(diag.submitted_url.clone()),
+                        resolved_url: diag.resolved_url.clone(),
+                        http_status: diag.http_status.map(i64::from),
+                        adapter: diag.adapter.clone(),
+                        parsing_stage: Some(diag.stage.clone()),
                         ..NewDiagnosticLog::default()
                     })
                     .await;
@@ -511,6 +536,30 @@ pub(crate) async fn set_manga_reader_override(
         .db
         .set_manga_reader_override(manga_id, override_mode)
         .await
+}
+
+/// Persists or clears a manga's full per-title [`ReaderSettings`] configuration.
+///
+/// # Errors
+///
+/// Returns [`AppError::Db`] or [`AppError::Internal`] on serialization/SQLite failure.
+pub(crate) async fn set_manga_reader_settings(
+    state: &AppState,
+    manga_id: i64,
+    reader_settings: Option<ReaderSettings>,
+) -> Result<Option<ReaderSettings>, AppError> {
+    let clean = reader_settings.map(ReaderSettings::sanitized);
+    let json = match clean.as_ref() {
+        Some(rs) => Some(serde_json::to_string(rs).map_err(|e| AppError::Internal {
+            message: format!("failed to serialize per-manga reader settings: {e}"),
+        })?),
+        None => None,
+    };
+    state
+        .db
+        .set_manga_reader_settings(manga_id, json.as_deref())
+        .await?;
+    Ok(clean)
 }
 
 /// Records that passive Webtoon / Long-Strip detection matched this manga.
@@ -720,6 +769,12 @@ fn map_manga_view(
         .as_deref()
         .map(|c| encode_cover_token(c, &row.url, Some(row.id), Some(&row.site), proxy_key));
 
+    let reader_settings = row
+        .reader_settings_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<ReaderSettings>(raw).ok())
+        .map(ReaderSettings::sanitized);
+
     MangaView {
         id: row.id,
         url: row.url,
@@ -732,6 +787,7 @@ fn map_manga_view(
         unread_count,
         is_completed,
         reader_mode_override: row.reader_mode_override,
+        reader_settings,
         detected_webtoon: row.detected_webtoon != 0,
         latest_chapter_name: row.latest_chapter_name,
         source_id: row.source_id,

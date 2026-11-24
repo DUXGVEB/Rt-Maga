@@ -4,7 +4,8 @@ description = "Core manga URL resolver, site adapters, generic HTML heuristics, 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
+publish.workspace = true
 
 [features]
 default = ["headless"]

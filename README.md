@@ -20,12 +20,28 @@ A lightweight, minimalist, **100% serverless (no-backend)** cross-platform manga
   - **PC → Phone:** Generate a one-time QR code on PC and scan it from the phone.
   - **Phone → PC:** Generate a 6-digit Pairing Code on the phone and enter it on PC (with automatic UDP LAN discovery + manual `IP:Port` fallback).
   - **Smart Conflict Merge:** Deduplicates series by URL, skips identical chapter progress, picks the entry with further chapter reading progress when chapters differ, and merges per-chapter read flags.
-- **Smart Homepage, Library & Searchable Settings:** Clean Light / Dark / System theme, 7 built-in UI languages (English, Vietnamese, Chinese, Japanese, Russian, Korean, Thai), cover tap to resume vs. title tap for chapter list, unread chapter badges, dimmed read chapters, dedicated **Completed** section at the bottom of Home (automatically returning to active when a new chapter is found), **Hidden Series** manager & confirmed permanent deletion, non-blocking crash recovery, instant searchable Settings with per-section & global reset, and sanitized diagnostic log export.
-- **Desktop & Adaptive Mobile Ready:** Left sidebar on Windows desktop and adaptive edge-to-edge immersive fullscreen on Android phones with customizable floating controls.
+- **Smart Homepage, Library & Searchable Settings:** Clean Light / Dark / System theme, independent Light & Dark **Accent Color** customization with automatic contrast-safe foregrounds, customizable **Navigation Order** (Home, Bookmarks, History, Settings) synced across desktop sidebar and mobile bottom bar, 7 built-in UI languages (English, Vietnamese, Chinese, Japanese, Russian, Korean, Thai), cover tap to resume vs. title tap for chapter list, unread chapter badges, dimmed read chapters, dedicated **Completed** section at the bottom of Home (automatically returning to active when a new chapter is found), **Hidden Series** manager & confirmed permanent deletion, non-blocking crash recovery, instant searchable Settings with per-section & global reset, and sanitized diagnostic log export.
+- **Desktop & Adaptive Mobile Ready:** Left sidebar on Windows, Linux, and macOS desktop and adaptive edge-to-edge portrait & landscape layout on Android devices with customizable floating controls and safe-area/IME-aware scrolling.
 
 ## Downloads
 
-Visit the [Releases](https://github.com/DUXGVEB/Rt-Maga/releases) page to download pre-built installers for **Windows x64** (`.exe` / `.msi`) and **Android ARM64** (`.apk`).
+Visit the official [Releases](https://github.com/DUXGVEB/Rt-Maga/releases) page to download official pre-built installers for **Windows x64** (`.exe` / `.msi`), **Android ARM64** (`.apk`), and future desktop/mobile packages.
+
+> **Official Distribution Notice:** Only builds downloaded from `https://github.com/DUXGVEB/Rt-Maga/releases` (and verified against the published SHA-256 checksums) are official **RtMaga** releases. Third-party mirrors, rebranded clones, and unauthorized redistributed builds are neither permitted under our license nor verified by the project maintainer.
+
+## License & Copyright
+
+`Copyright (c) 2025-2026 RtMaga (DUXGVEB). All rights reserved.`
+
+**RtMaga is a source-available project — NOT Open Source under OSI definitions.**
+You may inspect the source code, download and run unmodified Official Builds for personal/educational use, make private local non-distributed builds/modifications, and report bugs, subject strictly to the **RtMaga Source-Available License (Version 1.0)**. Commercial use, redistribution of original or modified source/binaries, distribution of substantially derived products, and rebranding require prior written permission.
+
+- [LICENSE](LICENSE) — Full terms of the RtMaga Source-Available License (v1.0)
+- [COPYRIGHT.md](COPYRIGHT.md) — Copyright ownership and original vs. third-party materials
+- [NOTICE](NOTICE) — Attribution and required third-party open-source notices (including MPL-2.0 Section 3.3)
+- [CONTRIBUTING.md](CONTRIBUTING.md) — Bug reports, pull requests, and contribution license grant
+- [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) — Verified dependency license inventory
+- [CHANGELOG.md](CHANGELOG.md) — Release history
 
 ## Development & Building
 

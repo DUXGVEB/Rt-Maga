@@ -81,6 +81,8 @@ pub(crate) fn redact_sensitive(input: &str) -> String {
         "password=",
         "passwd=",
         "token=",
+        "access_token=",
+        "refresh_token=",
         "authorization:",
         "bearer ",
         "cookie:",
@@ -89,6 +91,12 @@ pub(crate) fn redact_sensitive(input: &str) -> String {
         "apikey=",
         "secret=",
         "session=",
+        "session_id=",
+        "sig=",
+        "signature=",
+        "x-amz-signature=",
+        "hdnts=",
+        "jwt=",
     ] {
         sanitized = redact_after_marker(&sanitized, secret_key);
     }

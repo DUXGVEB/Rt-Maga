@@ -24,6 +24,7 @@
   import { router } from "./lib/stores/router.svelte";
   import { settingsStore } from "./lib/stores/settings.svelte";
   import { updatesStore } from "./lib/stores/updates.svelte";
+  import { normalizeNavOrder } from "./lib/themeAccent";
   import type { FloatingScreenKey } from "./lib/types";
   import Bookmarks from "./pages/Bookmarks.svelte";
   import Browse from "./pages/Browse.svelte";
@@ -103,6 +104,7 @@
   const isReader = $derived(router.current.name === "reader");
   const t = $derived(settingsStore.t);
   const activeScreen = $derived<FloatingScreenKey>(router.current.name);
+  const navOrder = $derived(normalizeNavOrder(settingsStore.value.ui.navOrder));
 
   $effect(() => {
     void router.current.name;
@@ -161,8 +163,8 @@
           <Bell size={19} />
           {#if notificationsStore.unreadCount > 0}
             <span
-              class="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white"
-              style="background-color: var(--accent);"
+              class="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold"
+              style="background-color: var(--accent); color: var(--accent-fg);"
             >
               {notificationsStore.unreadCount > 99 ? "99+" : notificationsStore.unreadCount}
             </span>
@@ -174,9 +176,9 @@
     <main
       bind:this={mainEl}
       onscroll={handleMainScroll}
-      class="relative min-h-0 flex-1 {isReader
+      class="relative min-h-0 min-w-0 flex-1 {isReader
         ? 'overflow-hidden'
-        : 'main-desktop-safe-top overflow-y-auto pb-20 md:pb-0'}"
+        : 'main-scroll-area overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y'}"
       style={isReader
         ? ""
         : "padding-left: var(--safe-left); padding-right: var(--safe-right);"}
@@ -197,8 +199,8 @@
             <button
               type="button"
               onclick={() => appReleaseStore.openPrompt()}
-              class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1 font-semibold text-white transition-opacity hover:opacity-90"
-              style="background-color: var(--accent);"
+              class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1 font-semibold transition-opacity hover:opacity-90"
+              style="background-color: var(--accent); color: var(--accent-fg);"
             >
               <Download size={13} />
               <span>{t.updateDownloadAndInstall}</span>
@@ -255,60 +257,77 @@
       showScrollTop={showMainScrollTop}
       onScrollTop={scrollMainToTop}
       onLongPressScrollTop={() => router.goSettings("floating")}
-      hasBottomNav={deviceEnv.isMobile}
+      hasBottomNav={deviceEnv.viewportWidth < 768}
     />
 
-    <!-- Mobile Bottom Navigation: Home | Bookmarks | History (double-tap resume) | Settings -->
+    <!-- Mobile Bottom Navigation (hidden at >=768px where Sidebar renders): user-ordered destinations -->
     <nav
+      aria-label={t.navOrderSection}
       class="fixed right-0 bottom-0 left-0 z-20 flex items-center justify-around border-t py-1.5 md:hidden"
       style="padding-bottom: max(0.375rem, var(--safe-bottom)); padding-left: var(--safe-left); padding-right: var(--safe-right); background-color: var(--surface); border-color: var(--border);"
     >
-      <button
-        type="button"
-        onclick={() => router.goHome()}
-        class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
-        style="color: {router.current.name === 'home' ||
-        router.current.name === 'manga' ||
-        router.current.name === 'browse'
-          ? 'var(--accent)'
-          : 'var(--text-muted)'};"
-      >
-        <HomeIcon size={19} />
-        <span>{t.navHome}</span>
-      </button>
-
-      <button
-        type="button"
-        onclick={() => router.goBookmarks()}
-        class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
-        style="color: {router.current.name === 'bookmarks'
-          ? 'var(--accent)'
-          : 'var(--text-muted)'};"
-      >
-        <Bookmark size={19} />
-        <span>{t.navBookmarks}</span>
-      </button>
-
-      <button
-        type="button"
-        onclick={() => void router.goHistoryOrResume()}
-        class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
-        style="color: {router.current.name === 'history' ? 'var(--accent)' : 'var(--text-muted)'};"
-        title={t.historyResumeHint}
-      >
-        <Clock size={19} />
-        <span>{t.navHistory}</span>
-      </button>
-
-      <button
-        type="button"
-        onclick={() => router.goSettings()}
-        class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
-        style="color: {router.current.name === 'settings' ? 'var(--accent)' : 'var(--text-muted)'};"
-      >
-        <SettingsIcon size={19} />
-        <span>{t.navSettings}</span>
-      </button>
+      {#each navOrder as dest (dest)}
+        {#if dest === "home"}
+          <button
+            type="button"
+            onclick={() => router.goHome()}
+            class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
+            style="color: {router.current.name === 'home' ||
+            router.current.name === 'manga' ||
+            router.current.name === 'browse'
+              ? 'var(--accent)'
+              : 'var(--text-muted)'};"
+            aria-current={router.current.name === 'home' ||
+            router.current.name === 'manga' ||
+            router.current.name === 'browse'
+              ? 'page'
+              : undefined}
+          >
+            <HomeIcon size={19} />
+            <span>{t.navHome}</span>
+          </button>
+        {:else if dest === "bookmarks"}
+          <button
+            type="button"
+            onclick={() => router.goBookmarks()}
+            class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
+            style="color: {router.current.name === 'bookmarks'
+              ? 'var(--accent)'
+              : 'var(--text-muted)'};"
+            aria-current={router.current.name === 'bookmarks' ? 'page' : undefined}
+          >
+            <Bookmark size={19} />
+            <span>{t.navBookmarks}</span>
+          </button>
+        {:else if dest === "history"}
+          <button
+            type="button"
+            onclick={() => void router.goHistoryOrResume()}
+            class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
+            style="color: {router.current.name === 'history'
+              ? 'var(--accent)'
+              : 'var(--text-muted)'};"
+            aria-current={router.current.name === 'history' ? 'page' : undefined}
+            title={t.historyResumeHint}
+          >
+            <Clock size={19} />
+            <span>{t.navHistory}</span>
+          </button>
+        {:else}
+          <button
+            type="button"
+            onclick={() => router.goSettings()}
+            class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
+            style="color: {router.current.name === 'settings'
+              ? 'var(--accent)'
+              : 'var(--text-muted)'};"
+            aria-current={router.current.name === 'settings' ? 'page' : undefined}
+          >
+            <SettingsIcon size={19} />
+            <span>{t.navSettings}</span>
+          </button>
+        {/if}
+      {/each}
     </nav>
   {/if}
 

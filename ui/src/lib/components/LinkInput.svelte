@@ -1,9 +1,7 @@
 <script lang="ts">
   import {
-    AlertCircle,
     ArrowRight,
     ClipboardPaste,
-    ExternalLink,
     Link2,
     Loader2,
     X,
@@ -12,13 +10,17 @@
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
+  import type { FormattedAppError } from "../types";
+  import SourceDiagnosticCard from "./SourceDiagnosticCard.svelte";
 
   let urlInput = $state("");
   let inputEl = $state<HTMLInputElement | null>(null);
   let loading = $state(false);
   let verifying = $state(false);
+  let loggingIn = $state(false);
   let pasting = $state(false);
-  let errorState = $state<{ title: string; detail: string; blockedUrl?: string } | null>(null);
+  let lastSubmittedUrl = $state("");
+  let errorState = $state<FormattedAppError | null>(null);
 
   const t = $derived(settingsStore.t);
 
@@ -27,6 +29,7 @@
     if (!target || loading) return;
 
     loading = true;
+    lastSubmittedUrl = target;
     errorState = null;
 
     try {
@@ -60,33 +63,71 @@
     pasting = true;
     errorState = null;
     try {
+      // Prefer native OS clipboard bridge (works reliably on Android WebView & Windows WebView2
+      // where `navigator.clipboard.readText()` is blocked on `http://tauri.localhost`).
+      let nativeReadSucceeded = false;
+      try {
+        const nativeText = await api.readClipboardText();
+        nativeReadSucceeded = true;
+        if (nativeText && nativeText.trim().length > 0) {
+          urlInput = nativeText.trim();
+          inputEl?.focus();
+          return;
+        }
+      } catch {
+        // Fall back to Web Clipboard API below (e.g. browser dev preview).
+      }
+
       if (
-        typeof navigator === "undefined" ||
-        !navigator.clipboard ||
-        typeof navigator.clipboard.readText !== "function"
+        typeof navigator !== "undefined" &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.readText === "function"
       ) {
-        toasts.push(t.clipboardUnsupportedError, "info", 2800);
-        inputEl?.focus();
-        return;
+        try {
+          const text = (await navigator.clipboard.readText()).trim();
+          if (text) {
+            urlInput = text;
+            inputEl?.focus();
+            return;
+          }
+          toasts.push(t.clipboardEmptyError, "info", 2400);
+          inputEl?.focus();
+          return;
+        } catch (err) {
+          if (nativeReadSucceeded) {
+            toasts.push(t.clipboardEmptyError, "info", 2400);
+            inputEl?.focus();
+            return;
+          }
+          const name = err instanceof Error ? err.name : "";
+          if (name === "NotAllowedError" || name === "SecurityError") {
+            toasts.push(t.clipboardPermissionError, "info", 3200);
+          } else {
+            toasts.push(t.clipboardUnsupportedError, "info", 2800);
+          }
+          inputEl?.focus();
+          return;
+        }
       }
-      const text = (await navigator.clipboard.readText()).trim();
-      if (!text) {
-        toasts.push(t.clipboardEmptyError, "info", 2400);
-        inputEl?.focus();
-        return;
-      }
-      urlInput = text;
-      inputEl?.focus();
-    } catch (err) {
-      const name = err instanceof Error ? err.name : "";
-      if (name === "NotAllowedError" || name === "SecurityError") {
-        toasts.push(t.clipboardPermissionError, "info", 3200);
-      } else {
-        toasts.push(t.clipboardUnsupportedError, "info", 2800);
-      }
+
+      toasts.push(
+        nativeReadSucceeded ? t.clipboardEmptyError : t.clipboardUnsupportedError,
+        "info",
+        2400
+      );
       inputEl?.focus();
     } finally {
       pasting = false;
+    }
+  }
+
+  async function handleOpenExternal(targetUrl?: string) {
+    const target = targetUrl || errorState?.externalUrl || lastSubmittedUrl;
+    if (!target) return;
+    try {
+      await api.openExternalUrl(target);
+    } catch (err) {
+      toasts.push(formatAppError(err, settingsStore.value.language).detail, "error");
     }
   }
 
@@ -99,18 +140,39 @@
     }
   }
 
-  async function handleManualVerify() {
-    if (!errorState?.blockedUrl || verifying) return;
+  async function handleManualVerify(targetUrl?: string) {
+    const target = targetUrl || errorState?.blockedUrl || lastSubmittedUrl;
+    if (!target || verifying) return;
     verifying = true;
     try {
       toasts.push(t.toastOpeningVerify, "info", 4500);
-      await api.openManualVerification(errorState.blockedUrl);
+      await api.openManualVerification(target);
       toasts.push(t.toastVerifyDone, "success");
-      await submit(errorState.blockedUrl);
+      await submit(target);
     } catch (err) {
       errorState = formatAppError(err, settingsStore.value.language);
     } finally {
       verifying = false;
+    }
+  }
+
+  async function handleBrowserLogin(targetUrl: string) {
+    const target = targetUrl || lastSubmittedUrl || urlInput.trim();
+    if (!target || loggingIn) return;
+    loggingIn = true;
+    try {
+      toasts.push(t.errActionOpeningLogin, "info", 4500);
+      const outcome = await api.openBrowserLoginSession(target);
+      if (outcome.cookiesSynced) {
+        toasts.push(t.toastLoginSynced, "success");
+        await submit(target);
+      } else {
+        toasts.push(t.toastLoginExternalOpened, "info", 4500);
+      }
+    } catch (err) {
+      errorState = formatAppError(err, settingsStore.value.language);
+    } finally {
+      loggingIn = false;
     }
   }
 </script>
@@ -181,8 +243,8 @@
       <button
         type="submit"
         disabled={loading || !urlInput.trim()}
-        class="flex shrink-0 items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-45"
-        style="background-color: var(--accent);"
+        class="flex shrink-0 items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-medium transition-opacity disabled:opacity-45"
+        style="background-color: var(--accent); color: var(--accent-fg);"
       >
         {#if loading}
           <Loader2 size={16} class="animate-spin" />
@@ -196,34 +258,18 @@
   </form>
 
   {#if errorState}
-    <div
-      class="mt-3 flex items-start gap-3 rounded-xl border p-3.5 text-left text-sm"
-      style="background-color: var(--surface); border-color: var(--danger);"
-    >
-      <AlertCircle size={18} class="mt-0.5 shrink-0" style="color: var(--danger);" />
-      <div class="min-w-0 flex-1">
-        <div class="font-semibold">{errorState.title}</div>
-        <p class="mt-0.5 text-xs leading-relaxed break-words" style="color: var(--text-muted);">
-          {errorState.detail}
-        </p>
-        {#if errorState.blockedUrl}
-          <button
-            type="button"
-            onclick={handleManualVerify}
-            disabled={verifying}
-            class="mt-2.5 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white"
-            style="background-color: var(--accent);"
-          >
-            {#if verifying}
-              <Loader2 size={14} class="animate-spin" />
-              <span>{t.waitingVerification}</span>
-            {:else}
-              <ExternalLink size={14} />
-              <span>{t.openVerification}</span>
-            {/if}
-          </button>
-        {/if}
-      </div>
+    <div class="mt-3">
+      <SourceDiagnosticCard
+        error={errorState}
+        fallbackUrl={lastSubmittedUrl || urlInput.trim() || undefined}
+        {verifying}
+        {loggingIn}
+        onRetry={() => void submit(lastSubmittedUrl || urlInput.trim())}
+        onVerify={(u) => void handleManualVerify(u)}
+        onLogin={(u) => void handleBrowserLogin(u)}
+        onOpenExternal={(u) => void handleOpenExternal(u)}
+        onOpenNetworkSettings={() => router.goSettings("network")}
+      />
     </div>
   {/if}
 </div>

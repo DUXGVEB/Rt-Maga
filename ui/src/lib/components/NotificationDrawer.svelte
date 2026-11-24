@@ -58,8 +58,8 @@
         <h2 class="text-base font-semibold">{t.notifCenterTitle}</h2>
         {#if notificationsStore.unreadCount > 0}
           <span
-            class="rounded-full px-2 py-0.5 text-[11px] font-semibold text-white"
-            style="background-color: var(--accent);"
+            class="rounded-full px-2 py-0.5 text-[11px] font-semibold"
+            style="background-color: var(--accent); color: var(--accent-fg);"
           >
             {notificationsStore.unreadCount}
           </span>

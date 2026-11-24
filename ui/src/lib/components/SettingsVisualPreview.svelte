@@ -114,7 +114,7 @@
   <!-- Miniature Reader Frame -->
   <div
     class="relative overflow-hidden rounded-lg border transition-colors"
-    style="background-color: {bgStyle()}; border-color: var(--border); color: {fgStyle()}; height: 152px;"
+    style="background-color: {bgStyle()}; border-color: var(--border); color: {fgStyle()}; height: 124px;"
   >
     {#if !isHorizontal}
       <!-- Vertical Strip Preview -->

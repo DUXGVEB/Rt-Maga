@@ -71,13 +71,18 @@ class DeviceEnvStore {
     this.initialized = true;
 
     const updateViewport = () => {
-      this.viewportWidth = window.innerWidth;
-      this.viewportHeight = window.innerHeight;
+      const h = Math.round(window.visualViewport?.height ?? window.innerHeight);
+      const w = Math.round(window.visualViewport?.width ?? window.innerWidth);
+      this.viewportWidth = w > 0 ? w : window.innerWidth;
+      this.viewportHeight = h > 0 ? h : window.innerHeight;
+      document.documentElement.style.setProperty("--app-height", `${this.viewportHeight}px`);
       if (!this.isAndroid) {
         void this.syncDesktopFullscreen();
       }
     };
+    updateViewport();
     window.addEventListener("resize", updateViewport);
+    window.visualViewport?.addEventListener("resize", updateViewport);
     window.addEventListener("orientationchange", () => {
       this.lastOrientationChangeAt = Date.now();
       updateViewport();

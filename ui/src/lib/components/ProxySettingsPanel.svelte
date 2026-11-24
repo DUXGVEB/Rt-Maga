@@ -13,6 +13,7 @@
   import { api, formatAppError } from "../api";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
+  import ToggleSwitch from "./ToggleSwitch.svelte";
   import type {
     DomainProxyRule,
     DomainRuleAction,
@@ -291,14 +292,13 @@
             <div class="desc">{t.proxyFailClosedDesc}</div>
           </div>
         </div>
-        <input
-          type="checkbox"
+        <ToggleSwitch
+          size="sm"
           checked={proxy.allowDirectFallback}
-          onchange={(e) => {
-            const checked = e.currentTarget.checked;
+          ariaLabel={t.proxyFailClosedLabel}
+          onchange={(checked) => {
             patch((d) => (d.proxy.allowDirectFallback = checked));
           }}
-          class="mt-1 h-4 w-4 shrink-0 accent-rose-500"
         />
       </div>
 
@@ -316,8 +316,8 @@
             type="button"
             onclick={runConnectionTest}
             disabled={testing || !proxy.defaultProxy.host.trim()}
-            class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-45"
-            style="background-color: var(--accent);"
+            class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-45"
+            style="background-color: var(--accent); color: var(--accent-fg);"
           >
             <Activity size={13} class={testing ? "animate-pulse" : ""} />
             <span>{testing ? t.proxyTesting : t.proxyTestBtn}</span>
@@ -464,8 +464,8 @@
   .settings-card {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
-    padding: 1.25rem;
+    gap: 0.85rem;
+    padding: 1rem 1.15rem;
     border-radius: 1rem;
     border: 1px solid var(--border);
     background-color: var(--surface);

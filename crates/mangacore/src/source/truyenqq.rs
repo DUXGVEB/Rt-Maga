@@ -780,6 +780,23 @@ impl Source for TruyenQQSource {
         "truyenqq"
     }
 
+    fn metadata(&self) -> crate::source::AdapterMetadata {
+        crate::source::AdapterMetadata {
+            id: "truyenqq",
+            name: "TruyenQQ",
+            version: "1.2.0",
+            domains: &["truyenqq*.com", "truyenqq*.net", "m.truyenqq*"],
+            auth_support: crate::source::AdapterAuthSupport::OptionalUserSession,
+            strategies: &[
+                crate::ExtractionStrategyKind::SiteAdapter,
+                crate::ExtractionStrategyKind::NativeHtml,
+            ],
+            known_limitations: &[
+                "CDNs require chapter Referer header and may rate-limit rapid concurrent image downloads.",
+            ],
+        }
+    }
+
     fn matches(&self, url: &Url) -> bool {
         url.host_str()
             .is_some_and(|h| is_truyenqq_host(&h.to_ascii_lowercase()))

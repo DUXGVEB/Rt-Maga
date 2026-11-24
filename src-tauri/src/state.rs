@@ -1,11 +1,11 @@
 //! Shared application state owned by the Tauri runtime.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use mangacore::Registry;
 use rand::RngCore;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 
 use crate::cache::{ChapterCache, ImageCache};
@@ -39,6 +39,10 @@ pub(crate) struct AppState {
     pub latest_release: RwLock<Option<AppReleaseInfo>>,
     /// Serverless peer-to-peer LAN synchronization session coordinator.
     pub sync: SyncManager,
+    /// Monotonic counter of primary chapter load requests for cancelling superseded scrapes.
+    pub chapter_load_seq: AtomicU64,
+    /// Broadcast channel notifying in-flight chapter loads when a newer primary request starts.
+    pub chapter_cancel_tx: watch::Sender<u64>,
 }
 
 impl AppState {
@@ -51,6 +55,7 @@ impl AppState {
     ) -> Arc<Self> {
         let mut proxy_key = [0_u8; 32];
         rand::thread_rng().fill_bytes(&mut proxy_key);
+        let (chapter_cancel_tx, _rx) = watch::channel(0_u64);
 
         Arc::new(Self {
             db,
@@ -64,6 +69,8 @@ impl AppState {
             update_install_running: AtomicBool::new(false),
             latest_release: RwLock::new(None),
             sync: SyncManager::new(),
+            chapter_load_seq: AtomicU64::new(0),
+            chapter_cancel_tx,
         })
     }
 

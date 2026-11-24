@@ -3,6 +3,28 @@
 use thiserror::Error;
 use url::Url;
 
+use crate::diagnostics::SourceErrorCode;
+
+/// Boxed structured classification details stored inside [`ScrapeError::Classified`] to keep
+/// the enum size compact.
+#[derive(Debug, Clone)]
+pub struct ClassifiedFailureDetail {
+    /// Precise 27-code classification of the failure.
+    pub code: SourceErrorCode,
+    /// Target or final URL (redacted when necessary).
+    pub url: String,
+    /// Hostname associated with the request, if known.
+    pub host: Option<String>,
+    /// Upstream HTTP status code, if applicable.
+    pub status: Option<u16>,
+    /// Processing stage where failure occurred.
+    pub stage: String,
+    /// Human-readable diagnostic message.
+    pub detail: String,
+    /// Evidence items inspected before failing.
+    pub evidence: Vec<String>,
+}
+
 /// Failure modes for resolving manga links, fetching pages, and parsing content.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -112,6 +134,18 @@ pub enum ScrapeError {
         url: Url,
     },
 
+    /// The chapter uses browser-only display protection (e.g. IMGX canvas tainting) that cannot be
+    /// rendered directly as plain image files.
+    #[error("content display protection active on {host} ({url}): {detail}")]
+    ContentProtected {
+        /// Hostname enforcing content display protection.
+        host: String,
+        /// Chapter or page URL protected by the upstream viewer.
+        url: String,
+        /// Short explanation of the protection mechanism detected.
+        detail: String,
+    },
+
     /// Page loaded successfully, but neither manga metadata nor chapter images were recognized.
     #[error("could not recognize manga content at {url}: {reason}")]
     NotRecognized {
@@ -160,4 +194,90 @@ pub enum ScrapeError {
     /// Proxy configuration, authentication, or connection failure.
     #[error("proxy error: {0}")]
     Proxy(String),
+
+    /// Precision-classified source resolution, extraction, format, or access failure.
+    #[error("{0}")]
+    Classified(Box<ClassifiedFailureDetail>),
+}
+
+impl std::fmt::Display for ClassifiedFailureDetail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.detail)
+    }
+}
+
+impl ScrapeError {
+    /// Constructs a compact [`ScrapeError::Classified`] carrying a 27-code [`SourceErrorCode`].
+    #[must_use]
+    pub fn classified(detail: ClassifiedFailureDetail) -> Self {
+        Self::Classified(Box::new(detail))
+    }
+
+    /// Maps any [`ScrapeError`] into the canonical 27-variant [`SourceErrorCode`] taxonomy.
+    #[must_use]
+    pub fn error_code(&self) -> SourceErrorCode {
+        match self {
+            Self::InvalidUrl(_) | Self::DisallowedHost(_) => SourceErrorCode::InvalidUrl,
+            Self::UnsupportedSource { .. } => SourceErrorCode::UnsupportedWebsite,
+            Self::Timeout { .. } => SourceErrorCode::NetworkTimeout,
+            Self::DnsFailure { .. } | Self::TlsFailure { .. } | Self::Network(_) => {
+                SourceErrorCode::UnknownSourceError
+            }
+            Self::Proxy(_) => SourceErrorCode::AccessDenied,
+            Self::RateLimited { .. } => SourceErrorCode::RateLimited,
+            Self::AccessRestricted { status, .. } => match *status {
+                401 => SourceErrorCode::LoginRequired,
+                402 => SourceErrorCode::PaywallOrSubscriptionRequired,
+                451 => SourceErrorCode::GeoRestriction,
+                _ => SourceErrorCode::AccessDenied,
+            },
+            Self::ApiFailure { status, .. } => match *status {
+                Some(429) => SourceErrorCode::RateLimited,
+                Some(401) => SourceErrorCode::LoginRequired,
+                Some(403) => SourceErrorCode::AccessDenied,
+                Some(404) => SourceErrorCode::ChapterNotFound,
+                Some(s) if s >= 500 => SourceErrorCode::ServerError,
+                _ => SourceErrorCode::UnsupportedApiFormat,
+            },
+            Self::HttpStatus { status, .. } => match *status {
+                401 => SourceErrorCode::LoginRequired,
+                402 => SourceErrorCode::PaywallOrSubscriptionRequired,
+                403 => SourceErrorCode::AccessDenied,
+                404 | 410 => SourceErrorCode::ChapterNotFound,
+                429 => SourceErrorCode::RateLimited,
+                451 => SourceErrorCode::GeoRestriction,
+                s if s >= 500 => SourceErrorCode::ServerError,
+                _ => SourceErrorCode::UnknownSourceError,
+            },
+            Self::Blocked { .. } => SourceErrorCode::VerificationRequired,
+            Self::ContentProtected { .. } => SourceErrorCode::DrmProtectedContent,
+            Self::NotRecognized { .. } | Self::MissingMetadata { .. } => {
+                SourceErrorCode::SourceDetectionFailed
+            }
+            Self::MissingImages { .. } => SourceErrorCode::ChapterContentNotLoaded,
+            Self::InvalidImageFormat { .. } => SourceErrorCode::UnsupportedImageFormat,
+            Self::CorruptedData { .. } => SourceErrorCode::ImageDecodeFailed,
+            Self::Headless(msg) => {
+                let lower = msg.to_ascii_lowercase();
+                if lower.contains("executable")
+                    || lower.contains("disabled")
+                    || lower.contains("unavailable")
+                {
+                    SourceErrorCode::BrowserEngineUnavailable
+                } else {
+                    SourceErrorCode::ChapterContentNotLoaded
+                }
+            }
+            Self::Classified(boxed) => boxed.code,
+        }
+    }
+
+    /// Returns the diagnostic [`ClassifiedFailureDetail`] if this error is [`Self::Classified`].
+    #[must_use]
+    pub fn classified_detail(&self) -> Option<&ClassifiedFailureDetail> {
+        match self {
+            Self::Classified(boxed) => Some(boxed),
+            _ => None,
+        }
+    }
 }

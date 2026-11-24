@@ -1,0 +1,79 @@
+# Legal Notices and Third-Party Attributions
+
+RtMaga
+Copyright (c) 2025-2026 RtMaga (DUXGVEB). All rights reserved.
+
+Official Source Repository: https://github.com/DUXGVEB/Rt-Maga
+Official Releases:         https://github.com/DUXGVEB/Rt-Maga/releases
+
+---
+
+## 1. Official Builds and Brand Protection Notice
+
+Official installers and packages for **Windows**, **Linux**, **macOS**, and
+**Android** are distributed strictly through the **Official Releases** URL above
+with published SHA-256 checksums for user verification.
+
+RtMaga source code is source-available, **not Open Source** (see `LICENSE`).
+Redistribution of source code, modified versions, rebranded packages, or
+unofficially compiled binaries is not permitted without prior written
+authorization from the copyright holder. Users who encounter third-party mirrors
+or rebranded builds should be aware that those builds are unauthorized and have
+not been verified by the RtMaga maintainer.
+
+---
+
+## 2. Third-Party Open-Source Notices
+
+RtMaga incorporates or depends on third-party software components licensed by
+their respective authors. In addition to the license inventory in
+`THIRD-PARTY-LICENSES.md`, the following notices apply where distributed builds
+include those components:
+
+### A. Mozilla Public License Version 2.0 (MPL-2.0) — Section 3.3 Larger Work Notice
+
+The Rust workspace builds a **Larger Work** combining RtMaga code with
+unmodified third-party crates distributed under **MPL-2.0**:
+- `cssparser` (`0.34.0`, `0.36.0`) — https://github.com/servo/rust-cssparser
+- `cssparser-macros` (`0.6.1`) — https://github.com/servo/rust-cssparser
+- `selectors` (`0.26.0`, `0.36.1`) — https://github.com/servo/stylo
+- `dtoa-short` (`0.3.5`) — https://github.com/upsuper/dtoa-short
+- `option-ext` (`0.2.0`) — https://github.com/soc/option-ext.git
+
+Under **MPL-2.0 Section 3.3**, the MPL-2.0-covered files in those unmodified
+crates remain governed by MPL-2.0 (available via the upstream repositories
+listed above and crates.io), while the RtMaga source-available codebase
+continues to be governed by `LICENSE`. If any MPL-2.0 source file is ever
+modified in the future, those modified MPL-2.0 files must be made available
+under MPL-2.0.
+
+### B. Apache License, Version 2.0
+
+Components used under **Apache-2.0** or **Apache-2.0 OR MIT** (including Tauri
+core crates, `tokio` sub-ecosystem crates, `serde` / `reqwest` / `sqlx` dual-licensed
+crates, `typescript`, `jsqr`, and AndroidX / Material Components libraries)
+retain their original copyright notices and Apache-2.0 `NOTICE` attributions
+where provided by upstream authors.
+
+### C. MIT, ISC, BSD-2-Clause, BSD-3-Clause, Zlib, BSL-1.0, 0BSD, CC0-1.0, Unlicense
+
+Components licensed under MIT (including `tokio`, `tracing`, `dashmap`,
+`bytes`, `svelte`, `vite`, `tailwindcss`), ISC (`scraper`, `lucide-svelte`),
+BSD-2-Clause, BSD-3-Clause, Zlib, Boost Software License 1.0 (`BSL-1.0`),
+`0BSD`, `CC0-1.0`, and `Unlicense` retain their respective copyright notices
+and warranty disclaimers as shipped in their upstream crate/package sources.
+
+### D. Unicode-3.0 and CDLA-Permissive-2.0
+
+- Internationalization/Unicode tables (`icu4x` family crates, `unicode-ident`,
+  `unicode-normalization`, `unicode-properties`) include code/data under
+  **Unicode-3.0**.
+- TLS root certificates (`webpki-roots` `1.0.12`) are included under
+  **CDLA-Permissive-2.0** (Community Data License Agreement – Permissive,
+  Version 2.0).
+
+### E. Dual- / Multi-Licensed Copyleft Options
+
+- `r-efi` (`5.3.0`, `6.0.0`, transitive target crate) is licensed under
+  `MIT OR Apache-2.0 OR LGPL-2.1-or-later`. RtMaga elects the **MIT** or
+  **Apache-2.0** license option when distributing builds.
