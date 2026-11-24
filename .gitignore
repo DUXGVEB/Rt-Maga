@@ -4,23 +4,28 @@
 /.gemini/
 /.specify/
 
-# Rust & Cargo
+# Rust & Cargo build output
 /target
 
-# Packaged releases & signing keys
+# Packaged releases & signing keys (keys stay LOCAL, never commit)
 /dist
 *.jks
 *.keystore
 /src-tauri/gen/android/release-signing.properties
 
-# Frontend
+# Frontend dependencies & build output
 /ui/node_modules
 /ui/dist
 /ui/.svelte-kit
 /node_modules
+/ui/build
+coverage/
+.turbo/
+*.tsbuildinfo
 
 # Android Gradle & generated native binaries
 /src-tauri/gen/android/.gradle
+/src-tauri/gen/android/.kotlin
 /src-tauri/gen/android/build
 /src-tauri/gen/android/app/build
 /src-tauri/gen/android/app/src/main/jniLibs
@@ -28,9 +33,14 @@
 /src-tauri/gen/android/.idea
 /src-tauri/gen/schemas
 
-# Local DB & OS files
+# Local secrets, DB & OS files
+.env
+.env.*
 *.db
 *.db-shm
 *.db-wal
+*.log
+*.tmp
+*.bak
 .DS_Store
 Thumbs.db
