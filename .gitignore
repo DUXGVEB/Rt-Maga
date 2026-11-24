@@ -11,6 +11,7 @@
 /dist
 *.jks
 *.keystore
+/src-tauri/gen/android/release-signing.properties
 
 # Frontend
 /ui/node_modules

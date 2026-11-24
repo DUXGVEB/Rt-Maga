@@ -14,6 +14,20 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val releaseSigningPropertiesFile = rootProject.file("release-signing.properties")
+val releaseSigningProperties = Properties().apply {
+    if (releaseSigningPropertiesFile.isFile) {
+        releaseSigningPropertiesFile.inputStream().use(::load)
+    }
+}
+
+fun releaseSigningProperty(name: String): String =
+    releaseSigningProperties.getProperty(name)
+        ?: throw GradleException(
+            "Missing $name in ${releaseSigningPropertiesFile.name}. " +
+                "See ANDROID-SIGNING.md before building a release APK."
+        )
+
 android {
     compileSdk = 37
     namespace = "com.rtmaga.reader"
@@ -24,6 +38,18 @@ android {
         targetSdk = 37
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file(releaseSigningProperty("storeFile"))
+            storePassword = releaseSigningProperty("storePassword")
+            keyAlias = releaseSigningProperty("keyAlias")
+            keyPassword = releaseSigningProperty("keyPassword")
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -39,6 +65,7 @@ android {
             }
         }
         getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
             optimization {
                enable = true
             }

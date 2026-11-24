@@ -2,6 +2,11 @@
 
 All notable changes to **RtMaga** are documented in this file.
 
+## [2.5.1] - 2026-11-24
+
+### Fixed
+- Android release APKs are now signed with the maintained local release keystore and verified before distribution. This fixes the invalid unsigned APK packaging in v2.5.0 that HyperOS rejected with package parsing/packageInfo errors.
+
 ## [2.5.0] - 2026-11-24
 
 ### Added & Improved
