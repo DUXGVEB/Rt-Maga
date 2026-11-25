@@ -21,7 +21,7 @@
     X,
     ZoomOut,
   } from "lucide-svelte";
-  import { tick, untrack } from "svelte";
+  import { flushSync, tick, untrack } from "svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
   import FloatingControls from "../lib/components/FloatingControls.svelte";
   import PageImage from "../lib/components/PageImage.svelte";
@@ -446,14 +446,14 @@
 
   const horizontalZoomStyle = $derived(
     zoomScale > 1.01
-      ? `transform: translate3d(${zoomTx}px, ${zoomTy}px, 0) scale(${zoomScale}); transform-origin: 0 0; transition: ${zoomPanning ? "none" : "transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1)"};`
-      : "transform: none; transform-origin: 0 0; transition: transform 140ms ease;"
+      ? `transform: translate3d(${zoomTx}px, ${zoomTy}px, 0) scale(${zoomScale}); backface-visibility: hidden; transform-origin: 0 0; transition: ${zoomPanning ? "none" : "transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1)"};`
+      : "transform: translate3d(0px, 0px, 0px) scale(1); backface-visibility: hidden; transform-origin: 0 0; transition: transform 140ms ease;"
   );
 
   const verticalZoomStyle = $derived(
     zoomScale > 1.01
-      ? `transform: translate3d(${zoomTx}px, 0px, 0) scale(${zoomScale}); transform-origin: 0 0; transition: ${zoomPanning ? "none" : "transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1)"};`
-      : "transform: none; transform-origin: 0 0; transition: transform 140ms ease;"
+      ? `transform: translate3d(${zoomTx}px, 0px, 0) scale(${zoomScale}); backface-visibility: hidden; transform-origin: 0 0; transition: ${zoomPanning ? "none" : "transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1)"};`
+      : "transform: translate3d(0px, 0px, 0px) scale(1); backface-visibility: hidden; transform-origin: 0 0; transition: transform 140ms ease;"
   );
 
   function cancelVerticalSmoothScroll() {
@@ -493,13 +493,6 @@
   function resetZoom(anchorClientY?: number) {
     const wasZoomed = zoomScale > 1.01;
     const prevScale = zoomScale;
-    zoomScale = 1;
-    zoomTx = 0;
-    zoomTy = 0;
-    zoomPanning = false;
-    zoomContentRect = null;
-    zoomOriginLeft = 0;
-    zoomOriginTop = 0;
     if (zoomFocusSettleTimer !== null) {
       window.clearTimeout(zoomFocusSettleTimer);
       zoomFocusSettleTimer = null;
@@ -509,24 +502,38 @@
       const vpRect = scrollEl.getBoundingClientRect();
       const vy = anchorClientY !== undefined ? anchorClientY - vpRect.top : vpRect.height * 0.5;
       const unscaledDocY = (scrollEl.scrollTop + vy) / Math.max(1, prevScale);
-      verticalZoomExtraBottomPx = 0;
       const targetTop = Math.max(0, Math.round(unscaledDocY - vy));
       zoomTransitionLockUntil = Date.now() + 220;
       suppressAutoHideUntil = Date.now() + 300;
-      void tick().then(() => {
-        if (scrollEl) {
-          const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
-          const clampedTop = Math.max(0, Math.min(maxTop, targetTop));
-          scrollEl.scrollTop = clampedTop;
-          lastScrollOffset = clampedTop;
-        }
-        zoomFocusSettleTimer = window.setTimeout(() => {
-          zoomFocusSettleTimer = null;
-          zoomTransitionLockUntil = 0;
-          updateFocusNow();
-        }, 180);
+      flushSync(() => {
+        zoomScale = 1;
+        zoomTx = 0;
+        zoomTy = 0;
+        zoomPanning = false;
+        zoomContentRect = null;
+        zoomOriginLeft = 0;
+        zoomOriginTop = 0;
+        verticalZoomExtraBottomPx = 0;
       });
+      if (scrollEl) {
+        const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+        const clampedTop = Math.max(0, Math.min(maxTop, targetTop));
+        scrollEl.scrollTop = clampedTop;
+        lastScrollOffset = clampedTop;
+      }
+      zoomFocusSettleTimer = window.setTimeout(() => {
+        zoomFocusSettleTimer = null;
+        zoomTransitionLockUntil = 0;
+        updateFocusNow();
+      }, 180);
     } else {
+      zoomScale = 1;
+      zoomTx = 0;
+      zoomTy = 0;
+      zoomPanning = false;
+      zoomContentRect = null;
+      zoomOriginLeft = 0;
+      zoomOriginTop = 0;
       verticalZoomExtraBottomPx = 0;
       zoomTransitionLockUntil = 0;
     }
@@ -1975,12 +1982,8 @@
 
       const docYBefore = scrollEl.scrollTop + pointerY;
       const baseHeight = verticalContentEl?.offsetHeight ?? scrollEl.scrollHeight;
-      verticalZoomExtraBottomPx = Math.max(0, Math.round(baseHeight * (next.scale - 1)));
       zoomTransitionLockUntil = Date.now() + 240;
       suppressAutoHideUntil = Date.now() + 360;
-      zoomScale = next.scale;
-      zoomTx = next.tx;
-      zoomTy = 0;
 
       // Center the tapped document Y coordinate vertically in the viewport (`vpRect.height / 2`).
       const desiredScrollTop = Math.max(
@@ -1988,21 +1991,25 @@
         Math.round(docYBefore * next.scale - vpRect.height * 0.5)
       );
 
-      // Wait for Svelte to flush `verticalZoomExtraBottomPx` so `scrollEl.scrollHeight` expands
-      // before setting `scrollTop` (prevents silent premature clamping near the bottom of a chapter).
-      void tick().then(() => {
-        if (scrollEl) {
-          const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
-          const clampedTop = Math.max(0, Math.min(maxTop, desiredScrollTop));
-          scrollEl.scrollTop = clampedTop;
-          lastScrollOffset = clampedTop;
-        }
-        zoomFocusSettleTimer = window.setTimeout(() => {
-          zoomFocusSettleTimer = null;
-          zoomTransitionLockUntil = 0;
-          updateFocusNow();
-        }, 210);
+      // Flush DOM spacer height synchronously in the same JS turn before setting `scrollTop`
+      // so the very first painted frame at `next.scale` already sits at `clampedTop` without a 1-frame black jump.
+      flushSync(() => {
+        verticalZoomExtraBottomPx = Math.max(0, Math.round(baseHeight * (next.scale - 1)));
+        zoomScale = next.scale;
+        zoomTx = next.tx;
+        zoomTy = 0;
       });
+      if (scrollEl) {
+        const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+        const clampedTop = Math.max(0, Math.min(maxTop, desiredScrollTop));
+        scrollEl.scrollTop = clampedTop;
+        lastScrollOffset = clampedTop;
+      }
+      zoomFocusSettleTimer = window.setTimeout(() => {
+        zoomFocusSettleTimer = null;
+        zoomTransitionLockUntil = 0;
+        updateFocusNow();
+      }, 210);
     }
   }
 
@@ -2348,6 +2355,7 @@
 
   const allFloatingScreens: FloatingScreenKey[] = [
     "home",
+    "sources",
     "browse",
     "bookmarks",
     "history",
@@ -2360,6 +2368,8 @@
     switch (key) {
       case "home":
         return t.navHome;
+      case "sources":
+        return t.navSources;
       case "browse":
         return t.floatingScreenBrowse;
       case "bookmarks":
@@ -2757,10 +2767,18 @@
   <!-- Quick Reader Settings Popover (Collapsible Categories, Collapsed by Default) -->
   {#if quickSettingsOpen}
     <div
-      class="fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overflow-y-auto overscroll-contain rounded-2xl border p-3.5 text-xs shadow-xl"
-      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border);"
+      role="dialog"
+      tabindex="-1"
+      onpointerdown={(e) => e.stopPropagation()}
+      ontouchstart={(e) => {
+        e.stopPropagation();
+        wakeFloatingControls();
+      }}
+      onwheel={(e) => e.stopPropagation()}
+      class="reader-quick-popover fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overflow-y-auto overscroll-contain touch-pan-y rounded-2xl border p-3.5 text-xs shadow-xl"
+      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border); -webkit-overflow-scrolling: touch;"
     >
-      <div class="flex items-center justify-between gap-2 pb-0.5">
+      <div class="flex shrink-0 items-center justify-between gap-2 pb-0.5">
         <span class="font-semibold">{t.readerSection}</span>
         <button
           type="button"
@@ -2775,7 +2793,7 @@
 
       {#if hasCustomMangaSettings || isAutoWebtoonActive || effectiveOverride !== null}
         <div
-          class="flex items-center justify-between gap-2 rounded-xl border px-3 py-2"
+          class="flex shrink-0 items-center justify-between gap-2 rounded-xl border px-3 py-2"
           style="background-color: var(--surface-subtle); border-color: var(--border);"
         >
           <span class="font-medium" style="color: var(--text);">
@@ -2797,7 +2815,7 @@
         </div>
       {:else}
         <div
-          class="rounded-xl border px-3 py-1.5 text-[11px]"
+          class="shrink-0 rounded-xl border px-3 py-1.5 text-[11px]"
           style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
         >
           {t.perMangaSettingsHint}
@@ -2805,7 +2823,7 @@
       {/if}
 
       <!-- Category 1: Layout & Spacing -->
-      <div class="overflow-hidden rounded-xl border" style="border-color: var(--border); background-color: var(--surface-subtle);">
+      <div class="shrink-0 overflow-hidden rounded-xl border" style="border-color: var(--border); background-color: var(--surface-subtle);">
         <button
           type="button"
           onclick={() => (openQuickCat = openQuickCat === "layout" ? null : "layout")}
@@ -2978,7 +2996,7 @@
       </div>
 
       <!-- Category 2: Display & Visuals -->
-      <div class="overflow-hidden rounded-xl border" style="border-color: var(--border); background-color: var(--surface-subtle);">
+      <div class="shrink-0 overflow-hidden rounded-xl border" style="border-color: var(--border); background-color: var(--surface-subtle);">
         <button
           type="button"
           onclick={() => (openQuickCat = openQuickCat === "display" ? null : "display")}
@@ -3060,7 +3078,7 @@
       </div>
 
       <!-- Category 3: Controls & Behavior -->
-      <div class="overflow-hidden rounded-xl border" style="border-color: var(--border); background-color: var(--surface-subtle);">
+      <div class="shrink-0 overflow-hidden rounded-xl border" style="border-color: var(--border); background-color: var(--surface-subtle);">
         <button
           type="button"
           onclick={() => (openQuickCat = openQuickCat === "controls" ? null : "controls")}
@@ -3138,10 +3156,18 @@
   <!-- Long-Press Contextual Configuration Panel (Scroll-to-Top / Screen Rotation) -->
   {#if quickFloatConfig !== null}
     <div
-      class="fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-3 overflow-y-auto overscroll-contain rounded-2xl border p-4 text-xs shadow-xl"
-      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border);"
+      role="dialog"
+      tabindex="-1"
+      onpointerdown={(e) => e.stopPropagation()}
+      ontouchstart={(e) => {
+        e.stopPropagation();
+        wakeFloatingControls();
+      }}
+      onwheel={(e) => e.stopPropagation()}
+      class="reader-quick-popover fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-3 overflow-y-auto overscroll-contain touch-pan-y rounded-2xl border p-4 text-xs shadow-xl"
+      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border); -webkit-overflow-scrolling: touch;"
     >
-      <div class="flex items-center justify-between gap-2">
+      <div class="flex shrink-0 items-center justify-between gap-2">
         <span class="font-semibold">
           {quickFloatConfig === "scrollToTop"
             ? t.scrollTopQuickConfigTitle
@@ -3158,7 +3184,7 @@
       </div>
 
       {#if quickFloatConfig === "orientationLock"}
-        <div class="flex flex-col gap-1.5">
+        <div class="flex shrink-0 flex-col gap-1.5">
           <span class="font-medium">{t.orientationCurrentMode}</span>
           <div class="grid grid-cols-3 gap-1.5">
             {#each [["auto", t.orientationAuto], ["portrait", t.orientationPortrait], ["landscape", t.orientationLandscape]] as [val, label] (val)}
@@ -3180,7 +3206,7 @@
           </div>
         </div>
 
-        <div class="flex items-center justify-between">
+        <div class="flex shrink-0 items-center justify-between">
           <span class="font-medium">{t.buttonVisibilityLabel}</span>
           <input
             type="checkbox"
@@ -3193,7 +3219,7 @@
           />
         </div>
 
-        <div class="flex flex-col gap-1.5">
+        <div class="flex shrink-0 flex-col gap-1.5">
           <span class="font-medium">{t.floatingPositionLabel}</span>
           <div class="flex items-center gap-2">
             {#each [["left", t.floatingEdgeLeft], ["right", t.floatingEdgeRight]] as [edge, label] (edge)}
@@ -3231,7 +3257,7 @@
           </div>
         </div>
       {:else}
-        <div class="flex flex-col gap-1.5">
+        <div class="flex shrink-0 flex-col gap-1.5">
           <span class="font-medium">{t.floatingScrollTopScreens}</span>
           <div class="flex flex-wrap gap-1.5">
             {#each allFloatingScreens as screen (screen)}
@@ -3252,7 +3278,7 @@
           </div>
         </div>
 
-        <div class="flex flex-col gap-1.5">
+        <div class="flex shrink-0 flex-col gap-1.5">
           <span class="font-medium">{t.floatingPositionLabel}</span>
           <div class="flex items-center gap-2">
             {#each [["left", t.floatingEdgeLeft], ["right", t.floatingEdgeRight]] as [edge, label] (edge)}
@@ -3290,7 +3316,7 @@
           </div>
         </div>
 
-        <div class="flex items-center justify-between">
+        <div class="flex shrink-0 items-center justify-between">
           <span class="font-medium">{t.floatingAutoDimLabel}</span>
           <input
             type="checkbox"
@@ -3307,7 +3333,7 @@
       <button
         type="button"
         onclick={() => openFullSettings("floating")}
-        class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 font-medium transition-opacity hover:opacity-85"
+        class="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl border px-3 py-2 font-medium transition-opacity hover:opacity-85"
         style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--accent);"
       >
         <ExternalLink size={12} />
@@ -3867,3 +3893,14 @@
     fadedOut={!toolbarVisible && !quickSettingsOpen && quickFloatConfig === null && !chapterJumpOpen}
   />
 </div>
+
+<style>
+  @media (max-height: 520px) {
+    .reader-quick-popover {
+      top: calc(0.65rem + var(--safe-top)) !important;
+      max-height: calc(100dvh - 1.3rem - var(--safe-top) - var(--safe-bottom)) !important;
+      padding: 0.65rem;
+      gap: 0.45rem;
+    }
+  }
+</style>

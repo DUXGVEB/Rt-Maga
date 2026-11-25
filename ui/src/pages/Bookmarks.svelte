@@ -1,19 +1,37 @@
 <script lang="ts">
-  import { Bookmark, BookOpen, CheckCircle2, Play, Sparkles, Trash2 } from "lucide-svelte";
+  import { ArrowDown, ArrowUp, Bookmark, BookOpen, CheckCircle2, Play, Sparkles, Trash2 } from "lucide-svelte";
   import { api, imgProxyUrl } from "../lib/api";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
-  import type { BookmarkItemView, BookmarkSort } from "../lib/types";
+  import type { BookmarkItemView, BookmarkSort, LibrarySortField, SortDirection } from "../lib/types";
 
-  let sort = $state<BookmarkSort>("newest");
+  let sortField = $state<LibrarySortField>("added");
+  let sortDir = $state<SortDirection>("desc");
+  const backendSort = $derived<BookmarkSort>(sortField === "title" ? "title" : "newest");
   let loading = $state(!libraryCache.bookmarksLoaded["newest"]);
   let failedCovers = $state<Record<number, boolean>>({});
   let loadSeq = 0;
 
-  const items = $derived(libraryCache.bookmarksBySort[sort] ?? []);
+  const rawItems = $derived(libraryCache.bookmarksBySort[backendSort] ?? []);
+  const items = $derived(() => {
+    const out = [...rawItems];
+    const mult = sortDir === "desc" ? -1 : 1;
+    out.sort((a, b) => {
+      if (sortField === "title") {
+        const cmp = a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+        if (cmp !== 0) return cmp * mult;
+        return (a.bookmarkedAt - b.bookmarkedAt) * mult;
+      }
+      if (a.bookmarkedAt !== b.bookmarkedAt) {
+        return (a.bookmarkedAt - b.bookmarkedAt) * mult;
+      }
+      return (a.mangaId - b.mangaId) * mult;
+    });
+    return out;
+  });
   const t = $derived(settingsStore.t);
 
   async function load(selectedSort: BookmarkSort, showSkeleton: boolean) {
@@ -37,7 +55,7 @@
 
   $effect(() => {
     void updatesStore.lastFound;
-    void load(sort, !libraryCache.bookmarksLoaded[sort]);
+    void load(backendSort, !libraryCache.bookmarksLoaded[backendSort]);
   });
 
   async function removeBookmark(mangaId: number, e: MouseEvent) {
@@ -85,19 +103,33 @@
       </p>
     </div>
 
-    {#if items.length > 0}
-      <div class="flex items-center gap-2">
-        <span class="text-xs" style="color: var(--text-muted);">{t.bookmarksSortLabel}</span>
+    {#if items().length > 0}
+      <div class="flex items-center gap-1.5">
+        <span class="text-xs" style="color: var(--text-muted);">{t.sortByLabel}</span>
         <select
-          bind:value={sort}
+          bind:value={sortField}
           class="rounded-lg border px-3 py-1.5 text-xs font-medium outline-none"
           style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
         >
-          <option value="newest">{t.bookmarksSortNewest}</option>
-          <option value="has_new">{t.bookmarksSortHasNew}</option>
-          <option value="recent_read">{t.bookmarksSortRecent}</option>
-          <option value="title">{t.bookmarksSortTitle}</option>
+          <option value="added">{t.sortDateAdded}</option>
+          <option value="title">{t.sortTitleName}</option>
         </select>
+        <button
+          type="button"
+          onclick={() => {
+            sortDir = sortDir === "desc" ? "asc" : "desc";
+          }}
+          class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+          style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+          title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
+        >
+          {#if sortDir === "desc"}
+            <ArrowDown size={13} />
+          {:else}
+            <ArrowUp size={13} />
+          {/if}
+          <span>{sortDir === "desc" ? t.sortDesc : t.sortAsc}</span>
+        </button>
       </div>
     {/if}
   </div>
@@ -111,7 +143,7 @@
         ></div>
       {/each}
     </div>
-  {:else if items.length === 0}
+  {:else if items().length === 0}
     <div
       class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-16 text-center"
       style="border-color: var(--border); color: var(--text-muted);"
@@ -122,7 +154,7 @@
     </div>
   {:else}
     <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-      {#each items as item (item.mangaId)}
+      {#each items() as item (item.mangaId)}
         {@const completedOnly = item.isCompleted && !item.hasNew}
         <article
           class="group relative flex flex-col overflow-hidden rounded-xl border transition-all duration-150 hover:-translate-y-0.5"

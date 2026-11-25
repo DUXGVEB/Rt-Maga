@@ -63,9 +63,11 @@
   import { onMount, tick } from "svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
   import DiagnosticsPanel from "../lib/components/DiagnosticsPanel.svelte";
+  import FeedbackComposer from "../lib/components/FeedbackComposer.svelte";
   import LanSyncPanel from "../lib/components/LanSyncPanel.svelte";
   import NetworkProtectionPanel from "../lib/components/NetworkProtectionPanel.svelte";
   import SettingsVisualPreview from "../lib/components/SettingsVisualPreview.svelte";
+  import SourceManagerPanel from "../lib/components/SourceManagerPanel.svelte";
   import ToggleSwitch from "../lib/components/ToggleSwitch.svelte";
   import { LANGUAGE_OPTIONS } from "../lib/i18n";
   import { appReleaseStore } from "../lib/stores/appRelease.svelte";
@@ -105,7 +107,13 @@
     Theme,
   } from "../lib/types";
 
-  let { focusSection }: { focusSection?: SettingsSection } = $props();
+  let {
+    focusSection,
+    subTarget,
+  }: {
+    focusSection?: SettingsSection;
+    subTarget?: "supplemental" | "feedback";
+  } = $props();
 
   type SettingsTabKey = "general" | "reader" | "floating" | "network" | "storage" | "system";
   type StorageSubTab = "source" | "manga" | "hidden";
@@ -162,6 +170,8 @@
     switch (dest) {
       case "home":
         return t.navHome;
+      case "sources":
+        return t.navSources;
       case "bookmarks":
         return t.navBookmarks;
       case "history":
@@ -201,6 +211,7 @@
 
   const floatingScreens: FloatingScreenKey[] = [
     "home",
+    "sources",
     "browse",
     "bookmarks",
     "history",
@@ -260,16 +271,27 @@
 
   $effect(() => {
     const target = focusSection;
-    if (!target) return;
-    const mapped = sectionToTab(target);
+    const sub = subTarget;
+    if (!target && !sub) return;
+    let mapped: SettingsTabKey = target ? sectionToTab(target) : "general";
+    let anchorId = target ? `settings-${target}` : "";
+    if (sub === "supplemental") {
+      mapped = "network";
+      anchorId = "settings-supplemental-sources";
+    } else if (sub === "feedback") {
+      mapped = "system";
+      anchorId = "settings-feedback";
+    }
     activeTab = mapped;
     mobileScreen = mapped;
     searchQuery = "";
-    void (async () => {
-      await tick();
-      const el = document.getElementById(`settings-${target}`);
-      el?.scrollIntoView({ behavior: "smooth", block: "start" });
-    })();
+    if (anchorId) {
+      void (async () => {
+        await tick();
+        const el = document.getElementById(anchorId);
+        el?.scrollIntoView({ behavior: "smooth", block: "start" });
+      })();
+    }
   });
 
   // Search index across all 6 categories (preserving all existing EN + VI search keywords)
@@ -367,6 +389,13 @@
       keywords: `${t.syncSection} ${t.syncSubtitle} lan sync qr pin transfer wifi dong bo`,
     },
     {
+      id: "supplemental-sources",
+      tab: "network",
+      title: t.suppSourcesTitle,
+      subtitle: t.suppSourcesDesc,
+      keywords: `${t.suppSourcesTitle} ${t.suppSourcesDesc} ${t.navSources} supplemental nguon bo sung`,
+    },
+    {
       id: "cache",
       tab: "storage",
       title: t.cacheSection,
@@ -379,6 +408,13 @@
       title: t.hiddenMangaSection,
       subtitle: `${hiddenManga.length}`,
       keywords: `${t.hiddenMangaSection} ${t.hiddenMangaDesc} hidden hide unhide restore manga truyen an`,
+    },
+    {
+      id: "feedback",
+      tab: "system",
+      title: t.feedbackSectionTitle,
+      subtitle: t.feedbackSectionDesc,
+      keywords: `${t.feedbackSectionTitle} ${t.feedbackSectionDesc} feedback bug report issue github bao loi gop y`,
     },
     {
       id: "diagnostics",
@@ -493,6 +529,8 @@
     switch (key) {
       case "home":
         return t.navHome;
+      case "sources":
+        return t.navSources;
       case "browse":
         return t.floatingScreenBrowse;
       case "bookmarks":
@@ -1561,6 +1599,8 @@
                     <span class="shrink-0" style="color: var(--text-muted);">
                       {#if dest === "home"}
                         <Home size={15} />
+                      {:else if dest === "sources"}
+                        <Compass size={15} />
                       {:else if dest === "bookmarks"}
                         <Bookmark size={15} />
                       {:else if dest === "history"}
@@ -2525,6 +2565,22 @@
             <!-- Serverless LAN Sync -->
             <LanSyncPanel />
           </div>
+
+          <!-- Supplemental Sources Manager (18+ / Mature Isolation) -->
+          <section id="settings-supplemental-sources" class="bento-card lg:col-span-12">
+            <div class="card-head">
+              <div class="flex items-center gap-2.5">
+                <span class="card-icon" style="background-color: var(--accent-soft); color: var(--accent);">
+                  <Compass size={15} />
+                </span>
+                <div>
+                  <h2 class="card-title">{t.suppSourcesTitle}</h2>
+                  <p class="card-sub">{t.suppSourcesDesc}</p>
+                </div>
+              </div>
+            </div>
+            <SourceManagerPanel scope="supplemental" />
+          </section>
         </div>
       {/if}
 
@@ -2815,9 +2871,24 @@
         </section>
       {/if}
 
-      <!-- ==================== TAB 6: SYSTEM (Diagnostics + Reset All) ==================== -->
+      <!-- ==================== TAB 6: SYSTEM (Feedback + Diagnostics + Reset All) ==================== -->
       {#if activeTab === "system"}
         <div class="flex flex-col gap-3.5">
+          <section id="settings-feedback" class="bento-card">
+            <div class="card-head">
+              <div class="flex items-center gap-2.5">
+                <span class="card-icon" style="background-color: var(--accent-soft); color: var(--accent);">
+                  <AlertCircle size={15} />
+                </span>
+                <div>
+                  <h2 class="card-title">{t.feedbackSectionTitle}</h2>
+                  <p class="card-sub">{t.feedbackSectionDesc}</p>
+                </div>
+              </div>
+            </div>
+            <FeedbackComposer />
+          </section>
+
           <section class="bento-card">
             <div class="card-head">
               <div class="flex items-center gap-2.5">
@@ -3358,21 +3429,25 @@
     color: var(--text-muted);
   }
 
-  @media (max-height: 500px) {
+  @media (max-height: 540px) {
     .settings-shell {
-      padding-top: 0.65rem;
-      padding-bottom: 0.75rem;
-      gap: 0.75rem;
+      padding-top: 0.55rem;
+      padding-bottom: 1rem;
+      gap: 0.65rem;
     }
 
     .top-tab {
-      padding: 0.36rem 0.55rem;
-      font-size: 0.73rem;
+      padding: 0.34rem 0.55rem;
+      font-size: 0.72rem;
     }
 
     .bento-card {
-      padding: 0.75rem 0.9rem;
-      gap: 0.65rem;
+      padding: 0.75rem 0.85rem;
+      gap: 0.6rem;
+    }
+
+    .hub-row {
+      padding: 0.55rem 0.85rem;
     }
   }
 </style>

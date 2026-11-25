@@ -260,10 +260,11 @@
       {src}
       alt={settingsStore.t.pageAlt(index + 1)}
       draggable="false"
-      decoding="async"
+      decoding={loadMode === "high" || loaded ? "sync" : "async"}
       fetchpriority={loadMode === "high" ? "high" : "auto"}
       onload={handleLoad}
       onerror={handleError}
+      style="backface-visibility: hidden;"
       class={horizontal
         ? "block max-h-full w-auto max-w-full object-contain select-none"
         : "block h-auto w-full select-none"}

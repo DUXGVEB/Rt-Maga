@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use mangacore::Registry;
-use rand::RngCore;
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 
@@ -27,7 +26,7 @@ pub(crate) struct AppState {
     pub chapters: ChapterCache,
     /// Live user settings synchronized with SQLite.
     pub settings: RwLock<Settings>,
-    /// Per-session random HMAC key securing `img://` proxy tokens.
+    /// Persistent local HMAC key securing `img://` proxy tokens across app restarts.
     pub proxy_key: [u8; 32],
     /// Handle to the background periodic update-checker task.
     pub update_task: Mutex<Option<JoinHandle<()>>>,
@@ -46,15 +45,14 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    /// Constructs [`AppState`] with a fresh cryptographically random proxy HMAC key.
+    /// Constructs [`AppState`] with a persistent local proxy HMAC key.
     pub(crate) fn new(
         db: Database,
         registry: Registry,
         images: ImageCache,
         settings: Settings,
+        proxy_key: [u8; 32],
     ) -> Arc<Self> {
-        let mut proxy_key = [0_u8; 32];
-        rand::thread_rng().fill_bytes(&mut proxy_key);
         let (chapter_cancel_tx, _rx) = watch::channel(0_u64);
 
         Arc::new(Self {

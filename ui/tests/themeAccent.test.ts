@@ -30,29 +30,29 @@ test("computeAccentTokens preserves independent mode contrast and selects readab
   assert.ok(darkGold.surfaceContrast > 8.0);
 });
 
-test("normalizeNavOrder deduplicates and preserves all four primary destinations", () => {
+test("normalizeNavOrder deduplicates and preserves all five primary destinations", () => {
   assert.deepEqual(normalizeNavOrder(undefined), [...DEFAULT_NAV_ORDER]);
   assert.deepEqual(
     normalizeNavOrder(["settings", "home", "home"]),
-    ["settings", "home", "bookmarks", "history"]
+    ["settings", "home", "sources", "bookmarks", "history"]
   );
   // Cast with invalid values simulates corrupted persisted JSON
   assert.deepEqual(
     normalizeNavOrder(["bookmarks", "unknown" as never, "history"]),
-    ["bookmarks", "history", "home", "settings"]
+    ["bookmarks", "history", "home", "sources", "settings"]
   );
 });
 
 test("moveNavDestination reorders within bounds without duplicates or drops", () => {
-  const step1 = moveNavDestination(DEFAULT_NAV_ORDER, 3, -1);
-  assert.deepEqual(step1, ["home", "bookmarks", "settings", "history"]);
+  const step1 = moveNavDestination(DEFAULT_NAV_ORDER, 4, -1);
+  assert.deepEqual(step1, ["home", "sources", "bookmarks", "settings", "history"]);
 
   const boundaryUp = moveNavDestination(step1, 0, -1);
   assert.deepEqual(boundaryUp, step1);
 
-  const boundaryDown = moveNavDestination(step1, 3, 1);
+  const boundaryDown = moveNavDestination(step1, 4, 1);
   assert.deepEqual(boundaryDown, step1);
 
   const step2 = moveNavDestination(step1, 0, 1);
-  assert.deepEqual(step2, ["bookmarks", "home", "settings", "history"]);
+  assert.deepEqual(step2, ["sources", "home", "bookmarks", "settings", "history"]);
 });

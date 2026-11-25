@@ -2,6 +2,12 @@
 
 All notable changes to **RtMaga** are documented in this file.
 
+## [2.5.2] - 2026-11-25
+
+### Fixed
+- Refined update and installation run guards to always release duplicate-run locks on every exit path.
+- Refined image cache hit tracking and single-flight prefetch guards for more reliable cover caching and cleanup.
+
 ## [2.5.1] - 2026-11-24
 
 ### Fixed

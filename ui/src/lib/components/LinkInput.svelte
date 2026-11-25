@@ -24,9 +24,26 @@
 
   const t = $derived(settingsStore.t);
 
+  function isLikelyDirectLink(raw: string): boolean {
+    const clean = raw.trim();
+    if (!clean || /\s/.test(clean)) return false;
+    const low = clean.toLowerCase();
+    if (low.startsWith("http://") || low.startsWith("https://") || low.startsWith("rtmaga://")) {
+      return true;
+    }
+    return /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(clean);
+  }
+
   async function submit(raw?: string) {
     const target = (raw ?? urlInput).trim();
     if (!target || loading) return;
+
+    if (!isLikelyDirectLink(target)) {
+      urlInput = "";
+      errorState = null;
+      router.goSources(target);
+      return;
+    }
 
     loading = true;
     lastSubmittedUrl = target;

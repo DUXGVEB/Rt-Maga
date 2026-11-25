@@ -3,6 +3,7 @@
 pub mod chapters;
 pub mod classify;
 pub mod dom;
+pub mod gallery;
 pub mod images;
 pub mod meta;
 pub mod nav;

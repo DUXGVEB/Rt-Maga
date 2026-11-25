@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { BookOpen, CheckCircle2, Play, RotateCcw, Sparkles, X } from "lucide-svelte";
+  import { ArrowDown, ArrowUp, BookOpen, CheckCircle2, Play, RotateCcw, Sparkles, X } from "lucide-svelte";
   import { onMount } from "svelte";
   import { api } from "../lib/api";
   import LinkInput from "../lib/components/LinkInput.svelte";
@@ -8,14 +8,33 @@
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
-  import type { CrashRecoverySession } from "../lib/types";
+  import type { CrashRecoverySession, HistoryItemView, LibrarySortField, SortDirection } from "../lib/types";
 
   let loading = $state(!libraryCache.historyLoaded);
   let crashSession = $state<CrashRecoverySession | null>(null);
+  let sortField = $state<LibrarySortField>("added");
+  let sortDir = $state<SortDirection>("desc");
   let loadSeq = 0;
 
   const history = $derived(libraryCache.history);
   const t = $derived(settingsStore.t);
+
+  function sortItems(items: HistoryItemView[]): HistoryItemView[] {
+    const out = [...items];
+    const mult = sortDir === "desc" ? -1 : 1;
+    out.sort((a, b) => {
+      if (sortField === "title") {
+        const cmp = a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+        if (cmp !== 0) return cmp * mult;
+        return (a.addedAt - b.addedAt) * mult;
+      }
+      if (a.addedAt !== b.addedAt) {
+        return (a.addedAt - b.addedAt) * mult;
+      }
+      return (a.readAt - b.readAt) * mult;
+    });
+    return out;
+  }
 
   async function loadHistory(showSkeleton: boolean) {
     const seq = ++loadSeq;
@@ -68,13 +87,13 @@
     void loadHistory(!libraryCache.historyLoaded);
   });
 
-  // Partition history strictly without duplicates:
+  // Partition history strictly without duplicates and sort according to user preference:
   // 1) updatedItems: hasNew === true (automatically returns completed manga to active top area)
   // 2) activeItems: not completed and no new badge
   // 3) completedItems: completed and no new chapters -> bottom Completed section
-  const updatedItems = $derived(history.filter((h) => h.hasNew));
-  const activeItems = $derived(history.filter((h) => !h.hasNew && !h.isCompleted));
-  const completedItems = $derived(history.filter((h) => !h.hasNew && h.isCompleted));
+  const updatedItems = $derived(sortItems(history.filter((h) => h.hasNew)));
+  const activeItems = $derived(sortItems(history.filter((h) => !h.hasNew && !h.isCompleted)));
+  const completedItems = $derived(sortItems(history.filter((h) => !h.hasNew && h.isCompleted)));
 </script>
 
 <div class="mx-auto flex w-full max-w-5xl flex-col gap-10 px-5 py-8 sm:px-8 sm:py-10">
@@ -125,6 +144,37 @@
       <LinkInput />
     </div>
   </section>
+
+  <!-- Unified Sort Bar -->
+  {#if !loading && history.length > 0}
+    <div class="flex flex-wrap items-center justify-end gap-2">
+      <span class="text-xs" style="color: var(--text-muted);">{t.sortByLabel}</span>
+      <select
+        bind:value={sortField}
+        class="rounded-lg border px-2.5 py-1.5 text-xs font-medium outline-none"
+        style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+      >
+        <option value="added">{t.sortDateAdded}</option>
+        <option value="title">{t.sortTitleName}</option>
+      </select>
+      <button
+        type="button"
+        onclick={() => {
+          sortDir = sortDir === "desc" ? "asc" : "desc";
+        }}
+        class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+        style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+        title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
+      >
+        {#if sortDir === "desc"}
+          <ArrowDown size={13} />
+        {:else}
+          <ArrowUp size={13} />
+        {/if}
+        <span>{sortDir === "desc" ? t.sortDesc : t.sortAsc}</span>
+      </button>
+    </div>
+  {/if}
 
   <!-- New chapters section -->
   {#if updatedItems.length > 0}

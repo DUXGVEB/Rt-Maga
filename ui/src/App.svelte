@@ -3,6 +3,7 @@
     Bell,
     Bookmark,
     Clock,
+    Compass,
     Download,
     ExternalLink,
     Home as HomeIcon,
@@ -33,6 +34,7 @@
   import Manga from "./pages/Manga.svelte";
   import Reader from "./pages/Reader.svelte";
   import Settings from "./pages/Settings.svelte";
+  import Sources from "./pages/Sources.svelte";
 
   let mainEl = $state<HTMLElement | null>(null);
   let showMainScrollTop = $state(false);
@@ -229,8 +231,14 @@
 
       {#if router.current.name === "home"}
         <Home />
+      {:else if router.current.name === "sources"}
+        <Sources initialQuery={router.current.initialQuery} />
       {:else if router.current.name === "browse"}
-        <Browse url={router.current.url} initialCatalog={router.current.initialCatalog} />
+        <Browse
+          url={router.current.url}
+          sourceId={router.current.sourceId}
+          initialCatalog={router.current.initialCatalog}
+        />
       {:else if router.current.name === "bookmarks"}
         <Bookmarks />
       {:else if router.current.name === "manga"}
@@ -245,7 +253,7 @@
       {:else if router.current.name === "history"}
         <History />
       {:else if router.current.name === "settings"}
-        <Settings focusSection={router.current.section} />
+        <Settings focusSection={router.current.section} subTarget={router.current.subTarget} />
       {/if}
     </main>
   </div>
@@ -271,20 +279,35 @@
           <button
             type="button"
             onclick={() => router.goHome()}
-            class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
+            class="flex flex-col items-center gap-0.5 px-2.5 py-1 text-[11px] font-medium"
             style="color: {router.current.name === 'home' ||
-            router.current.name === 'manga' ||
-            router.current.name === 'browse'
+            router.current.name === 'manga'
               ? 'var(--accent)'
               : 'var(--text-muted)'};"
             aria-current={router.current.name === 'home' ||
-            router.current.name === 'manga' ||
-            router.current.name === 'browse'
+            router.current.name === 'manga'
               ? 'page'
               : undefined}
           >
             <HomeIcon size={19} />
             <span>{t.navHome}</span>
+          </button>
+        {:else if dest === "sources"}
+          <button
+            type="button"
+            onclick={() => router.goSources()}
+            class="flex flex-col items-center gap-0.5 px-2.5 py-1 text-[11px] font-medium"
+            style="color: {router.current.name === 'sources' ||
+            router.current.name === 'browse'
+              ? 'var(--accent)'
+              : 'var(--text-muted)'};"
+            aria-current={router.current.name === 'sources' ||
+            router.current.name === 'browse'
+              ? 'page'
+              : undefined}
+          >
+            <Compass size={19} />
+            <span>{t.navSources}</span>
           </button>
         {:else if dest === "bookmarks"}
           <button

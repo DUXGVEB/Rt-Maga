@@ -6,7 +6,8 @@ import { toasts } from "./toast.svelte";
 
 export type Route =
   | { name: "home" }
-  | { name: "browse"; url: string; initialCatalog?: CatalogPageView }
+  | { name: "sources"; initialQuery?: string }
+  | { name: "browse"; url: string; sourceId?: number; initialCatalog?: CatalogPageView }
   | { name: "bookmarks" }
   | { name: "manga"; id: number }
   | {
@@ -17,7 +18,7 @@ export type Route =
       pageIndex?: number;
     }
   | { name: "history" }
-  | { name: "settings"; section?: SettingsSection };
+  | { name: "settings"; section?: SettingsSection; subTarget?: "supplemental" | "feedback" };
 
 type BackInterceptor = () => boolean;
 
@@ -26,13 +27,16 @@ const DOUBLE_BACK_EXIT_WINDOW_MS = 2000;
 
 function routesEqual(a: Route, b: Route): boolean {
   if (a.name !== b.name) return false;
-  if (a.name === "browse" && b.name === "browse") return a.url === b.url;
+  if (a.name === "sources" && b.name === "sources") return a.initialQuery === b.initialQuery;
+  if (a.name === "browse" && b.name === "browse") {
+    return a.url === b.url && a.sourceId === b.sourceId;
+  }
   if (a.name === "manga" && b.name === "manga") return a.id === b.id;
   if (a.name === "reader" && b.name === "reader") {
     return a.mangaId === b.mangaId && a.chapterUrl === b.chapterUrl;
   }
   if (a.name === "settings" && b.name === "settings") {
-    return a.section === b.section;
+    return a.section === b.section && a.subTarget === b.subTarget;
   }
   return true;
 }
@@ -96,8 +100,12 @@ class RouterStore {
     this.navPulse += 1;
   }
 
-  goBrowse(url: string, initialCatalog?: CatalogPageView, replace = false) {
-    this.pushAndSet({ name: "browse", url, initialCatalog }, replace);
+  goSources(initialQuery?: string) {
+    this.pushAndSet({ name: "sources", initialQuery });
+  }
+
+  goBrowse(url: string, initialCatalog?: CatalogPageView, replace = false, sourceId?: number) {
+    this.pushAndSet({ name: "browse", url, sourceId, initialCatalog }, replace);
   }
 
   goBookmarks() {
@@ -165,8 +173,8 @@ class RouterStore {
     }
   }
 
-  goSettings(section?: SettingsSection) {
-    this.pushAndSet({ name: "settings", section });
+  goSettings(section?: SettingsSection, subTarget?: "supplemental" | "feedback") {
+    this.pushAndSet({ name: "settings", section, subTarget });
   }
 
   /**

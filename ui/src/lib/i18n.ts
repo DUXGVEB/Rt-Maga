@@ -303,7 +303,7 @@ const en: Dictionary = {
   noRecentDesc:
     "Paste any manga link above to start reading. Your reading progress will appear here automatically.",
 
-  linkPlaceholder: "Paste a manga or chapter URL",
+  linkPlaceholder: "Paste manga/chapter URL or search by title...",
   fetching: "Fetching",
   open: "Open",
   openVerification: "Open verification window",
@@ -580,7 +580,7 @@ const vi: Dictionary = {
   noRecentDesc:
     "Dán một link truyện vào ô phía trên để bắt đầu. Tiến độ đọc sẽ tự động lưu tại đây.",
 
-  linkPlaceholder: "Dán link truyện hoặc link chương",
+  linkPlaceholder: "Dán link truyện/chương hoặc nhập tên để tìm...",
   fetching: "Đang lấy",
   open: "Mở truyện",
   openVerification: "Mở cửa sổ để tự xác minh",
@@ -3735,7 +3735,7 @@ const V6_VI: V6Dictionary = {
   accentLowContrastHint: "Độ tương phản hơi thấp so với nền hiện tại — nên chọn màu đậm/sáng hơn.",
   accentResetModeBtn: "Mặc định",
   navOrderSection: "Thứ tự thanh điều hướng",
-  navOrderDesc: "Sắp xếp vị trí các mục Trang chủ, Đã lưu, Lịch sử, Cài đặt",
+  navOrderDesc: "Sắp xếp vị trí Trang chủ, Nguồn, Đã lưu, Lịch sử, Cài đặt",
   navMoveUp: "Đưa lên",
   navMoveDown: "Đưa xuống",
   navResetOrderBtn: "Đặt lại thứ tự",
@@ -3751,11 +3751,286 @@ const V6_DICTIONARIES: Record<Language, V6Dictionary> = {
   th: V6_EN,
 };
 
+export interface V7Dictionary {
+  navSources: string;
+  sourcesPageTitle: string;
+  sourcesPageSubtitle: string;
+  suppSourcesTitle: string;
+  suppSourcesDesc: string;
+  sourcesSearchPlaceholder: string;
+  sourcesSearchBtn: string;
+  sourcesAddBtn: string;
+  sourcesRulesBtn: string;
+  sourcesFilterPlaceholder: string;
+  sourcesEmptyTitle: string;
+  sourcesEmptyDesc: string;
+  sourcesSearchEmpty: string;
+  sourcesAddModalTitle: string;
+  sourcesAddUrlLabel: string;
+  sourcesAddUrlPlaceholder: string;
+  sourcesAddNameLabel: string;
+  sourcesAddNamePlaceholder: string;
+  sourcesSaveBtn: string;
+  sourcesEditModalTitle: string;
+  sourcesMirrorLabel: string;
+  sourcesBrowseBtn: string;
+  sourcesEditBtn: string;
+  sourcesMoveToSuppBtn: string;
+  sourcesMoveToMainBtn: string;
+  sourcesDeleteBtn: string;
+  sourcesDeleteConfirm: (name: string) => string;
+  sourcesEnabledLabel: string;
+  sourcesDisabledBadge: string;
+  sourcesAddedToast: (name: string, supp: boolean) => string;
+  sourcesUpdatedToast: string;
+  sourcesDeletedToast: string;
+  sourcesMovedToast: string;
+  sourcesResultsHeading: (query: string, count: number) => string;
+  sourcesClearSearchBtn: string;
+  sourcesRulesModalTitle: string;
+  sourcesRulesModalDesc: string;
+  sourcesRulesImportPlaceholder: string;
+  sourcesRulesImportBtn: string;
+  sourcesRulesExportBtn: string;
+  sourcesRulesEmpty: string;
+  sourcesRulesImportedToast: (count: number) => string;
+  sourcesRulesExportedToast: string;
+
+  sortByLabel: string;
+  sortDateAdded: string;
+  sortTitleName: string;
+  sortDesc: string;
+  sortAsc: string;
+
+  readMoreDesc: string;
+  showLessDesc: string;
+  showMoreTags: (n: number) => string;
+  showLessTags: string;
+
+  feedbackSectionTitle: string;
+  feedbackSectionDesc: string;
+  feedbackKindLabel: string;
+  feedbackKindBug: string;
+  feedbackKindSuggestion: string;
+  feedbackTitleLabel: string;
+  feedbackTitlePlaceholder: string;
+  feedbackDescLabel: string;
+  feedbackDescPlaceholder: string;
+  feedbackAttachLogsLabel: string;
+  feedbackAttachLogsDesc: string;
+  feedbackSelectLogsHint: string;
+  feedbackSelectAllLogs: string;
+  feedbackClearSelectedLogs: string;
+  feedbackSelectedCount: (n: number) => string;
+  feedbackNoLogsAvailable: string;
+  feedbackOpenGithubBtn: string;
+  feedbackCopyMarkdownBtn: string;
+  feedbackSaveFileBtn: string;
+  feedbackTitleRequired: string;
+  feedbackCopiedToast: string;
+  feedbackOpenedGithubToast: (truncated: boolean) => string;
+  feedbackSavedFileToast: (path: string) => string;
+  feedbackReportSourceShortcut: string;
+}
+
+const V7_EN: V7Dictionary = {
+  navSources: "Sources",
+  sourcesPageTitle: "Sources",
+  sourcesPageSubtitle: "Search across saved comic sources or browse catalogs directly",
+  suppSourcesTitle: "Supplemental Sources",
+  suppSourcesDesc:
+    "Sources marked with 18+ / mature signals or moved here stay isolated from the main Sources tab.",
+  sourcesSearchPlaceholder: "Search manga title across sources or paste URL...",
+  sourcesSearchBtn: "Search",
+  sourcesAddBtn: "Add Source",
+  sourcesRulesBtn: "Rule JSON",
+  sourcesFilterPlaceholder: "Filter saved sources...",
+  sourcesEmptyTitle: "No saved sources yet",
+  sourcesEmptyDesc: "Add a comic website URL or open any manga/catalog link to record its source automatically.",
+  sourcesSearchEmpty: "No matching results returned from enabled sources.",
+  sourcesAddModalTitle: "Add Manga Source",
+  sourcesAddUrlLabel: "Website URL",
+  sourcesAddUrlPlaceholder: "https://example-comics.com",
+  sourcesAddNameLabel: "Custom Name (optional)",
+  sourcesAddNamePlaceholder: "Auto-detect from website",
+  sourcesSaveBtn: "Save",
+  sourcesEditModalTitle: "Edit Source & Mirror",
+  sourcesMirrorLabel: "Mirror Domain / Base URL",
+  sourcesBrowseBtn: "Browse",
+  sourcesEditBtn: "Edit",
+  sourcesMoveToSuppBtn: "Move to Supplemental",
+  sourcesMoveToMainBtn: "Move to Sources",
+  sourcesDeleteBtn: "Delete",
+  sourcesDeleteConfirm: (name: string) => `Remove source "${name}" from your saved list?`,
+  sourcesEnabledLabel: "Included in search",
+  sourcesDisabledBadge: "Disabled",
+  sourcesAddedToast: (name: string, supp: boolean) =>
+    supp
+      ? `Saved "${name}" into Settings -> Supplemental Sources.`
+      : `Saved "${name}" to Sources.`,
+  sourcesUpdatedToast: "Updated saved source.",
+  sourcesDeletedToast: "Deleted saved source.",
+  sourcesMovedToast: "Updated source visibility bucket.",
+  sourcesResultsHeading: (query: string, count: number) => `Search "${query}" · ${count} results`,
+  sourcesClearSearchBtn: "Back to sources",
+  sourcesRulesModalTitle: "Custom Rule Packs (JSON)",
+  sourcesRulesModalDesc:
+    "Import local CSS-selector JSON rules to teach RtMaga how to browse and read custom sites offline.",
+  sourcesRulesImportPlaceholder: 'Paste a JSON rule object or array [...] here...',
+  sourcesRulesImportBtn: "Import JSON",
+  sourcesRulesExportBtn: "Copy All JSON",
+  sourcesRulesEmpty: "No custom rule packs imported yet.",
+  sourcesRulesImportedToast: (count: number) => `Imported ${count} rule pack(s).`,
+  sourcesRulesExportedToast: "Copied all custom rule packs as JSON.",
+
+  sortByLabel: "Sort",
+  sortDateAdded: "Date added",
+  sortTitleName: "Name",
+  sortDesc: "Descending",
+  sortAsc: "Ascending",
+
+  readMoreDesc: "Read more",
+  showLessDesc: "Show less",
+  showMoreTags: (n: number) => `+${n} more tags`,
+  showLessTags: "Collapse tags",
+
+  feedbackSectionTitle: "Bug Report & Feedback Composer",
+  feedbackSectionDesc:
+    "Compose a bug report or feature suggestion and choose whether to attach specific sanitized logs.",
+  feedbackKindLabel: "Type",
+  feedbackKindBug: "Bug Report",
+  feedbackKindSuggestion: "Feedback / Idea",
+  feedbackTitleLabel: "Title",
+  feedbackTitlePlaceholder: "Brief summary of the bug or suggestion...",
+  feedbackDescLabel: "Description",
+  feedbackDescPlaceholder: "Steps to reproduce, URL pattern, or expected behavior...",
+  feedbackAttachLogsLabel: "Attach Diagnostic Logs",
+  feedbackAttachLogsDesc: "Choose exact sanitized logs below (secrets & home paths redacted).",
+  feedbackSelectLogsHint: "Select logs to include in report:",
+  feedbackSelectAllLogs: "Select all",
+  feedbackClearSelectedLogs: "Clear selection",
+  feedbackSelectedCount: (n: number) => `${n} selected`,
+  feedbackNoLogsAvailable: "No diagnostic logs recorded yet.",
+  feedbackOpenGithubBtn: "Submit on GitHub",
+  feedbackCopyMarkdownBtn: "Copy Markdown",
+  feedbackSaveFileBtn: "Save .md File",
+  feedbackTitleRequired: "Please enter a title for your report or feedback.",
+  feedbackCopiedToast: "Copied sanitized Markdown report to clipboard.",
+  feedbackOpenedGithubToast: (truncated: boolean) =>
+    truncated
+      ? "Report was long so full Markdown was copied to clipboard — paste it into GitHub Issue."
+      : "Opened pre-filled GitHub Issue form.",
+  feedbackSavedFileToast: (path: string) => `Saved feedback report to ${path}`,
+  feedbackReportSourceShortcut: "Report issue with this source",
+};
+
+const V7_VI: V7Dictionary = {
+  navSources: "Nguồn",
+  sourcesPageTitle: "Nguồn truyện",
+  sourcesPageSubtitle: "Tìm truyện song song trên các nguồn đã lưu hoặc mở thẳng danh mục từng web",
+  suppSourcesTitle: "Nguồn bổ sung",
+  suppSourcesDesc:
+    "Các nguồn có tín hiệu 18+/mature hoặc được bạn chuyển vào đây sẽ tách riêng khỏi mục Nguồn chính.",
+  sourcesSearchPlaceholder: "Nhập tên truyện để tìm đa nguồn hoặc dán link...",
+  sourcesSearchBtn: "Tìm kiếm",
+  sourcesAddBtn: "Thêm nguồn",
+  sourcesRulesBtn: "Rule JSON",
+  sourcesFilterPlaceholder: "Lọc nguồn đã lưu...",
+  sourcesEmptyTitle: "Chưa có nguồn nào được lưu",
+  sourcesEmptyDesc: "Hãy thêm link trang truyện hoặc mở bất kỳ link truyện/danh mục nào để tự lưu nguồn.",
+  sourcesSearchEmpty: "Không tìm thấy truyện phù hợp từ các nguồn đang bật.",
+  sourcesAddModalTitle: "Thêm nguồn truyện mới",
+  sourcesAddUrlLabel: "Địa chỉ trang web",
+  sourcesAddUrlPlaceholder: "https://example-comics.com",
+  sourcesAddNameLabel: "Tên hiển thị (tùy chọn)",
+  sourcesAddNamePlaceholder: "Tự nhận diện từ trang web",
+  sourcesSaveBtn: "Lưu",
+  sourcesEditModalTitle: "Sửa nguồn & Tên miền phụ (Mirror)",
+  sourcesMirrorLabel: "Tên miền / Base URL hiện tại",
+  sourcesBrowseBtn: "Mở nguồn",
+  sourcesEditBtn: "Sửa",
+  sourcesMoveToSuppBtn: "Chuyển vào Nguồn bổ sung",
+  sourcesMoveToMainBtn: "Đưa ra Nguồn chính",
+  sourcesDeleteBtn: "Xóa",
+  sourcesDeleteConfirm: (name: string) => `Xóa nguồn "${name}" khỏi danh sách đã lưu?`,
+  sourcesEnabledLabel: "Bật tìm kiếm đa nguồn",
+  sourcesDisabledBadge: "Đang tắt",
+  sourcesAddedToast: (name: string, supp: boolean) =>
+    supp
+      ? `Đã lưu "${name}" vào Cài đặt -> Nguồn bổ sung.`
+      : `Đã lưu "${name}" vào mục Nguồn.`,
+  sourcesUpdatedToast: "Đã cập nhật nguồn truyện.",
+  sourcesDeletedToast: "Đã xóa nguồn khỏi danh sách.",
+  sourcesMovedToast: "Đã thay đổi vị trí hiển thị nguồn.",
+  sourcesResultsHeading: (query: string, count: number) => `Kết quả "${query}" · ${count} truyện`,
+  sourcesClearSearchBtn: "Quay lại danh sách nguồn",
+  sourcesRulesModalTitle: "Gói quy tắc tùy chỉnh (JSON)",
+  sourcesRulesModalDesc:
+    "Nhập quy tắc CSS Selector dạng JSON để đọc và tìm kiếm cục bộ trên trang web tùy chỉnh.",
+  sourcesRulesImportPlaceholder: "Dán 1 object hoặc mảng JSON [...] rule vào đây...",
+  sourcesRulesImportBtn: "Nhập JSON",
+  sourcesRulesExportBtn: "Sao chép tất cả JSON",
+  sourcesRulesEmpty: "Chưa có rule JSON nào được nhập.",
+  sourcesRulesImportedToast: (count: number) => `Đã nhập ${count} gói rule JSON.`,
+  sourcesRulesExportedToast: "Đã sao chép toàn bộ rule JSON.",
+
+  sortByLabel: "Sắp xếp",
+  sortDateAdded: "Ngày thêm vào",
+  sortTitleName: "Tên",
+  sortDesc: "Giảm dần",
+  sortAsc: "Tăng dần",
+
+  readMoreDesc: "Xem thêm",
+  showLessDesc: "Thu gọn",
+  showMoreTags: (n: number) => `+${n} thẻ nữa`,
+  showLessTags: "Thu gọn thẻ",
+
+  feedbackSectionTitle: "Soạn thảo Báo lỗi / Góp ý",
+  feedbackSectionDesc:
+    "Gửi báo lỗi hoặc góp ý tính năng và chọn cụ thể log chẩn đoán nào được đính kèm.",
+  feedbackKindLabel: "Loại phản hồi",
+  feedbackKindBug: "Báo lỗi",
+  feedbackKindSuggestion: "Góp ý",
+  feedbackTitleLabel: "Tên lỗi / góp ý",
+  feedbackTitlePlaceholder: "Tóm tắt ngắn gọn lỗi gặp phải hoặc đề xuất của bạn...",
+  feedbackDescLabel: "Mô tả chi tiết",
+  feedbackDescPlaceholder: "Các bước tái hiện lỗi, hành vi mong muốn hoặc link trang gặp sự cố...",
+  feedbackAttachLogsLabel: "Đính kèm log chẩn đoán",
+  feedbackAttachLogsDesc: "Tự chọn từng dòng log bên dưới (mật khẩu & đường dẫn máy đã được ẩn).",
+  feedbackSelectLogsHint: "Chọn các log muốn gửi kèm:",
+  feedbackSelectAllLogs: "Chọn tất cả",
+  feedbackClearSelectedLogs: "Bỏ chọn",
+  feedbackSelectedCount: (n: number) => `Đã chọn ${n}`,
+  feedbackNoLogsAvailable: "Chưa có dòng log chẩn đoán nào được ghi nhận.",
+  feedbackOpenGithubBtn: "Gửi Issue lên GitHub",
+  feedbackCopyMarkdownBtn: "Sao chép Markdown",
+  feedbackSaveFileBtn: "Lưu file .md",
+  feedbackTitleRequired: "Vui lòng nhập tên lỗi hoặc tiêu đề góp ý.",
+  feedbackCopiedToast: "Đã sao chép báo cáo Markdown (đã ẩn thông tin nhạy cảm).",
+  feedbackOpenedGithubToast: (truncated: boolean) =>
+    truncated
+      ? "Báo cáo khá dài nên đã tự sao chép toàn bộ vào bộ nhớ tạm — bạn chỉ cần dán vào trang Issue GitHub."
+      : "Đã mở trang tạo Issue GitHub với nội dung soạn sẵn.",
+  feedbackSavedFileToast: (path: string) => `Đã lưu báo cáo vào ${path}`,
+  feedbackReportSourceShortcut: "Báo lỗi nguồn này",
+};
+
+const V7_DICTIONARIES: Record<Language, V7Dictionary> = {
+  en: V7_EN,
+  vi: V7_VI,
+  zh: V7_EN,
+  ja: V7_EN,
+  ru: V7_EN,
+  ko: V7_EN,
+  th: V7_EN,
+};
+
 export type FullDictionary = Dictionary &
   V3Dictionary &
   V4Dictionary &
   V5Dictionary &
-  V6Dictionary;
+  V6Dictionary &
+  V7Dictionary;
 
 const DICTIONARIES: Record<Language, Dictionary> = { en, vi, zh, ja, ru, ko, th };
 
@@ -3766,6 +4041,7 @@ export function getDict(lang: Language): FullDictionary {
     ...(V4_DICTIONARIES[lang] ?? V4_EN),
     ...(V5_DICTIONARIES[lang] ?? V5_EN),
     ...(V6_DICTIONARIES[lang] ?? V6_EN),
+    ...(V7_DICTIONARIES[lang] ?? V7_EN),
   };
 }
 

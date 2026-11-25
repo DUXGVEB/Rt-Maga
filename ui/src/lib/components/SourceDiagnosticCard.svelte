@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     AlertCircle,
+    Bug,
     Check,
     ChevronDown,
     ChevronRight,
@@ -12,6 +13,8 @@
     Settings,
     ShieldCheck,
   } from "lucide-svelte";
+  import { feedbackDraft } from "../stores/feedbackDraft.svelte";
+  import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
   import type { FailureCategoryGroup, FormattedAppError } from "../types";
@@ -266,6 +269,24 @@
         <span>{t.errActionCopyDiagnostics}</span>
       </button>
     {/if}
+
+    <button
+      type="button"
+      onclick={() => {
+        feedbackDraft.setPrefill({
+          kind: "bug",
+          title: `[Source] ${report?.domain || targetUrl || error.code || "Error"}: ${error.title}`,
+          description: `URL: ${targetUrl || "-"}\nCode: ${error.code ?? "-"}\nDetail: ${error.detail}`,
+          attachLogs: true,
+        });
+        router.goSettings("sources", "feedback");
+      }}
+      class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
+      style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text);"
+    >
+      <Bug size={13} />
+      <span>{t.feedbackReportSourceShortcut}</span>
+    </button>
   </div>
 
   <!-- Expandable Technical Diagnostics for Developers -->

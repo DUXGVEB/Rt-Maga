@@ -8,7 +8,7 @@ overridden by RtMaga's `LICENSE`).
 > **Verification Note for Maintainers:**
 > - **Rust crate licenses** below were directly verified against `Cargo.lock`
 >   via `cargo metadata` and `cargo-deny` (`.agents/config/deny.toml`) at
->   release time (`v2.5.1`).
+>   release time (`v2.5.2`).
 > - **npm direct dependencies** were directly read from installed `package.json`
 >   manifests under `node_modules/` and `ui/node_modules/`.
 > - **Android Gradle dependencies** list their declared coordinates from

@@ -44,6 +44,11 @@ pub(crate) struct MangaRow {
     pub(crate) status: Option<String>,
     pub(crate) language: Option<String>,
     pub(crate) available_languages_json: Option<String>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "populated by SQLx FromRow and verified in tests")
+    )]
+    pub(crate) created_at: Option<i64>,
 }
 
 /// Persisted chapter record belonging to a manga.
@@ -61,10 +66,21 @@ pub(crate) struct ChapterRow {
 }
 
 fn json_vec_opt(items: &[String]) -> Option<String> {
-    if items.is_empty() {
+    let mut seen = HashSet::with_capacity(items.len());
+    let mut compact: Vec<&str> = Vec::with_capacity(items.len());
+    for item in items {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_ascii_lowercase()) {
+            compact.push(trimmed);
+        }
+    }
+    if compact.is_empty() {
         None
     } else {
-        serde_json::to_string(items).ok()
+        serde_json::to_string(&compact).ok()
     }
 }
 
@@ -150,6 +166,11 @@ impl Database {
         let genres_json = json_vec_opt(&manga.genres);
         let tags_json = json_vec_opt(&manga.tags);
         let avail_langs_json = json_vec_opt(&manga.available_languages);
+        let description = manga
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
         if let Some(id) = existing_id {
             if is_single_chapter_fallback {
@@ -179,16 +200,17 @@ impl Database {
                      description = COALESCE(?, description), genres_json = COALESCE(?, genres_json),
                      tags_json = COALESCE(?, tags_json), status = COALESCE(?, status),
                      language = COALESCE(?, language),
-                     available_languages_json = COALESCE(?, available_languages_json), updated_at = ?
+                     available_languages_json = COALESCE(?, available_languages_json),
+                     created_at = COALESCE(created_at, ?), updated_at = ?
                      WHERE id = ?",
                 )
                 .bind(&site).bind(&manga.title).bind(cover).bind(latest_url).bind(latest_name)
                 .bind(manga.source_id.as_deref()).bind(canonical).bind(alt_titles_json.as_deref())
                 .bind(manga.original_title.as_deref()).bind(authors_json.as_deref())
-                .bind(artists_json.as_deref()).bind(manga.description.as_deref())
+                .bind(artists_json.as_deref()).bind(description)
                 .bind(genres_json.as_deref()).bind(tags_json.as_deref())
                 .bind(manga.status.as_deref()).bind(manga.language.as_deref())
-                .bind(avail_langs_json.as_deref()).bind(now).bind(id)
+                .bind(avail_langs_json.as_deref()).bind(now).bind(now).bind(id)
                 .execute(&mut **tx)
                 .await?;
             }
@@ -200,8 +222,8 @@ impl Database {
                 (url, site, title, cover_url, latest_chapter_url, latest_chapter_name, has_new,
                  source_id, canonical_url, alt_titles_json, original_title, authors_json,
                  artists_json, description, genres_json, tags_json, status, language,
-                 available_languages_json, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 available_languages_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(manga.url.as_str())
         .bind(&site)
@@ -215,12 +237,13 @@ impl Database {
         .bind(manga.original_title.as_deref())
         .bind(authors_json.as_deref())
         .bind(artists_json.as_deref())
-        .bind(manga.description.as_deref())
+        .bind(description)
         .bind(genres_json.as_deref())
         .bind(tags_json.as_deref())
         .bind(manga.status.as_deref())
         .bind(manga.language.as_deref())
         .bind(avail_langs_json.as_deref())
+        .bind(now)
         .bind(now)
         .execute(&mut **tx)
         .await?;

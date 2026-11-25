@@ -18,9 +18,11 @@
 
   let {
     url,
+    sourceId,
     initialCatalog,
   }: {
     url: string;
+    sourceId?: number;
     initialCatalog?: CatalogPageView;
   } = $props();
 
@@ -28,6 +30,8 @@
   let loading = $state(false);
   let openingEntryUrl = $state<string | null>(null);
   let searchQuery = $state("");
+  let activeQuery = $state<string | null>(null);
+  let currentPage = $state(1);
   let failedCovers = $state<Record<string, boolean>>({});
   let errorState = $state<FormattedAppError | null>(null);
   let verifying = $state(false);
@@ -36,7 +40,33 @@
 
   const t = $derived(settingsStore.t);
 
+  async function loadFromSavedSource(id: number, query: string | null, page: number) {
+    const seq = ++loadSeq;
+    loading = true;
+    errorState = null;
+    failedCovers = {};
+    try {
+      const cat = await api.browseSavedSource(id, query, page);
+      if (seq !== loadSeq) return;
+      catalog = cat;
+      activeQuery = query;
+      currentPage = page;
+      searchQuery = cat.query ?? query ?? "";
+    } catch (err) {
+      if (seq !== loadSeq) return;
+      errorState = formatAppError(err, settingsStore.value.language);
+    } finally {
+      if (seq === loadSeq) {
+        loading = false;
+      }
+    }
+  }
+
   async function loadCatalogUrl(targetUrl: string) {
+    if (sourceId !== undefined) {
+      await loadFromSavedSource(sourceId, activeQuery, currentPage);
+      return;
+    }
     const seq = ++loadSeq;
     loading = true;
     errorState = null;
@@ -66,8 +96,11 @@
 
   $effect(() => {
     const target = url;
+    const sid = sourceId;
     const preloaded = initialCatalog;
-    if (preloaded && preloaded.url === target) {
+    if (sid !== undefined) {
+      void loadFromSavedSource(sid, null, 1);
+    } else if (preloaded && preloaded.url === target) {
       catalog = preloaded;
       searchQuery = preloaded.query ?? "";
       errorState = null;
@@ -102,6 +135,10 @@
 
   function submitSearch() {
     const q = searchQuery.trim();
+    if (sourceId !== undefined) {
+      void loadFromSavedSource(sourceId, q || null, 1);
+      return;
+    }
     if (!q || !catalog?.searchUrlTemplate) return;
     const nextUrl = catalog.searchUrlTemplate.replace("{query}", encodeURIComponent(q));
     router.goBrowse(nextUrl, undefined, false);
@@ -109,6 +146,28 @@
 
   function navigateCatalog(nextUrl: string) {
     router.goBrowse(nextUrl, undefined, false);
+  }
+
+  function goPrevPage() {
+    if (sourceId !== undefined) {
+      if (currentPage > 1) {
+        void loadFromSavedSource(sourceId, activeQuery, currentPage - 1);
+      }
+      return;
+    }
+    if (catalog?.pagination.prevUrl) {
+      navigateCatalog(catalog.pagination.prevUrl);
+    }
+  }
+
+  function goNextPage() {
+    if (sourceId !== undefined) {
+      void loadFromSavedSource(sourceId, activeQuery, currentPage + 1);
+      return;
+    }
+    if (catalog?.pagination.nextUrl) {
+      navigateCatalog(catalog.pagination.nextUrl);
+    }
   }
 
   async function handleManualVerify(targetUrl?: string) {
@@ -212,7 +271,7 @@
         </div>
       </div>
 
-      {#if catalog?.searchUrlTemplate}
+      {#if sourceId !== undefined || catalog?.searchUrlTemplate}
         <form
           onsubmit={(e) => {
             e.preventDefault();
@@ -230,7 +289,7 @@
           />
           <button
             type="submit"
-            disabled={!searchQuery.trim() || loading}
+            disabled={(sourceId === undefined && !searchQuery.trim()) || loading}
             class="shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold disabled:opacity-45"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
@@ -378,12 +437,12 @@
     </div>
 
     <!-- Pagination -->
-    {#if catalog.pagination.prevUrl || catalog.pagination.nextUrl || (catalog.pagination.totalPages ?? 1) > 1}
+    {#if sourceId !== undefined || catalog.pagination.prevUrl || catalog.pagination.nextUrl || (catalog.pagination.totalPages ?? 1) > 1}
       <div class="flex items-center justify-center gap-3 pt-2">
         <button
           type="button"
-          disabled={!catalog.pagination.prevUrl || loading}
-          onclick={() => catalog?.pagination.prevUrl && navigateCatalog(catalog.pagination.prevUrl)}
+          disabled={(sourceId !== undefined ? currentPage <= 1 : !catalog.pagination.prevUrl) || loading}
+          onclick={goPrevPage}
           class="inline-flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-medium disabled:opacity-40"
           style="background-color: var(--surface); border-color: var(--border);"
         >
@@ -397,8 +456,8 @@
 
         <button
           type="button"
-          disabled={!catalog.pagination.nextUrl || loading}
-          onclick={() => catalog?.pagination.nextUrl && navigateCatalog(catalog.pagination.nextUrl)}
+          disabled={(sourceId !== undefined ? catalog.entries.length === 0 : !catalog.pagination.nextUrl) || loading}
+          onclick={goNextPage}
           class="inline-flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-medium disabled:opacity-40"
           style="background-color: var(--surface); border-color: var(--border);"
         >

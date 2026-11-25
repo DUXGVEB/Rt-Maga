@@ -7,6 +7,7 @@ pub(crate) mod manga;
 pub(crate) mod notification;
 pub(crate) mod session;
 pub(crate) mod settings;
+pub(crate) mod sources;
 pub(crate) mod sync;
 
 use std::path::{Path, PathBuf};
@@ -98,6 +99,7 @@ impl Database {
         let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
             .await;
+        let _ = sqlx::query("PRAGMA optimize").execute(&self.pool).await;
     }
 
     /// Flushes the SQLite WAL journal into the primary database file and writes an atomic
@@ -1193,5 +1195,144 @@ mod tests {
         );
         let stored = db.get_manga_by_id(id1).await.unwrap().unwrap();
         assert_eq!(stored.authors_json.as_deref(), Some("[\"Author A\"]"));
+    }
+
+    #[tokio::test]
+    async fn proxy_secret_created_at_and_path_scrubbing_work() {
+        use crate::repo::diagnostics::scrub_personal_paths;
+
+        let db = Database::open_in_memory().await.unwrap();
+        let key1 = db.load_or_init_proxy_secret().await.unwrap();
+        let key2 = db.load_or_init_proxy_secret().await.unwrap();
+        assert_eq!(
+            key1, key2,
+            "cover proxy secret must persist across restarts"
+        );
+
+        let mut adult_manga = Manga::minimal(
+            Url::parse("https://adult-gallery.example/g/1").unwrap(),
+            SiteId::generic("adult-gallery.example"),
+            "Sample Work".to_owned(),
+            None,
+            vec![ch(
+                "https://adult-gallery.example/g/1/ch-1",
+                "Ch 1",
+                Some(1.0),
+            )],
+        );
+        adult_manga.tags = vec![
+            "Sci-Fi".to_owned(),
+            "sci-fi".to_owned(),
+            "Action".to_owned(),
+        ];
+        let adult_id = db.upsert_manga(&adult_manga).await.unwrap();
+        let adult_row = db.get_manga_by_id(adult_id).await.unwrap().unwrap();
+        assert!(
+            adult_row.created_at.is_some(),
+            "created_at must populate on insert"
+        );
+        assert_eq!(
+            adult_row.tags_json.as_deref(),
+            Some("[\"Sci-Fi\",\"Action\"]"),
+            "duplicate tags must compact case-insensitively"
+        );
+
+        let scrubbed =
+            scrub_personal_paths(r"failed opening C:\Users\{user}\AppData\Local\RtMaga\log.txt");
+        assert!(!scrubbed.contains("{user}"));
+        assert!(scrubbed.contains("<USER_HOME>\\AppData"));
+    }
+
+    #[tokio::test]
+    async fn saved_source_visibility_isolation_and_manual_pin_work() {
+        use crate::repo::sources::{
+            SourcePlacement, UpdateSavedSource, UpsertSavedSource, VisibilityFilter,
+            VisibilityPatch,
+        };
+
+        let db = Database::open_in_memory().await.unwrap();
+        let _main = db
+            .upsert_discovered_source(&UpsertSavedSource {
+                source_key: "host:main-comics.example",
+                display_name: "Main Comics",
+                base_url: "https://main-comics.example",
+                source_kind: "madara",
+                parser_ref: None,
+                search_template: None,
+                icon_url: None,
+                detected_adult: false,
+                placement: SourcePlacement::Auto,
+                prefer_new_name: false,
+            })
+            .await
+            .unwrap();
+
+        let supp = db
+            .upsert_discovered_source(&UpsertSavedSource {
+                source_key: "host:adult-gallery.example",
+                display_name: "Adult Gallery",
+                base_url: "https://adult-gallery.example",
+                source_kind: "flat_gallery",
+                parser_ref: None,
+                search_template: None,
+                icon_url: None,
+                detected_adult: true,
+                placement: SourcePlacement::Auto,
+                prefer_new_name: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            db.list_saved_sources(VisibilityFilter::MainOnly)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let supp_list = db
+            .list_saved_sources(VisibilityFilter::SupplementalOnly)
+            .await
+            .unwrap();
+        assert_eq!(supp_list.len(), 1);
+        assert_eq!(supp_list[0].id, supp.id);
+
+        // User moves supplemental source into Main -> manual_visibility = 1 protects it from auto re-hiding.
+        let moved = db
+            .update_saved_source(
+                supp.id,
+                &UpdateSavedSource {
+                    display_name: Some("Pinned Gallery"),
+                    base_url: Some("https://mirror-gallery.example/sub"),
+                    is_enabled: Some(true),
+                    visibility: VisibilityPatch::MoveToMain,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(moved.is_supplemental, 0);
+        assert_eq!(moved.manual_visibility, 1);
+        assert_eq!(moved.base_url, "https://mirror-gallery.example");
+
+        let re_upserted = db
+            .upsert_discovered_source(&UpsertSavedSource {
+                source_key: "host:adult-gallery.example",
+                display_name: "Other",
+                base_url: "https://adult-gallery.example",
+                source_kind: "flat_gallery",
+                parser_ref: None,
+                search_template: None,
+                icon_url: None,
+                detected_adult: true,
+                placement: SourcePlacement::Auto,
+                prefer_new_name: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            re_upserted.is_supplemental, 0,
+            "manual visibility pin must hold"
+        );
+        assert_eq!(re_upserted.display_name, "Pinned Gallery");
     }
 }

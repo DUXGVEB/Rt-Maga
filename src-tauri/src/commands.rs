@@ -14,19 +14,23 @@ use crate::android_env::{DeviceEnvInfo, NotificationPermissionInfo, OrientationL
 use crate::cache::{CacheInfo, CacheMangaStats, CacheSourceStats};
 use crate::error::AppError;
 use crate::repo::bookmark::BookmarkSort;
-use crate::repo::diagnostics::{DiagnosticLogEntry, NewDiagnosticLog};
+use crate::repo::diagnostics::{
+    DiagnosticLogEntry, NewDiagnosticLog, redact_sensitive, scrub_personal_paths,
+};
 use crate::repo::history::LastReadingDestination;
 use crate::repo::manga::HideAction;
 use crate::repo::session::CrashRecoverySession;
+use crate::repo::sources::{SourcePlacement, VisibilityFilter, VisibilityPatch};
 use crate::services::app_release::{AppReleaseInfo, CURRENT_APP_VERSION, InstallUpdateOutcome};
 use crate::services::library::{
-    BookmarkItemView, FetchMode, HiddenMangaView, HistoryItemView, MangaView, NotificationItemView,
-    ResolveResponse,
+    BookmarkItemView, CatalogPageView, FetchMode, HiddenMangaView, HistoryItemView, MangaView,
+    NotificationItemView, ResolveResponse,
 };
 use crate::services::reader::{ChapterLoadPriority, ChapterView};
+use crate::services::sources::{MultiSourceSearchResponse, RuleSpecView, SavedSourceView};
 use crate::services::sync::{SyncDecision, SyncSenderMode, SyncStatusView};
 use crate::services::updater::{CheckScope, UpdateSummary};
-use crate::services::{app_release, library, reader, sync, updater};
+use crate::services::{app_release, library, reader, sources, sync, updater};
 use crate::settings::{ReaderSettings, Settings, SettingsSection};
 use crate::state::AppState;
 
@@ -553,15 +557,28 @@ pub(crate) async fn save_diagnostic_logs_file(
 ) -> Result<SavedDiagnosticFile, AppError> {
     let (json, log_count) = build_diagnostic_export_json(&app, &state).await?;
     let ts = crate::repo::now_unix_secs();
-    let filename = format!("rtmaga-diagnostics-{ts}.json");
+    write_export_file(
+        &app,
+        &format!("rtmaga-diagnostics-{ts}.json"),
+        &json,
+        log_count,
+    )
+    .await
+}
 
+async fn write_export_file(
+    app: &AppHandle,
+    filename: &str,
+    contents: &str,
+    log_count: usize,
+) -> Result<SavedDiagnosticFile, AppError> {
     let target_dir = app
         .path()
         .download_dir()
         .or_else(|_| app.path().document_dir())
         .or_else(|_| app.path().app_local_data_dir().map(|d| d.join("logs")))
         .map_err(|e| AppError::Internal {
-            message: format!("failed to resolve diagnostic export directory: {e}"),
+            message: format!("failed to resolve export directory: {e}"),
         })?;
 
     tokio::fs::create_dir_all(&target_dir)
@@ -573,20 +590,20 @@ pub(crate) async fn save_diagnostic_logs_file(
             ),
         })?;
 
-    let dest_path = target_dir.join(&filename);
+    let dest_path = target_dir.join(filename);
     let tmp_path = target_dir.join(format!(".{filename}.tmp"));
-    let data = json.as_bytes();
+    let data = contents.as_bytes();
 
     if let Err(err) = tokio::fs::write(&tmp_path, data).await {
         return Err(AppError::Internal {
-            message: format!("failed to write diagnostic log file: {err}"),
+            message: format!("failed to write export file: {err}"),
         });
     }
     if let Err(err) = tokio::fs::rename(&tmp_path, &dest_path).await {
         let _ = tokio::fs::remove_file(&tmp_path).await;
         return Err(AppError::Internal {
             message: format!(
-                "failed to finalize diagnostic log file '{}': {err}",
+                "failed to finalize export file '{}': {err}",
                 dest_path.display()
             ),
         });
@@ -910,4 +927,339 @@ pub(crate) async fn clear_image_cache(
     state.images.clear().await?;
     state.chapters.invalidate_all();
     state.images.info().await
+}
+
+/// Lists saved sources filtered by visibility bucket (`main_only`, `supplemental_only`, `all`).
+#[tauri::command]
+pub(crate) async fn list_saved_sources(
+    state: State<'_, Arc<AppState>>,
+    filter: Option<VisibilityFilter>,
+) -> Result<Vec<SavedSourceView>, AppError> {
+    sources::list_saved_sources(&state, filter.unwrap_or_default()).await
+}
+
+/// Inspects a website URL, caches its icon, classifies its CMS structure, and saves it as a source.
+#[tauri::command]
+pub(crate) async fn add_saved_source(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    display_name: Option<String>,
+    placement: Option<SourcePlacement>,
+) -> Result<SavedSourceView, AppError> {
+    sources::add_saved_source(
+        &state,
+        &url,
+        display_name.as_deref(),
+        placement.unwrap_or_default(),
+    )
+    .await
+}
+
+/// Updates user-editable properties of a saved source (display name, mirror URL, enabled, or placement).
+#[tauri::command]
+pub(crate) async fn update_saved_source(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+    display_name: Option<String>,
+    base_url: Option<String>,
+    is_enabled: Option<bool>,
+    visibility: Option<VisibilityPatch>,
+) -> Result<SavedSourceView, AppError> {
+    sources::update_saved_source(
+        &state,
+        id,
+        display_name.as_deref(),
+        base_url.as_deref(),
+        is_enabled,
+        visibility.unwrap_or_default(),
+    )
+    .await
+}
+
+/// Deletes a saved source record by ID.
+#[tauri::command]
+pub(crate) async fn delete_saved_source(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+) -> Result<(), AppError> {
+    sources::delete_saved_source(&state, id).await
+}
+
+/// Browses or searches a single saved source using its mirror URL and CMS classification.
+#[tauri::command]
+pub(crate) async fn browse_saved_source(
+    state: State<'_, Arc<AppState>>,
+    source_id: i64,
+    query: Option<String>,
+    page: Option<u32>,
+) -> Result<CatalogPageView, AppError> {
+    sources::browse_saved_source(&state, source_id, query.as_deref(), page.unwrap_or(1)).await
+}
+
+/// Searches in parallel across all enabled saved sources in the requested visibility scope.
+#[tauri::command]
+pub(crate) async fn search_saved_sources(
+    state: State<'_, Arc<AppState>>,
+    query: String,
+    filter: Option<VisibilityFilter>,
+) -> Result<MultiSourceSearchResponse, AppError> {
+    sources::search_across_sources(&state, &query, filter.unwrap_or_default()).await
+}
+
+/// Lists all imported custom JSON rule specifications.
+#[tauri::command]
+pub(crate) async fn list_rule_specs(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<RuleSpecView>, AppError> {
+    sources::list_rule_specs(&state).await
+}
+
+/// Validates and imports a custom JSON CSS-selector rule specification (single object or array).
+#[tauri::command]
+pub(crate) async fn import_rule_specs_json(
+    state: State<'_, Arc<AppState>>,
+    raw_json: String,
+) -> Result<Vec<RuleSpecView>, AppError> {
+    sources::import_rule_specs_json(&state, &raw_json).await
+}
+
+/// Exports all stored custom JSON rule specifications as a formatted JSON array.
+#[tauri::command]
+pub(crate) async fn export_rule_specs_json(
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, AppError> {
+    sources::export_rule_specs_json(&state).await
+}
+
+/// Enables or disables a custom JSON rule specification.
+#[tauri::command]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "IPC command toggles custom rule enabled flag"
+)]
+pub(crate) async fn set_rule_spec_enabled(
+    state: State<'_, Arc<AppState>>,
+    rule_id: String,
+    enabled: bool,
+) -> Result<(), AppError> {
+    sources::set_rule_spec_enabled(&state, &rule_id, enabled).await
+}
+
+/// Deletes a custom JSON rule specification by ID.
+#[tauri::command]
+pub(crate) async fn delete_rule_spec(
+    state: State<'_, Arc<AppState>>,
+    rule_id: String,
+) -> Result<(), AppError> {
+    sources::delete_rule_spec(&state, &rule_id).await
+}
+
+/// Category of user feedback / issue report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum FeedbackReportKind {
+    Bug,
+    Suggestion,
+}
+
+/// Request payload from the UI bug report / feedback composer.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FeedbackReportRequest {
+    pub kind: FeedbackReportKind,
+    pub title: String,
+    pub description: String,
+    pub attach_logs: bool,
+    #[serde(default)]
+    pub log_ids: Vec<i64>,
+}
+
+/// Formatted feedback Markdown report plus pre-filled GitHub Issue link.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormattedFeedbackReport {
+    pub markdown: String,
+    pub github_issue_url: String,
+    pub url_truncated: bool,
+    pub included_logs: usize,
+}
+
+async fn compose_feedback_report_inner(
+    app: &AppHandle,
+    state: &AppState,
+    request: &FeedbackReportRequest,
+) -> Result<FormattedFeedbackReport, AppError> {
+    let clean_title = scrub_personal_paths(&redact_sensitive(request.title.trim()));
+    if clean_title.is_empty() {
+        return Err(AppError::InvalidUrl {
+            message: "report title must not be empty".to_owned(),
+        });
+    }
+    let clean_desc = scrub_personal_paths(&redact_sensitive(request.description.trim()));
+    let logs = if request.attach_logs && !request.log_ids.is_empty() {
+        state
+            .db
+            .list_diagnostic_logs_by_ids(&request.log_ids)
+            .await?
+    } else {
+        Vec::new()
+    };
+
+    let env = crate::android_env::get_device_env(app).ok();
+    let kind_label = match request.kind {
+        FeedbackReportKind::Bug => "Bug Report",
+        FeedbackReportKind::Suggestion => "Feature Suggestion",
+    };
+    let issue_prefix = match request.kind {
+        FeedbackReportKind::Bug => "[Bug]",
+        FeedbackReportKind::Suggestion => "[Feedback]",
+    };
+    let github_label = match request.kind {
+        FeedbackReportKind::Bug => "bug",
+        FeedbackReportKind::Suggestion => "enhancement",
+    };
+
+    let markdown =
+        render_feedback_markdown(kind_label, &clean_title, &clean_desc, env.as_ref(), &logs);
+    let issue_title = format!("{issue_prefix} {clean_title}");
+    let full_url = build_github_issue_url(&issue_title, github_label, &markdown);
+
+    let (github_issue_url, url_truncated) = if full_url.len() <= 5500 {
+        (full_url, false)
+    } else {
+        let short_body = render_short_issue_body(kind_label, &clean_desc, env.as_ref(), logs.len());
+        (
+            build_github_issue_url(&issue_title, github_label, &short_body),
+            true,
+        )
+    };
+
+    Ok(FormattedFeedbackReport {
+        markdown,
+        github_issue_url,
+        url_truncated,
+        included_logs: logs.len(),
+    })
+}
+
+fn render_feedback_markdown(
+    kind_label: &str,
+    title: &str,
+    description: &str,
+    env: Option<&DeviceEnvInfo>,
+    logs: &[DiagnosticLogEntry],
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(1024);
+    let _ = writeln!(out, "## [{kind_label}] {title}\n");
+    let _ = writeln!(out, "### Description\n{description}\n");
+    let _ = writeln!(out, "### Environment");
+    let _ = writeln!(out, "- **App**: RtMaga v{CURRENT_APP_VERSION}");
+    let _ = writeln!(out, "- **Platform**: {}", get_platform());
+    if let Some(e) = env {
+        let _ = writeln!(
+            out,
+            "- **Device**: {} {} ({}, SDK {}, {}x{}dp)",
+            e.platform, e.skin, e.orientation, e.sdk_int, e.viewport_width_dp, e.viewport_height_dp
+        );
+    }
+    if !logs.is_empty() {
+        let _ = writeln!(out, "\n### Attached Diagnostic Logs ({})", logs.len());
+        for entry in logs {
+            let msg = scrub_personal_paths(&redact_sensitive(&entry.message));
+            let src = entry.source.as_deref().unwrap_or("-");
+            let _ = writeln!(
+                out,
+                "\n#### #{} [{}] `{}` (`{src}`)",
+                entry.id, entry.level, entry.category
+            );
+            let _ = writeln!(out, "- **Message**: {msg}");
+            if let Some(code) = entry.http_status {
+                let _ = writeln!(out, "- **HTTP Status**: {code}");
+            }
+            if let Some(ref st) = entry.parsing_stage {
+                let _ = writeln!(out, "- **Stage**: `{st}`");
+            }
+            if let Some(ref det) = entry.detail {
+                let safe_det = scrub_personal_paths(&redact_sensitive(det));
+                let _ = writeln!(
+                    out,
+                    "<details><summary>Detail</summary>\n\n```text\n{safe_det}\n```\n</details>"
+                );
+            }
+        }
+    }
+    out
+}
+
+fn render_short_issue_body(
+    kind_label: &str,
+    description: &str,
+    env: Option<&DeviceEnvInfo>,
+    log_count: usize,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(512);
+    let _ = writeln!(out, "**Type**: {kind_label}");
+    let _ = writeln!(
+        out,
+        "**App**: RtMaga v{CURRENT_APP_VERSION} ({})",
+        get_platform()
+    );
+    if let Some(e) = env {
+        let _ = writeln!(
+            out,
+            "**Orientation**: {} ({}x{}dp)",
+            e.orientation, e.viewport_width_dp, e.viewport_height_dp
+        );
+    }
+    let trimmed_desc: String = description.chars().take(1200).collect();
+    let _ = writeln!(out, "\n### Description\n{trimmed_desc}\n");
+    if log_count > 0 {
+        let _ = writeln!(
+            out,
+            "\n*(Full Markdown report with {log_count} sanitized log entries was copied to your clipboard — please paste below.)*"
+        );
+    }
+    out
+}
+
+fn build_github_issue_url(title: &str, label: &str, body: &str) -> String {
+    let mut ser = url::form_urlencoded::Serializer::new(String::new());
+    ser.append_pair("title", title);
+    ser.append_pair("labels", label);
+    ser.append_pair("body", body);
+    format!(
+        "https://github.com/DUXGVEB/Rt-Maga/issues/new?{}",
+        ser.finish()
+    )
+}
+
+/// Builds a redacted Markdown feedback/bug report and pre-filled GitHub Issue URL.
+#[tauri::command]
+pub(crate) async fn build_feedback_report(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request: FeedbackReportRequest,
+) -> Result<FormattedFeedbackReport, AppError> {
+    compose_feedback_report_inner(&app, &state, &request).await
+}
+
+/// Saves a formatted, redacted Markdown feedback/bug report to disk and returns the saved file path.
+#[tauri::command]
+pub(crate) async fn save_feedback_report_file(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    request: FeedbackReportRequest,
+) -> Result<SavedDiagnosticFile, AppError> {
+    let report = compose_feedback_report_inner(&app, &state, &request).await?;
+    let ts = crate::repo::now_unix_secs();
+    write_export_file(
+        &app,
+        &format!("rtmaga-feedback-{ts}.md"),
+        &report.markdown,
+        report.included_logs,
+    )
+    .await
 }

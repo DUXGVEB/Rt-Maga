@@ -2,18 +2,27 @@
 //! and strict separation between persistent cover thumbnails and transient chapter page images.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use bytes::Bytes;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use mangacore::HttpClient;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use tracing::{debug, warn};
+use url::Url;
 
 use crate::error::AppError;
 use crate::repo::{Database, now_unix_secs};
+
+const FLAG_COVER: u8 = 1 << 0;
+const FLAG_SITE: u8 = 1 << 1;
+const FLAG_MANGA_ID: u8 = 1 << 2;
+const FLAG_CHAPTER_URL: u8 = 1 << 3;
+
+static PREFETCH_SEM: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(4));
 
 /// Subdirectory holding small persistent manga cover thumbnails (`is_cover = 1`).
 const COVERS_SUBDIR: &str = "covers";
@@ -92,6 +101,43 @@ pub(crate) struct CachedImage {
     pub content_type: String,
 }
 
+#[derive(Debug, Clone)]
+struct CachedIndexEntry {
+    content_type: String,
+    flags: u8,
+    last_touch_secs: i64,
+}
+
+impl CachedIndexEntry {
+    const fn is_cover(&self) -> bool {
+        (self.flags & FLAG_COVER) != 0
+    }
+
+    fn apply_meta(&mut self, meta: &CacheEntryMeta<'_>, now: i64) {
+        if meta.is_cover {
+            self.flags |= FLAG_COVER;
+        }
+        if meta.site.is_some() {
+            self.flags |= FLAG_SITE;
+        }
+        if meta.manga_id.is_some() {
+            self.flags |= FLAG_MANGA_ID;
+        }
+        if meta.chapter_url.is_some() {
+            self.flags |= FLAG_CHAPTER_URL;
+        }
+        self.last_touch_secs = now;
+    }
+
+    fn needs_db_update(&self, meta: &CacheEntryMeta<'_>, now: i64) -> bool {
+        now.saturating_sub(self.last_touch_secs) >= 3600
+            || (meta.is_cover && (self.flags & FLAG_COVER) == 0)
+            || (meta.site.is_some() && (self.flags & FLAG_SITE) == 0)
+            || (meta.manga_id.is_some() && (self.flags & FLAG_MANGA_ID) == 0)
+            || (meta.chapter_url.is_some() && (self.flags & FLAG_CHAPTER_URL) == 0)
+    }
+}
+
 /// Manages local image files under `<dir>/covers/<xx>/<sha256>` (persistent thumbnails) and
 /// `<dir>/pages/<xx>/<sha256>` (transient chapter pages) with SQLite LRU eviction.
 #[derive(Debug, Clone)]
@@ -99,10 +145,11 @@ pub(crate) struct ImageCache {
     dir: PathBuf,
     db: Database,
     in_flight: Arc<DashMap<String, watch::Sender<bool>>>,
+    index_mem: Arc<DashMap<String, CachedIndexEntry>>,
 }
 
 impl ImageCache {
-    /// Creates a new [`ImageCache`] rooted at `dir`.
+    /// Creates a new [`ImageCache`] rooted at `dir` and hydrates the in-memory hit index.
     ///
     /// # Errors
     ///
@@ -118,11 +165,105 @@ impl ImageCache {
             .map_err(|e| AppError::Internal {
                 message: format!("failed to create page cache dir: {e}"),
             })?;
+
+        let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+            "SELECT key, content_type, is_cover, last_access,
+                    CASE WHEN site IS NOT NULL THEN 1 ELSE 0 END,
+                    CASE WHEN manga_id IS NOT NULL THEN 1 ELSE 0 END,
+                    CASE WHEN chapter_url IS NOT NULL THEN 1 ELSE 0 END
+             FROM image_cache",
+        )
+        .fetch_all(db.pool())
+        .await
+        .unwrap_or_default();
+
+        let index_mem = Arc::new(DashMap::with_capacity(rows.len()));
+        for (k, ct, cov, last_acc, has_site, has_manga, has_chap) in rows {
+            let mut flags = 0_u8;
+            if cov != 0 {
+                flags |= FLAG_COVER;
+            }
+            if has_site != 0 {
+                flags |= FLAG_SITE;
+            }
+            if has_manga != 0 {
+                flags |= FLAG_MANGA_ID;
+            }
+            if has_chap != 0 {
+                flags |= FLAG_CHAPTER_URL;
+            }
+            index_mem.insert(
+                k,
+                CachedIndexEntry {
+                    content_type: ct,
+                    flags,
+                    last_touch_secs: last_acc,
+                },
+            );
+        }
+
         Ok(Self {
             dir,
             db,
             in_flight: Arc::new(DashMap::new()),
+            index_mem,
         })
+    }
+
+    /// Returns `true` when `url` is currently indexed in the local cache.
+    pub(crate) fn has_cached_url(&self, url: &str) -> bool {
+        let key = Self::key_for_url(url);
+        self.index_mem.contains_key(&key)
+    }
+
+    /// Spawns a bounded background task to prefetch and persistently cache a cover thumbnail or
+    /// site icon into `covers/` (`is_cover = 1`) when not already cached.
+    pub(crate) fn spawn_cover_prefetch(
+        &self,
+        http: HttpClient,
+        cover_url: Url,
+        referer: Url,
+        site: Option<String>,
+        manga_id: Option<i64>,
+        max_mb: u32,
+    ) {
+        if self.has_cached_url(cover_url.as_str()) {
+            return;
+        }
+        let cache = self.clone();
+        tokio::spawn(async move {
+            let Ok(_permit) = PREFETCH_SEM.acquire().await else {
+                return;
+            };
+            let key = Self::key_for_url(cover_url.as_str());
+            if cache.index_mem.contains_key(&key) {
+                return;
+            }
+            let Some(_guard) = cache.begin_single_flight(&key).await else {
+                return;
+            };
+            if cache.index_mem.contains_key(&key) {
+                return;
+            }
+            if let Ok(fetched) = http.fetch_image(&cover_url, Some(&referer)).await
+                && !fetched.bytes.is_empty()
+            {
+                cache
+                    .put(
+                        &key,
+                        &fetched.bytes,
+                        &fetched.content_type,
+                        max_mb,
+                        CacheEntryMeta {
+                            site: site.as_deref(),
+                            manga_id,
+                            is_cover: true,
+                            chapter_url: None,
+                        },
+                    )
+                    .await;
+            }
+        });
     }
 
     /// Computes a deterministic SHA-256 hex key for an image URL.
@@ -138,24 +279,55 @@ impl ImageCache {
         out
     }
 
-    /// Reads a cached image if present on disk, refreshes its LRU timestamp, and backfills
-    /// missing ownership metadata.
+    /// Reads a cached image if present on disk, refreshes its LRU timestamp (at most hourly in
+    /// SQLite to avoid write amplification while scrolling), and backfills missing metadata.
     pub(crate) async fn get(&self, key: &str, meta: CacheEntryMeta<'_>) -> Option<CachedImage> {
-        let row: Option<(String, i64)> =
-            sqlx::query_as("SELECT content_type, is_cover FROM image_cache WHERE key = ?")
-                .bind(key)
-                .fetch_optional(self.db.pool())
-                .await
-                .ok()?;
+        let mut entry = if let Some(hit) = self.index_mem.get(key) {
+            hit.clone()
+        } else {
+            let row: Option<(String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+                "SELECT content_type, is_cover, last_access,
+                        CASE WHEN site IS NOT NULL THEN 1 ELSE 0 END,
+                        CASE WHEN manga_id IS NOT NULL THEN 1 ELSE 0 END,
+                        CASE WHEN chapter_url IS NOT NULL THEN 1 ELSE 0 END
+                 FROM image_cache WHERE key = ?",
+            )
+            .bind(key)
+            .fetch_optional(self.db.pool())
+            .await
+            .ok()?;
 
-        let (content_type, stored_is_cover) = row?;
-        let bucket = if stored_is_cover != 0 || meta.is_cover {
+            let (ct, cov, last_acc, has_site, has_manga, has_chap) = row?;
+            let mut flags = 0_u8;
+            if cov != 0 {
+                flags |= FLAG_COVER;
+            }
+            if has_site != 0 {
+                flags |= FLAG_SITE;
+            }
+            if has_manga != 0 {
+                flags |= FLAG_MANGA_ID;
+            }
+            if has_chap != 0 {
+                flags |= FLAG_CHAPTER_URL;
+            }
+            let hydrated = CachedIndexEntry {
+                content_type: ct,
+                flags,
+                last_touch_secs: last_acc,
+            };
+            self.index_mem.insert(key.to_owned(), hydrated.clone());
+            hydrated
+        };
+
+        let bucket = if entry.is_cover() || meta.is_cover {
             CacheBucket::Cover
         } else {
             CacheBucket::Page
         };
         let data = self.read_existing_file(key, bucket).await;
         let Some(data) = data else {
+            self.index_mem.remove(key);
             let _ = sqlx::query("DELETE FROM image_cache WHERE key = ?")
                 .bind(key)
                 .execute(self.db.pool())
@@ -163,27 +335,32 @@ impl ImageCache {
             return None;
         };
 
-        let _ = sqlx::query(
-            "UPDATE image_cache
-             SET last_access = ?,
-                 site = COALESCE(site, ?),
-                 manga_id = COALESCE(manga_id, ?),
-                 is_cover = MAX(is_cover, ?),
-                 chapter_url = COALESCE(chapter_url, ?)
-             WHERE key = ?",
-        )
-        .bind(now_unix_secs())
-        .bind(meta.site)
-        .bind(meta.manga_id)
-        .bind(i64::from(meta.is_cover))
-        .bind(meta.chapter_url)
-        .bind(key)
-        .execute(self.db.pool())
-        .await;
+        let now = now_unix_secs();
+        if entry.needs_db_update(&meta, now) {
+            let _ = sqlx::query(
+                "UPDATE image_cache
+                 SET last_access = ?,
+                     site = COALESCE(site, ?),
+                     manga_id = COALESCE(manga_id, ?),
+                     is_cover = MAX(is_cover, ?),
+                     chapter_url = COALESCE(chapter_url, ?)
+                 WHERE key = ?",
+            )
+            .bind(now)
+            .bind(meta.site)
+            .bind(meta.manga_id)
+            .bind(i64::from(meta.is_cover))
+            .bind(meta.chapter_url)
+            .bind(key)
+            .execute(self.db.pool())
+            .await;
+            entry.apply_meta(&meta, now);
+            self.index_mem.insert(key.to_owned(), entry.clone());
+        }
 
         Some(CachedImage {
             bytes: Bytes::from(data),
-            content_type,
+            content_type: entry.content_type,
         })
     }
 
@@ -248,6 +425,22 @@ impl ImageCache {
         .bind(meta.chapter_url)
         .execute(self.db.pool())
         .await;
+
+        self.index_mem
+            .entry(key.to_owned())
+            .and_modify(|e| {
+                content_type.clone_into(&mut e.content_type);
+                e.apply_meta(&meta, now);
+            })
+            .or_insert_with(|| {
+                let mut e = CachedIndexEntry {
+                    content_type: content_type.to_owned(),
+                    flags: 0,
+                    last_touch_secs: now,
+                };
+                e.apply_meta(&meta, now);
+                e
+            });
 
         self.evict_if_needed(max_mb).await;
     }
@@ -370,6 +563,7 @@ impl ImageCache {
         };
 
         for (key,) in &keys {
+            self.index_mem.remove(key);
             self.remove_all_locations(key).await;
         }
 
@@ -403,6 +597,7 @@ impl ImageCache {
             .await?;
 
         for (key,) in &keys {
+            self.index_mem.remove(key);
             self.remove_all_locations(key).await;
         }
 
@@ -439,6 +634,7 @@ impl ImageCache {
         .await?;
 
         for (key,) in &keys {
+            self.index_mem.remove(key);
             let _ = tokio::fs::remove_file(self.file_path(key, CacheBucket::Page)).await;
             let _ = tokio::fs::remove_file(self.legacy_file_path(key)).await;
         }
@@ -477,6 +673,7 @@ impl ImageCache {
                 .await?;
 
         for (key,) in &keys {
+            self.index_mem.remove(key);
             let _ = tokio::fs::remove_file(self.file_path(key, CacheBucket::Page)).await;
             let _ = tokio::fs::remove_file(self.legacy_file_path(key)).await;
         }
@@ -510,6 +707,7 @@ impl ImageCache {
         sqlx::query("DELETE FROM image_cache WHERE is_cover = 0")
             .execute(self.db.pool())
             .await?;
+        self.index_mem.retain(|_, v| v.is_cover());
 
         let pages_dir = self.dir.join(PAGES_SUBDIR);
         if pages_dir.exists() {
@@ -552,6 +750,7 @@ impl ImageCache {
         sqlx::query("DELETE FROM image_cache")
             .execute(self.db.pool())
             .await?;
+        self.index_mem.clear();
 
         if self.dir.exists() {
             let _ = tokio::fs::remove_dir_all(&self.dir).await;
@@ -644,6 +843,7 @@ impl ImageCache {
                 } else {
                     CacheBucket::Page
                 };
+                self.index_mem.remove(&key);
                 let _ = tokio::fs::remove_file(self.file_path(&key, bucket)).await;
                 let _ = tokio::fs::remove_file(self.legacy_file_path(&key)).await;
                 let _ = sqlx::query("DELETE FROM image_cache WHERE key = ?")

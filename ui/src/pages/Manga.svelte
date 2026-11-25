@@ -40,9 +40,34 @@
   let jumpInput = $state("");
   let newestFirst = $state(true);
   let selectedChapterLang = $state<string>("auto");
+  let descExpanded = $state(false);
+  let tagsExpanded = $state(false);
   let loadSeq = 0;
 
   const t = $derived(settingsStore.t);
+
+  const combinedTags = $derived(() => {
+    if (!manga) return [] as { label: string; isGenre: boolean }[];
+    const seen = new Set<string>();
+    const out: { label: string; isGenre: boolean }[] = [];
+    for (const g of manga.genres) {
+      const clean = g.trim();
+      const key = clean.toLowerCase();
+      if (clean && !seen.has(key)) {
+        seen.add(key);
+        out.push({ label: clean, isGenre: true });
+      }
+    }
+    for (const tag of manga.tags) {
+      const clean = tag.trim();
+      const key = clean.toLowerCase();
+      if (clean && !seen.has(key)) {
+        seen.add(key);
+        out.push({ label: clean, isGenre: false });
+      }
+    }
+    return out;
+  });
 
   async function load(targetId: number) {
     const seq = ++loadSeq;
@@ -51,6 +76,8 @@
     refreshErrorState = null;
     coverError = false;
     showDeleteModal = false;
+    descExpanded = false;
+    tagsExpanded = false;
     try {
       const loaded = await api.getManga(targetId);
       if (seq !== loadSeq) return;
@@ -464,34 +491,58 @@
             {/if}
           </div>
 
-          {#if manga.genres.length > 0 || manga.tags.length > 0}
-            <div class="flex flex-wrap gap-1.5 pt-0.5">
-              {#each manga.genres as genre (genre)}
-                <span
-                  class="rounded-md px-2 py-0.5 text-[11px] font-medium"
-                  style="background-color: var(--accent-soft); color: var(--accent);"
+          {#if manga.description}
+            <div class="flex flex-col items-start gap-1">
+              <p
+                class="{descExpanded ? '' : 'line-clamp-4'} text-xs leading-relaxed whitespace-pre-line"
+                style="color: var(--text-muted);"
+              >
+                {manga.description}
+              </p>
+              {#if manga.description.length > 260}
+                <button
+                  type="button"
+                  onclick={() => {
+                    descExpanded = !descExpanded;
+                  }}
+                  class="text-[11px] font-semibold hover:underline"
+                  style="color: var(--accent);"
                 >
-                  {genre}
-                </span>
-              {/each}
-              {#each manga.tags.slice(0, 8) as tag (tag)}
-                <span
-                  class="rounded-md px-2 py-0.5 text-[11px]"
-                  style="background-color: var(--surface-subtle); color: var(--text-muted);"
-                >
-                  {tag}
-                </span>
-              {/each}
+                  {descExpanded ? t.showLessDesc : t.readMoreDesc}
+                </button>
+              {/if}
             </div>
           {/if}
 
-          {#if manga.description}
-            <p
-              class="line-clamp-4 text-xs leading-relaxed"
-              style="color: var(--text-muted);"
-            >
-              {manga.description}
-            </p>
+          {#if combinedTags().length > 0}
+            {@const allTags = combinedTags()}
+            {@const visibleTags = tagsExpanded ? allTags : allTags.slice(0, 24)}
+            <div class="flex flex-wrap items-center gap-1.5 pt-0.5">
+              {#each visibleTags as item (item.label)}
+                <span
+                  class="rounded-md px-2 py-0.5 text-[11px] {item.isGenre ? 'font-medium' : ''}"
+                  style="background-color: {item.isGenre
+                    ? 'var(--accent-soft)'
+                    : 'var(--surface-subtle)'}; color: {item.isGenre
+                    ? 'var(--accent)'
+                    : 'var(--text-muted)'};"
+                >
+                  {item.label}
+                </span>
+              {/each}
+              {#if allTags.length > 24}
+                <button
+                  type="button"
+                  onclick={() => {
+                    tagsExpanded = !tagsExpanded;
+                  }}
+                  class="rounded-md border px-2 py-0.5 text-[11px] font-semibold"
+                  style="border-color: var(--border); background-color: var(--surface); color: var(--accent);"
+                >
+                  {tagsExpanded ? t.showLessTags : t.showMoreTags(allTags.length - 24)}
+                </button>
+              {/if}
+            </div>
           {/if}
 
           <div class="truncate text-[11px] opacity-75" style="color: var(--text-muted);">

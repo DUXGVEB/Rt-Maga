@@ -2,7 +2,7 @@ export type Language = "en" | "vi" | "zh" | "ja" | "ru" | "ko" | "th";
 
 export type Theme = "system" | "light" | "dark";
 
-export type NavDestination = "home" | "bookmarks" | "history" | "settings";
+export type NavDestination = "home" | "sources" | "bookmarks" | "history" | "settings";
 
 export interface UiCustomizationSettings {
   lightAccent: string;
@@ -33,6 +33,7 @@ export type FloatingEdge = "left" | "right";
 
 export type FloatingScreenKey =
   | "home"
+  | "sources"
   | "browse"
   | "bookmarks"
   | "history"
@@ -610,6 +611,7 @@ export interface HistoryItemView {
   scrollRatio: number;
   pageIndex: number;
   readAt: number;
+  addedAt: number;
   latestChapterUrl: string | null;
   latestChapterName: string | null;
   hasNew: boolean;
@@ -619,6 +621,67 @@ export interface HistoryItemView {
   isCompleted: boolean;
   currentChapterIdx: number | null;
 }
+
+export type VisibilityFilter = "main_only" | "supplemental_only" | "all";
+export type SourcePlacement = "auto" | "force_main" | "force_supplemental";
+export type VisibilityPatch = "unchanged" | "move_to_main" | "move_to_supplemental";
+
+export interface SavedSourceView {
+  id: number;
+  sourceKey: string;
+  displayName: string;
+  baseUrl: string;
+  sourceKind: string;
+  parserRef: string | null;
+  searchTemplate: string | null;
+  iconToken: string | null;
+  isEnabled: boolean;
+  isSupplemental: boolean;
+  manualVisibility: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RuleSpecView {
+  ruleId: string;
+  name: string;
+  version: number;
+  origin: string;
+  isEnabled: boolean;
+  domains: string[];
+  updatedAt: number;
+}
+
+export interface SourceSearchGroupView {
+  source: SavedSourceView;
+  entries: CatalogEntryView[];
+  error: string | null;
+}
+
+export interface MultiSourceSearchResponse {
+  query: string;
+  groups: SourceSearchGroupView[];
+}
+
+export type FeedbackReportKind = "bug" | "suggestion";
+
+export interface FeedbackReportRequest {
+  kind: FeedbackReportKind;
+  title: string;
+  description: string;
+  attachLogs: boolean;
+  logIds: number[];
+}
+
+export interface FormattedFeedbackReport {
+  markdown: string;
+  githubIssueUrl: string;
+  urlTruncated: boolean;
+  includedLogs: number;
+}
+
+export type LibrarySortField = "added" | "title";
+export type SortDirection = "desc" | "asc";
 
 export type BookmarkSort = "newest" | "title" | "recent_read" | "has_new";
 

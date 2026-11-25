@@ -39,6 +39,8 @@ pub(crate) const DEFAULT_DARK_ACCENT: &str = "#f43f5e";
 pub(crate) enum NavDestination {
     /// Home library & link input.
     Home,
+    /// Saved comic sources & multi-source discovery.
+    Sources,
     /// Bookmarked series collection.
     Bookmarks,
     /// Reading history & quick resume.
@@ -47,8 +49,9 @@ pub(crate) enum NavDestination {
     Settings,
 }
 
-const DEFAULT_NAV_ORDER: [NavDestination; 4] = [
+const DEFAULT_NAV_ORDER: [NavDestination; 5] = [
     NavDestination::Home,
+    NavDestination::Sources,
     NavDestination::Bookmarks,
     NavDestination::History,
     NavDestination::Settings,
@@ -379,8 +382,9 @@ pub(crate) struct FloatingButtonsSettings {
     pub auto_dim_in_reader: bool,
 }
 
-const VALID_FLOATING_SCREENS: [&str; 7] = [
+const VALID_FLOATING_SCREENS: [&str; 8] = [
     "home",
+    "sources",
     "browse",
     "bookmarks",
     "history",
@@ -934,10 +938,11 @@ mod tests {
             vec![
                 NavDestination::Settings,
                 NavDestination::Home,
+                NavDestination::Sources,
                 NavDestination::Bookmarks,
                 NavDestination::History,
             ],
-            "nav_order must deduplicate and preserve all four destinations"
+            "nav_order must deduplicate and preserve all five destinations"
         );
 
         let mut resettable = sanitized;

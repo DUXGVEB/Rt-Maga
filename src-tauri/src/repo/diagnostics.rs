@@ -101,7 +101,51 @@ pub(crate) fn redact_sensitive(input: &str) -> String {
         sanitized = redact_after_marker(&sanitized, secret_key);
     }
 
-    truncate_utf8(&sanitized, MAX_FIELD_LEN)
+    let cleaned = scrub_personal_paths(&sanitized);
+    truncate_utf8(&cleaned, MAX_FIELD_LEN)
+}
+
+/// Replaces local OS home/user directory segments (`C:\Users\<name>`, `C:/Users/<name>`,
+/// `/Users/<name>`, `/home/<name>`) with `<USER_HOME>` so usernames never leak into logs or issues.
+pub(crate) fn scrub_personal_paths(input: &str) -> String {
+    let mut out = input.to_owned();
+    for needle in [":\\users\\", ":/users/", "/users/", "/home/"] {
+        out = scrub_prefix_pattern(&out, needle);
+    }
+    out
+}
+
+fn scrub_prefix_pattern(text: &str, needle_lower: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut result = String::with_capacity(text.len());
+    let mut cursor = 0;
+
+    while let Some(rel) = lower[cursor..].find(needle_lower) {
+        let match_start = cursor + rel;
+        let is_drive_prefixed = needle_lower.starts_with(':');
+        let replace_start = if is_drive_prefixed && match_start > 0 {
+            let prev = text[..match_start].chars().next_back();
+            if prev.is_some_and(|c| c.is_ascii_alphabetic()) {
+                match_start - 1
+            } else {
+                match_start
+            }
+        } else {
+            match_start
+        };
+
+        result.push_str(&text[cursor..replace_start]);
+        result.push_str("<USER_HOME>");
+
+        let after_prefix = match_start + needle_lower.len();
+        let tail = &text[after_prefix..];
+        let seg_end = tail
+            .find(['\\', '/', ' ', '\n', '\r', '\t', '"', '\'', ')', ']', ':'])
+            .unwrap_or(tail.len());
+        cursor = after_prefix + seg_end;
+    }
+    result.push_str(&text[cursor..]);
+    result
 }
 
 fn redact_after_marker(text: &str, marker_lower: &str) -> String {
@@ -230,6 +274,26 @@ impl Database {
         .fetch_all(self.pool())
         .await?;
         Ok(rows)
+    }
+
+    /// Loads specific diagnostic log entries matching `ids`, preserving newest-first order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn list_diagnostic_logs_by_ids(
+        &self,
+        ids: &[i64],
+    ) -> Result<Vec<DiagnosticLogEntry>, AppError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let id_set: std::collections::HashSet<i64> = ids.iter().copied().collect();
+        let all = self.list_diagnostic_logs(MAX_DIAGNOSTIC_LOGS).await?;
+        Ok(all
+            .into_iter()
+            .filter(|entry| id_set.contains(&entry.id))
+            .collect())
     }
 
     /// Clears all stored diagnostic logs.

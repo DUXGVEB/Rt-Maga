@@ -748,6 +748,63 @@ impl HttpClient {
         }
     }
 
+    /// Seeds harmless non-interactive age-confirmation consent cookies for `url` into the
+    /// shared cookie jar (never bypasses CAPTCHAs, anti-bot challenges, logins, or paywalls).
+    pub fn seed_age_consent_cookies(&self, url: &Url) {
+        for cookie in [
+            "wpmanga-adault=1; Path=/",
+            "over18=1; Path=/",
+            "nw=1; Path=/",
+            "age_verified=1; Path=/",
+        ] {
+            self.inner.jar.add_cookie_str(cookie, url);
+        }
+    }
+
+    /// Sends a form-encoded `POST` request (used by standard CMS chapter AJAX endpoints) while
+    /// enforcing SSRF checks, per-host concurrency limits, and active proxy routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError`] on disallowed host, proxy misconfiguration, transport, or HTTP error.
+    pub async fn post_form(
+        &self,
+        url: &Url,
+        form: &[(&str, &str)],
+        referer: Option<&Url>,
+    ) -> Result<FetchedPage, ScrapeError> {
+        validate_public_http_url(url)?;
+        let _permit = self.acquire_host_permit(url).await;
+        let ctx = self.fetch_ctx();
+
+        if let Some((endpoint, allow_fallback)) = self.proxy_config().resolve_for_url(url) {
+            let proxy_client = match self.client_for_proxy(&endpoint) {
+                Ok(c) => c,
+                Err(err) if allow_fallback => {
+                    warn!(%err, "proxy unavailable for form POST; falling back to direct mode");
+                    let direct = self.direct_client()?;
+                    return post_form_with_client(&direct, url, form, referer, None, ctx).await;
+                }
+                Err(err) => return Err(err),
+            };
+
+            match post_form_with_client(&proxy_client, url, form, referer, Some(&endpoint), ctx)
+                .await
+            {
+                Ok(page) => return Ok(page),
+                Err(err) if allow_fallback && is_proxy_fallback_eligible(&err) => {
+                    warn!(%err, "proxied form POST failed; falling back to direct mode");
+                    let direct = self.direct_client()?;
+                    return post_form_with_client(&direct, url, form, referer, None, ctx).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        let direct = self.direct_client()?;
+        post_form_with_client(&direct, url, form, referer, None, ctx).await
+    }
+
     /// Fetches an HTML page while enforcing per-host concurrency limits, proxy routing,
     /// SSRF checks, and anti-bot challenge detection.
     ///
@@ -756,6 +813,17 @@ impl HttpClient {
     /// Returns [`ScrapeError::DisallowedHost`], [`ScrapeError::Blocked`], [`ScrapeError::Proxy`],
     /// [`ScrapeError::HttpStatus`], or [`ScrapeError::Network`].
     pub async fn fetch_html(&self, url: &Url) -> Result<FetchedPage, ScrapeError> {
+        let page = self.fetch_html_once(url).await?;
+        if looks_like_soft_age_gate(&page.html) {
+            self.seed_age_consent_cookies(&page.final_url);
+            if let Ok(retried) = self.fetch_html_once(&page.final_url).await {
+                return Ok(retried);
+            }
+        }
+        Ok(page)
+    }
+
+    async fn fetch_html_once(&self, url: &Url) -> Result<FetchedPage, ScrapeError> {
         validate_public_http_url(url)?;
         let _permit = self.acquire_host_permit(url).await;
         let ctx = self.fetch_ctx();
@@ -1210,6 +1278,69 @@ async fn fetch_html_with_client(
         status: 500,
         url: url.clone(),
     }))
+}
+
+async fn post_form_with_client(
+    client: &Client,
+    url: &Url,
+    form: &[(&str, &str)],
+    referer: Option<&Url>,
+    proxy_ep: Option<&ProxyEndpoint>,
+    ctx: FetchCtx<'_>,
+) -> Result<FetchedPage, ScrapeError> {
+    let mut req = client
+        .post(url.as_str())
+        .header(ACCEPT, "*/*")
+        .header("X-Requested-With", "XMLHttpRequest")
+        .form(form);
+    if let Some(ref_url) = referer
+        && let Ok(val) = HeaderValue::from_str(ref_url.as_str())
+    {
+        req = req.header(REFERER, val);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| map_transport_err(e, proxy_ep, url, ctx.timeout_secs))?;
+    let status = resp.status();
+    if status == StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+        return Err(ScrapeError::Proxy(
+            "proxy authentication failed (HTTP 407)".to_owned(),
+        ));
+    }
+    let retry_after = parse_retry_after_secs(resp.headers());
+    let content_type = extract_media_type(resp.headers());
+    let final_url = resp.url().clone();
+    let raw_bytes = read_bounded_bytes(resp, MAX_HTML_BYTES, &final_url, ctx.limiter).await?;
+    let response_bytes = raw_bytes.len();
+    let body = String::from_utf8_lossy(&raw_bytes).into_owned();
+    if status.is_success() {
+        return Ok(FetchedPage {
+            final_url,
+            html: body,
+            status: status.as_u16(),
+            content_type,
+            response_bytes,
+        });
+    }
+    let sess = session_state_for(ctx.session_domains, &final_url);
+    Err(map_http_status_err(
+        status,
+        &final_url,
+        retry_after,
+        &body,
+        sess,
+    ))
+}
+
+fn looks_like_soft_age_gate(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    (lower.contains("wpmanga-adault")
+        || lower.contains("age-verification-popup")
+        || lower.contains("continue-18-button"))
+        && !lower.contains("cf-browser-verification")
+        && !lower.contains("cf-turnstile")
 }
 
 async fn sleep_before_attempt(

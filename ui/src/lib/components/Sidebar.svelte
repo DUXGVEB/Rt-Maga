@@ -3,6 +3,7 @@
     Bell,
     Bookmark,
     Clock,
+    Compass,
     Home,
     Maximize,
     Minimize,
@@ -86,11 +87,9 @@
             onclick={() => router.goHome()}
             class="nav-item"
             class:active={router.current.name === "home" ||
-              router.current.name === "manga" ||
-              router.current.name === "browse"}
+              router.current.name === "manga"}
             aria-current={router.current.name === "home" ||
-            router.current.name === "manga" ||
-            router.current.name === "browse"
+            router.current.name === "manga"
               ? "page"
               : undefined}
           >
@@ -104,6 +103,21 @@
                 {updatesStore.newCount}
               </span>
             {/if}
+          </button>
+        {:else if dest === "sources"}
+          <button
+            type="button"
+            onclick={() => router.goSources()}
+            class="nav-item"
+            class:active={router.current.name === "sources" ||
+              router.current.name === "browse"}
+            aria-current={router.current.name === "sources" ||
+            router.current.name === "browse"
+              ? "page"
+              : undefined}
+          >
+            <Compass size={18} />
+            <span>{t.navSources}</span>
           </button>
         {:else if dest === "bookmarks"}
           <button

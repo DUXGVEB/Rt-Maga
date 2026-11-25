@@ -8,6 +8,7 @@ export const DEFAULT_DARK_ACCENT = "#f43f5e";
 
 export const DEFAULT_NAV_ORDER: readonly NavDestination[] = [
   "home",
+  "sources",
   "bookmarks",
   "history",
   "settings",

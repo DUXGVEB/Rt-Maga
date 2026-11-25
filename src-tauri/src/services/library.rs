@@ -1,7 +1,13 @@
 //! Manga resolution, detail loading, and reading history workflows.
 
-use mangacore::{CatalogPage, RecognitionDiagnostic, Resolved, UrlKind, normalize_url};
+use mangacore::{
+    CatalogPage, CmsKind, RecognitionDiagnostic, RecognitionStatus, Resolved, ScrapeError, UrlKind,
+    UserQueryKind, classify_user_input, execute_rule_catalog, execute_rule_chapter,
+    execute_rule_manga, normalize_url, resolve_exact_from_source, rewrite_domain_override,
+    rule_pack::match_rule_by_domain,
+};
 use serde::Serialize;
+use url::Url;
 
 use crate::error::AppError;
 use crate::image_proxy::encode_cover_token;
@@ -10,6 +16,9 @@ use crate::repo::diagnostics::NewDiagnosticLog;
 use crate::repo::history::{HistoryEntryRow, HistoryProgressRow, LastReadingDestination};
 use crate::repo::manga::{ChapterRow, HideAction, MangaRow};
 use crate::repo::notification::NotificationRow;
+use crate::services::sources::{
+    AutoRecordDeps, spawn_auto_record_from_catalog, spawn_auto_record_from_manga,
+};
 use crate::settings::ReaderSettings;
 use crate::state::AppState;
 
@@ -172,6 +181,7 @@ pub(crate) struct HistoryItemView {
     pub scroll_ratio: f64,
     pub page_index: i64,
     pub read_at: i64,
+    pub added_at: i64,
     pub latest_chapter_url: Option<String>,
     pub latest_chapter_name: Option<String>,
     pub has_new: bool,
@@ -223,7 +233,8 @@ pub(crate) struct NotificationItemView {
     pub created_at: i64,
 }
 
-/// Resolves an arbitrary pasted link, persists the manga in SQLite, and returns the UI view.
+/// Resolves an arbitrary pasted link (web URL or `rtmaga://` deep link), persists the manga
+/// in SQLite, prefetches covers, auto-records discovered sources, and returns the UI view.
 ///
 /// # Errors
 ///
@@ -233,56 +244,244 @@ pub(crate) async fn resolve_url(
     raw_url: &str,
 ) -> Result<ResolveResponse, AppError> {
     let policy = state.current_settings().await.headless_policy();
-    let (resolved, diagnostic) = match state
+
+    if let UserQueryKind::AppDeepLink {
+        manga_id,
+        source_key,
+        url,
+        title,
+    } = classify_user_input(raw_url)
+    {
+        return resolve_app_deep_link(state, raw_url, manga_id, source_key, url, title, policy)
+            .await;
+    }
+
+    let effective_input = rewrite_raw_url_if_mirrored(state, raw_url).await;
+    match state
         .registry
-        .resolve_with_diagnostics(raw_url, policy)
+        .resolve_with_diagnostics(&effective_input, policy)
+        .await
+    {
+        Ok((resolved, diagnostic)) => {
+            let parsed_target = Url::parse(
+                diagnostic
+                    .resolved_url
+                    .as_deref()
+                    .unwrap_or(&effective_input),
+            )
+            .or_else(|_| normalize_url(&effective_input))
+            .ok();
+            finish_resolved_response(state, parsed_target, resolved, diagnostic).await
+        }
+        Err(boxed) => {
+            let (err, diag) = *boxed;
+            if matches!(
+                err,
+                ScrapeError::NotRecognized { .. } | ScrapeError::UnsupportedSource { .. }
+            ) && let Ok(parsed) = normalize_url(&effective_input)
+                && let Some((fallback_res, fallback_diag)) =
+                    try_custom_rule_fallback(state, &parsed, &diag).await
+            {
+                return finish_resolved_response(state, Some(parsed), fallback_res, fallback_diag)
+                    .await;
+            }
+            record_and_return_resolve_error(state, err, diag).await
+        }
+    }
+}
+
+async fn rewrite_raw_url_if_mirrored(state: &AppState, raw_url: &str) -> String {
+    let Ok(parsed) = normalize_url(raw_url) else {
+        return raw_url.to_owned();
+    };
+    let Some(host) = parsed.host_str() else {
+        return raw_url.to_owned();
+    };
+    let Ok(Some(saved)) = state.db.find_matching_saved_source(None, Some(host)).await else {
+        return raw_url.to_owned();
+    };
+    let Ok(mirror_base) = Url::parse(&saved.base_url) else {
+        return raw_url.to_owned();
+    };
+    if mirror_base
+        .host_str()
+        .is_some_and(|mh| !mh.eq_ignore_ascii_case(host))
+    {
+        return rewrite_domain_override(&parsed, &mirror_base).into();
+    }
+    raw_url.to_owned()
+}
+
+async fn resolve_app_deep_link(
+    state: &AppState,
+    raw_url: &str,
+    manga_id: Option<i64>,
+    source_key: Option<String>,
+    target_url: Option<String>,
+    title: Option<String>,
+    policy: mangacore::HeadlessPolicy,
+) -> Result<ResolveResponse, AppError> {
+    if let Some(id) = manga_id
+        && let Ok(view) = build_manga_view(state, id).await
+    {
+        let diag = local_diagnostic(raw_url, &view);
+        return Ok(ResolveResponse {
+            kind: "manga".to_owned(),
+            manga: Some(view),
+            start_at: None,
+            catalog: None,
+            diagnostic: diag,
+        });
+    }
+
+    let Some(url_str) = target_url else {
+        return Err(AppError::InvalidUrl {
+            message: "deep link missing target url or known local id".to_owned(),
+        });
+    };
+    let parsed = normalize_url(&url_str).map_err(AppError::from)?;
+    if let Ok(Some(saved)) = state
+        .db
+        .find_matching_saved_source(source_key.as_deref(), parsed.host_str())
+        .await
+        && let Ok(mirror_base) = Url::parse(&saved.base_url)
+    {
+        let rules = state
+            .db
+            .list_enabled_custom_rules()
+            .await
+            .unwrap_or_default();
+        let kind = CmsKind::from_storage_str(&saved.source_kind);
+        if let Ok(resolved) = resolve_exact_from_source(
+            state.registry.http(),
+            kind,
+            &mirror_base,
+            saved.parser_ref.as_deref(),
+            saved.search_template.as_deref(),
+            &parsed,
+            title.as_deref(),
+            &rules,
+        )
+        .await
+        {
+            let diag = RecognitionDiagnostic {
+                status: RecognitionStatus::MangaIdentified,
+                url_kind: UrlKind::MangaDetail,
+                website: mirror_base.host_str().map(str::to_owned),
+                adapter: Some(saved.source_kind),
+                submitted_url: raw_url.to_owned(),
+                resolved_url: Some(mirror_base.as_str().to_owned()),
+                stage: "deep_link_two_phase".to_owned(),
+                http_status: None,
+                detail: "Resolved via saved source two-phase lookup".to_owned(),
+                suggested_action: None,
+                confidence: 0.9,
+                report: None,
+                timestamp_unix: crate::repo::now_unix_secs(),
+            };
+            return finish_resolved_response(state, Some(parsed), resolved, diag).await;
+        }
+    }
+
+    let (resolved, diag) = match state
+        .registry
+        .resolve_with_diagnostics(&url_str, policy)
         .await
     {
         Ok(pair) => pair,
-        Err(boxed) => {
-            let (err, diag) = *boxed;
-            let report_json = diag
-                .report
-                .as_ref()
-                .and_then(|r| serde_json::to_string_pretty(r).ok())
-                .unwrap_or_else(|| diag.detail.clone());
-            let app_err = match diag.report.clone() {
-                Some(report) => AppError::from_scrape_and_report(&err, report),
-                None => AppError::from(err),
-            };
-            let _ = state
-                .db
-                .record_diagnostic_log(&NewDiagnosticLog {
-                    level: "error".to_owned(),
-                    category: app_err.category().to_owned(),
-                    message: format!("Failed to resolve URL ({:?})", diag.status),
-                    detail: Some(report_json),
-                    source: diag.website.clone(),
-                    chapter_url: Some(diag.submitted_url.clone()),
-                    failed_url: Some(diag.submitted_url.clone()),
-                    resolved_url: diag.resolved_url.clone(),
-                    http_status: diag.http_status.map(i64::from),
-                    adapter: diag.adapter.clone(),
-                    parsing_stage: Some(diag.stage.clone()),
-                    api_error: matches!(app_err, AppError::ApiFailure { .. })
-                        .then(|| app_err.to_string()),
-                    stack_trace: None,
-                })
-                .await;
-            return Err(app_err);
+        Err(boxed) => return record_and_return_resolve_error(state, boxed.0, boxed.1).await,
+    };
+    finish_resolved_response(state, Some(parsed), resolved, diag).await
+}
+
+async fn try_custom_rule_fallback(
+    state: &AppState,
+    parsed: &Url,
+    orig_diag: &RecognitionDiagnostic,
+) -> Option<(Resolved, RecognitionDiagnostic)> {
+    let rules = state.db.list_enabled_custom_rules().await.ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let spec = match_rule_by_domain(&host, &rules)?;
+    let http = state.registry.http();
+
+    let resolved = if orig_diag.url_kind == UrlKind::WebsiteHome
+        || orig_diag.url_kind == UrlKind::CatalogPage
+        || orig_diag.url_kind == UrlKind::SearchPage
+    {
+        execute_rule_catalog(http, parsed, spec, None, 1)
+            .await
+            .map(|c| Resolved::Catalog(Box::new(c)))
+            .ok()?
+    } else if orig_diag.url_kind == UrlKind::ChapterPage {
+        let ch = execute_rule_chapter(http, parsed, spec).await.ok()?;
+        let parent_url = ch.manga_url.clone().unwrap_or_else(|| parsed.clone());
+        let manga = execute_rule_manga(http, &parent_url, spec).await.ok()?;
+        let at = manga
+            .chapters
+            .first()
+            .cloned()
+            .unwrap_or_else(|| mangacore::ChapterRef::simple(parsed.clone(), ch.name, None));
+        Resolved::Chapter {
+            manga: Box::new(manga),
+            at: Box::new(at),
         }
+    } else {
+        let manga = execute_rule_manga(http, parsed, spec).await.ok()?;
+        Resolved::Manga(Box::new(manga))
+    };
+
+    let mut diag = orig_diag.clone();
+    diag.adapter = Some(format!("rule:{}", spec.id));
+    "custom_rule_pack".clone_into(&mut diag.stage);
+    diag.status = RecognitionStatus::MangaIdentified;
+    Some((resolved, diag))
+}
+
+async fn finish_resolved_response(
+    state: &AppState,
+    submitted_url: Option<Url>,
+    resolved: Resolved,
+    diagnostic: RecognitionDiagnostic,
+) -> Result<ResolveResponse, AppError> {
+    let settings = state.current_settings().await;
+    let deps = AutoRecordDeps {
+        db: state.db.clone(),
+        http: state.registry.http().clone(),
+        images: state.images.clone(),
+        max_mb: settings.cache.max_mb,
     };
 
     match resolved {
-        Resolved::Catalog(cat) => Ok(ResolveResponse {
-            kind: "catalog".to_owned(),
-            manga: None,
-            start_at: None,
-            catalog: Some(map_catalog_view(*cat, &state.proxy_key)),
-            diagnostic,
-        }),
+        Resolved::Catalog(cat) => {
+            if let Some(u) = submitted_url.or_else(|| Some(cat.url.clone())) {
+                spawn_auto_record_from_catalog(deps, u, &cat);
+            }
+            for entry in cat.entries.iter().take(12) {
+                if let Some(ref cover) = entry.cover {
+                    state.images.spawn_cover_prefetch(
+                        state.registry.http().clone(),
+                        cover.clone(),
+                        cat.url.clone(),
+                        Some(cat.site.as_storage_key()),
+                        None,
+                        settings.cache.max_mb,
+                    );
+                }
+            }
+            Ok(ResolveResponse {
+                kind: "catalog".to_owned(),
+                manga: None,
+                start_at: None,
+                catalog: Some(map_catalog_view(*cat, &state.proxy_key)),
+                diagnostic,
+            })
+        }
         Resolved::Manga(manga) => {
             let manga_id = state.db.upsert_manga(&manga).await?;
+            prefetch_manga_cover(state, manga_id, &manga, settings.cache.max_mb);
+            if let Some(u) = submitted_url.or_else(|| Some(manga.url.clone())) {
+                spawn_auto_record_from_manga(deps, u, &manga);
+            }
             let view = build_manga_view(state, manga_id).await?;
             Ok(ResolveResponse {
                 kind: "manga".to_owned(),
@@ -294,6 +493,10 @@ pub(crate) async fn resolve_url(
         }
         Resolved::Chapter { manga, at } => {
             let manga_id = state.db.upsert_manga(&manga).await?;
+            prefetch_manga_cover(state, manga_id, &manga, settings.cache.max_mb);
+            if let Some(u) = submitted_url.or_else(|| Some(manga.url.clone())) {
+                spawn_auto_record_from_manga(deps, u, &manga);
+            }
             let view = build_manga_view(state, manga_id).await?;
             let target_norm = at.url.as_str().trim_end_matches('/');
             let matched = view
@@ -326,7 +529,73 @@ pub(crate) async fn resolve_url(
     }
 }
 
-fn map_catalog_view(cat: CatalogPage, proxy_key: &[u8; 32]) -> CatalogPageView {
+async fn record_and_return_resolve_error<T>(
+    state: &AppState,
+    err: ScrapeError,
+    diag: RecognitionDiagnostic,
+) -> Result<T, AppError> {
+    let report_json = diag
+        .report
+        .as_ref()
+        .and_then(|r| serde_json::to_string_pretty(r).ok())
+        .unwrap_or_else(|| diag.detail.clone());
+    let app_err = match diag.report.clone() {
+        Some(report) => AppError::from_scrape_and_report(&err, report),
+        None => AppError::from(err),
+    };
+    let _ = state
+        .db
+        .record_diagnostic_log(&NewDiagnosticLog {
+            level: "error".to_owned(),
+            category: app_err.category().to_owned(),
+            message: format!("Failed to resolve URL ({:?})", diag.status),
+            detail: Some(report_json),
+            source: diag.website.clone(),
+            chapter_url: Some(diag.submitted_url.clone()),
+            failed_url: Some(diag.submitted_url.clone()),
+            resolved_url: diag.resolved_url.clone(),
+            http_status: diag.http_status.map(i64::from),
+            adapter: diag.adapter.clone(),
+            parsing_stage: Some(diag.stage.clone()),
+            api_error: matches!(app_err, AppError::ApiFailure { .. }).then(|| app_err.to_string()),
+            stack_trace: None,
+        })
+        .await;
+    Err(app_err)
+}
+
+fn prefetch_manga_cover(state: &AppState, manga_id: i64, manga: &mangacore::Manga, max_mb: u32) {
+    if let Some(ref cover) = manga.cover {
+        state.images.spawn_cover_prefetch(
+            state.registry.http().clone(),
+            cover.clone(),
+            manga.url.clone(),
+            Some(manga.site.as_storage_key()),
+            Some(manga_id),
+            max_mb,
+        );
+    }
+}
+
+fn local_diagnostic(raw_url: &str, view: &MangaView) -> RecognitionDiagnostic {
+    RecognitionDiagnostic {
+        status: RecognitionStatus::MangaIdentified,
+        url_kind: UrlKind::MangaDetail,
+        website: Some(view.site.clone()),
+        adapter: Some("local".to_owned()),
+        submitted_url: raw_url.to_owned(),
+        resolved_url: Some(view.url.clone()),
+        stage: "deep_link_local".to_owned(),
+        http_status: None,
+        detail: "Loaded from local library".to_owned(),
+        suggested_action: None,
+        confidence: 1.0,
+        report: None,
+        timestamp_unix: crate::repo::now_unix_secs(),
+    }
+}
+
+pub(crate) fn map_catalog_view(cat: CatalogPage, proxy_key: &[u8; 32]) -> CatalogPageView {
     let site_key = cat.site.as_storage_key();
     let referer = cat.url.as_str();
     let entries =
@@ -436,10 +705,12 @@ pub(crate) async fn get_manga(
             }
         };
         if let Some(refreshed_manga) = resolved.as_manga() {
+            let max_mb = state.current_settings().await.cache.max_mb;
             let _ = state
                 .db
                 .upsert_manga_with_id(Some(manga_id), refreshed_manga)
                 .await?;
+            prefetch_manga_cover(state, manga_id, refreshed_manga, max_mb);
             state.db.clear_has_new(manga_id).await?;
         }
     }
@@ -848,6 +1119,7 @@ fn map_history_row(row: HistoryEntryRow, proxy_key: &[u8; 32]) -> HistoryItemVie
         scroll_ratio: row.scroll_ratio,
         page_index: row.page_index,
         read_at: row.read_at,
+        added_at: row.added_at,
         latest_chapter_url: row.latest_chapter_url,
         latest_chapter_name: row.latest_chapter_name,
         has_new: row.has_new != 0,

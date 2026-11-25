@@ -296,7 +296,7 @@ fn image_ok_response(
     // Chapter pages return `no-store` so Android WebView / WebView2 never duplicate large chapter
     // images into their own opaque HTTP disk cache; small covers remain cacheable for instant lists.
     let cache_control = match policy {
-        ResponseCachePolicy::Cover => "private, max-age=86400",
+        ResponseCachePolicy::Cover => "private, max-age=604800",
         ResponseCachePolicy::NoStorePage => "no-store",
     };
     Response::builder()

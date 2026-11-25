@@ -10,6 +10,7 @@ import type {
   CacheInfo,
   CacheMangaStats,
   CacheSourceStats,
+  CatalogPageView,
   ChapterLoadPriority,
   ChapterView,
   CrashRecoverySession,
@@ -17,7 +18,9 @@ import type {
   DiagnosticLogEntry,
   DohConfig,
   DohTestResult,
+  FeedbackReportRequest,
   FormattedAppError,
+  FormattedFeedbackReport,
   FoundUpdate,
   HiddenMangaView,
   HideAction,
@@ -26,6 +29,7 @@ import type {
   Language,
   LastReadingDestination,
   MangaView,
+  MultiSourceSearchResponse,
   NetworkProviderInfo,
   NewDiagnosticLog,
   NotificationItemView,
@@ -37,15 +41,20 @@ import type {
   ReaderModeOverride,
   ReaderSettings,
   ResolveResponse,
+  RuleSpecView,
   SavedDiagnosticFile,
+  SavedSourceView,
   Settings,
   SettingsSection,
+  SourcePlacement,
   SyncDecision,
   SyncSenderMode,
   SyncStatusView,
   UpdateDownloadProgress,
   UpdateProgress,
   UpdateSummary,
+  VisibilityFilter,
+  VisibilityPatch,
 } from "./types";
 
 /**
@@ -389,6 +398,57 @@ export const api = {
     invoke<CacheInfo>("purge_manga_page_cache", { mangaId }),
   purgeAllPageCache: () => invoke<CacheInfo>("purge_all_page_cache"),
   clearImageCache: () => invoke<CacheInfo>("clear_image_cache"),
+
+  listSavedSources: (filter: VisibilityFilter = "main_only") =>
+    invoke<SavedSourceView[]>("list_saved_sources", { filter }),
+  addSavedSource: (
+    url: string,
+    displayName?: string | null,
+    placement: SourcePlacement = "auto"
+  ) =>
+    invoke<SavedSourceView>("add_saved_source", {
+      url,
+      displayName: displayName ?? null,
+      placement,
+    }),
+  updateSavedSource: (
+    id: number,
+    patch: {
+      displayName?: string | null;
+      baseUrl?: string | null;
+      isEnabled?: boolean | null;
+      visibility?: VisibilityPatch;
+    }
+  ) =>
+    invoke<SavedSourceView>("update_saved_source", {
+      id,
+      displayName: patch.displayName ?? null,
+      baseUrl: patch.baseUrl ?? null,
+      isEnabled: patch.isEnabled ?? null,
+      visibility: patch.visibility ?? "unchanged",
+    }),
+  deleteSavedSource: (id: number) => invoke<void>("delete_saved_source", { id }),
+  browseSavedSource: (sourceId: number, query?: string | null, page = 1) =>
+    invoke<CatalogPageView>("browse_saved_source", {
+      sourceId,
+      query: query ?? null,
+      page,
+    }),
+  searchSavedSources: (query: string, filter: VisibilityFilter = "main_only") =>
+    invoke<MultiSourceSearchResponse>("search_saved_sources", { query, filter }),
+
+  listRuleSpecs: () => invoke<RuleSpecView[]>("list_rule_specs"),
+  importRuleSpecsJson: (rawJson: string) =>
+    invoke<RuleSpecView[]>("import_rule_specs_json", { rawJson }),
+  exportRuleSpecsJson: () => invoke<string>("export_rule_specs_json"),
+  setRuleSpecEnabled: (ruleId: string, enabled: boolean) =>
+    invoke<void>("set_rule_spec_enabled", { ruleId, enabled }),
+  deleteRuleSpec: (ruleId: string) => invoke<void>("delete_rule_spec", { ruleId }),
+
+  buildFeedbackReport: (request: FeedbackReportRequest) =>
+    invoke<FormattedFeedbackReport>("build_feedback_report", { request }),
+  saveFeedbackReportFile: (request: FeedbackReportRequest) =>
+    invoke<SavedDiagnosticFile>("save_feedback_report_file", { request }),
 
   onUpdatesFound: (cb: (found: FoundUpdate[]) => void): Promise<UnlistenFn> =>
     listen<FoundUpdate[]>("updates://found", (e) => cb(e.payload)),

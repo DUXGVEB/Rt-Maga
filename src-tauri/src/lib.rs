@@ -33,8 +33,12 @@ const STALE_MANGA_RETENTION_DAYS: i64 = 30;
 ///
 /// # Panics
 ///
-/// Panics if the local data directory, SQLite database, or Tauri runtime fails to initialize.
+/// Panics if the local data directory, `SQLite` database, or Tauri runtime fails to initialize.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Tauri application builder and generate_handler IPC registry"
+)]
 pub fn run() {
     init_logging();
 
@@ -130,6 +134,19 @@ pub fn run() {
             commands::purge_manga_page_cache,
             commands::purge_all_page_cache,
             commands::clear_image_cache,
+            commands::list_saved_sources,
+            commands::add_saved_source,
+            commands::update_saved_source,
+            commands::delete_saved_source,
+            commands::browse_saved_source,
+            commands::search_saved_sources,
+            commands::list_rule_specs,
+            commands::import_rule_specs_json,
+            commands::export_rule_specs_json,
+            commands::set_rule_spec_enabled,
+            commands::delete_rule_spec,
+            commands::build_feedback_report,
+            commands::save_feedback_report_file,
         ]);
 
     let app = builder
@@ -176,6 +193,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let app_state = tauri::async_runtime::block_on(async {
         let db = Database::open(&db_path).await?;
         import_pending_crash_file(&db, &crash_file).await;
+        let proxy_key = db.load_or_init_proxy_secret().await?;
         let settings = db.load_settings().await?;
         let policy = HttpPolicy {
             max_conn_per_host: usize::from(settings.sources.max_conn_per_host),
@@ -208,7 +226,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
 
-        Ok::<Arc<AppState>, error::AppError>(AppState::new(db, registry, images, settings))
+        Ok::<Arc<AppState>, error::AppError>(AppState::new(
+            db, registry, images, settings, proxy_key,
+        ))
     })
     .expect("failed to initialize RtMaga application state");
 

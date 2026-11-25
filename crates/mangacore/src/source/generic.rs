@@ -16,26 +16,31 @@ use crate::extract::{
 };
 use crate::http::HttpClient;
 use crate::model::{
-    CatalogEntry, CatalogPage, Chapter, ChapterRef, Manga, PaginationInfo, Resolved, SiteId,
+    CatalogEntry, CatalogPage, Chapter, ChapterRef, Manga, NavLink, PaginationInfo, Resolved,
+    SiteId,
 };
 use crate::parse::chapters::{extract_chapter_number, extract_chapters, format_chapter_num};
 use crate::parse::classify::{PageKind, classify_page};
 use crate::parse::dom::{
     abs_url, clean_text, effective_base_url, image_candidates, is_inside_chrome,
 };
-use crate::parse::meta::{extract_cover, extract_title};
+use crate::parse::gallery::{parse_gallery_chapter, parse_gallery_manga};
+use crate::parse::meta::{
+    extract_cover, extract_creators, extract_description, extract_status, extract_tags_and_genres,
+    extract_title,
+};
 use crate::parse::nav::{extract_manga_url_from_chapter, extract_prev_next};
 use crate::recognize::{UrlKind, classify_normalized_url};
 use crate::source::{AdapterAuthSupport, AdapterMetadata, Source};
 
-static DESC_SEL: LazyLock<Selector> = LazyLock::new(|| {
-    Selector::parse("meta[property='og:description'], meta[name='description']")
-        .expect("valid static selector")
-});
 static CARD_LINK_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("a[href]").expect("valid static selector"));
 static IMG_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("img").expect("valid static selector"));
+static SEARCH_FORM_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("form").expect("valid static selector"));
+static INPUT_NAME_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("input[name]").expect("valid static selector"));
 
 /// Generic heuristic manga source for websites without a dedicated adapter.
 #[derive(Debug, Default, Clone, Copy)]
@@ -56,6 +61,9 @@ impl GenericSource {
             if let Some(structured) = extract_structured_manga(&doc, page_url, &base) {
                 return Ok(structured);
             }
+            if let Some(gallery_manga) = parse_gallery_manga(html, page_url, &base) {
+                return Ok(gallery_manga);
+            }
             return Err(ScrapeError::NotRecognized {
                 url: page_url.clone(),
                 reason: "generic parser found no chapter list",
@@ -65,10 +73,10 @@ impl GenericSource {
         let host = page_url.host_str().unwrap_or("unknown").to_owned();
         let title = extract_title(&doc).unwrap_or_else(|| host.clone());
         let cover = extract_cover(&doc, &base);
-        let description = doc
-            .select(&DESC_SEL)
-            .find_map(|m| m.value().attr("content").map(clean_text))
-            .filter(|s| !s.is_empty());
+        let description = extract_description(&doc);
+        let (genres, tags) = extract_tags_and_genres(&doc);
+        let (authors, artists) = extract_creators(&doc);
+        let status = extract_status(&doc);
 
         let mut manga = Manga::minimal(
             page_url.clone(),
@@ -78,12 +86,17 @@ impl GenericSource {
             chapters,
         );
         manga.description = description;
+        manga.genres = genres;
+        manga.tags = tags;
+        manga.authors = authors;
+        manga.artists = artists;
+        manga.status = status;
         Ok(manga)
     }
 
     /// Parses a chapter reading page using Strategy C structured data, upgraded Strategy A DOM
-    /// extraction (`<img>`, `<picture>`, CSS `background-image`, lazy attrs), and confidence-aware
-    /// page thresholds.
+    /// extraction (`<img>`, `<picture>`, CSS `background-image`, lazy attrs), gallery thumbnail
+    /// promotion, and confidence-aware page thresholds.
     ///
     /// # Errors
     ///
@@ -91,6 +104,12 @@ impl GenericSource {
     pub fn parse_chapter_html(html: &str, page_url: &Url) -> Result<Chapter, ScrapeError> {
         let doc = Html::parse_document(html);
         let base = effective_base_url(&doc, page_url);
+
+        if page_url.fragment() == Some("rtmaga-gallery")
+            && let Some(gallery_ch) = parse_gallery_chapter(html, page_url, &base)
+        {
+            return Ok(gallery_ch);
+        }
 
         if let Some(structured) = extract_structured_chapter(&doc, html, page_url, &base) {
             return Ok(structured.chapter);
@@ -139,6 +158,10 @@ impl GenericSource {
                 next: nav.next,
                 manga_url,
             });
+        }
+
+        if let Some(gallery_ch) = parse_gallery_chapter(html, page_url, &base) {
+            return Ok(gallery_ch);
         }
 
         Err(ScrapeError::NotRecognized {
@@ -244,6 +267,8 @@ impl GenericSource {
 
         let site_name = host.trim_start_matches("www.").to_owned();
         let title = extract_title(&doc).unwrap_or_else(|| site_name.clone());
+        let search_url_template = discover_search_template(&doc, &base);
+        let categories = discover_category_links(&doc, &base, &host);
         Ok(CatalogPage {
             url: page_url.clone(),
             site: SiteId::generic(host),
@@ -251,9 +276,9 @@ impl GenericSource {
             title,
             url_kind,
             query: None,
-            search_url_template: None,
+            search_url_template,
             entries,
-            categories: Vec::new(),
+            categories,
             pagination: PaginationInfo {
                 current_page: 1,
                 total_pages: None,
@@ -340,6 +365,32 @@ impl GenericSource {
                 Ok(Resolved::Manga(Box::new(manga)))
             }
             PageKind::Unknown => {
+                if html.contains("wp-manga") || html.contains("wp-content/themes/madara") {
+                    let ajax_chaps =
+                        crate::cms::fetch_madara_chapters_ajax(http, page_url, html).await;
+                    if !ajax_chaps.is_empty() {
+                        let doc = Html::parse_document(html);
+                        let base = effective_base_url(&doc, page_url);
+                        let title = extract_title(&doc).unwrap_or_else(|| host.clone());
+                        let cover = extract_cover(&doc, &base);
+                        let (genres, tags) = extract_tags_and_genres(&doc);
+                        let (authors, artists) = extract_creators(&doc);
+                        let mut manga = Manga::minimal(
+                            page_url.clone(),
+                            SiteId::generic(host),
+                            title,
+                            cover,
+                            ajax_chaps,
+                        );
+                        manga.description = extract_description(&doc);
+                        manga.genres = genres;
+                        manga.tags = tags;
+                        manga.authors = authors;
+                        manga.artists = artists;
+                        manga.status = extract_status(&doc);
+                        return Ok(Resolved::Manga(Box::new(manga)));
+                    }
+                }
                 if let Ok(catalog) = Self::parse_catalog_html(html, page_url, UrlKind::CatalogPage)
                 {
                     return Ok(Resolved::Catalog(Box::new(catalog)));
@@ -390,4 +441,89 @@ impl Source for GenericSource {
         let page = http.fetch_html(url).await?;
         Self::parse_chapter_html(&page.html, &page.final_url)
     }
+}
+
+/// Inspects `<form>` elements on a catalog or homepage to synthesize a `{query}` search URL template.
+#[must_use]
+pub fn discover_search_template(doc: &Html, base: &Url) -> Option<String> {
+    for form in doc.select(&SEARCH_FORM_SEL) {
+        let method = form.value().attr("method").unwrap_or("get");
+        if !method.eq_ignore_ascii_case("get") {
+            continue;
+        }
+        let action_raw = form.value().attr("action").unwrap_or("/");
+        let Some(action_url) = abs_url(base, action_raw) else {
+            continue;
+        };
+        for input in form.select(&INPUT_NAME_SEL) {
+            let input_type = input.value().attr("type").unwrap_or("text");
+            if !matches!(
+                input_type.to_ascii_lowercase().as_str(),
+                "text" | "search" | ""
+            ) {
+                continue;
+            }
+            let Some(name) = input.value().attr("name").map(str::trim) else {
+                continue;
+            };
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "q" | "s" | "search" | "keyword" | "query" | "title"
+            ) {
+                let sep = if action_url.query().is_some() {
+                    "&"
+                } else {
+                    "?"
+                };
+                return Some(format!("{action_url}{sep}{name}={{query}}"));
+            }
+        }
+    }
+    None
+}
+
+fn discover_category_links(doc: &Html, base: &Url, host: &str) -> Vec<NavLink> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for a in doc.select(&CARD_LINK_SEL) {
+        let Some(href) = a.value().attr("href") else {
+            continue;
+        };
+        let Some(u) = abs_url(base, href) else {
+            continue;
+        };
+        if u.host_str().unwrap_or("").to_ascii_lowercase() != host {
+            continue;
+        }
+        let path_low = u.path().to_ascii_lowercase();
+        if ![
+            "/genre/",
+            "/genres/",
+            "/the-loai/",
+            "/tag/",
+            "/category/",
+            "/latest",
+            "/popular",
+        ]
+        .iter()
+        .any(|p| path_low.contains(p))
+        {
+            continue;
+        }
+        let label = clean_text(&a.text().collect::<String>());
+        if label.len() < 2 || label.len() > 36 {
+            continue;
+        }
+        if seen.insert(u.as_str().to_owned()) {
+            out.push(NavLink {
+                label,
+                url: u,
+                kind: UrlKind::CatalogPage,
+            });
+            if out.len() >= 18 {
+                break;
+            }
+        }
+    }
+    out
 }

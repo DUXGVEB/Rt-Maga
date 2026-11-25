@@ -46,5 +46,9 @@ pub fn classify_page(doc: &Html, page_url: &Url) -> PageKind {
         return PageKind::Manga;
     }
 
+    if crate::parse::gallery::looks_like_gallery_page(doc, "") {
+        return PageKind::Manga;
+    }
+
     PageKind::Unknown
 }
