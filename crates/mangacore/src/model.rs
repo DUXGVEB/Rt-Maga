@@ -5,6 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::parse::filters::SiteFilterSchema;
 use crate::recognize::UrlKind;
 
 /// Identifies which source produced a [`Manga`], [`Chapter`], or [`CatalogPage`].
@@ -228,6 +229,12 @@ pub struct CatalogEntry {
     pub genres: Vec<String>,
     /// Optional source-specific manga ID for duplicate prevention.
     pub source_id: Option<String>,
+    /// Optional parsed total/latest chapter count exposed on the listing card.
+    #[serde(default)]
+    pub chapter_count: Option<u32>,
+    /// Optional relative or formatted last-update label exposed on the listing card.
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 /// Discoverable navigation or category shortcut extracted from a website homepage or catalog.
@@ -254,6 +261,9 @@ pub struct PaginationInfo {
     pub prev_url: Option<Url>,
     /// URL of the next page, if available.
     pub next_url: Option<Url>,
+    /// Optional `{page}` URL template allowing direct jump to any page number.
+    #[serde(default)]
+    pub page_url_template: Option<String>,
 }
 
 /// Resolved website homepage, catalog directory, category listing, or search results page.
@@ -280,6 +290,9 @@ pub struct CatalogPage {
     pub categories: Vec<NavLink>,
     /// Pagination links and page indices.
     pub pagination: PaginationInfo,
+    /// Site-specific multi-tag and dynamic filter schema discovered for this website.
+    #[serde(default)]
+    pub filter_schema: SiteFilterSchema,
 }
 
 /// Result of resolving an arbitrary user-supplied link.

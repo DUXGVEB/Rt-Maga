@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { AlertCircle, Loader2, RotateCcw } from "lucide-svelte";
+  import { AlertCircle, RotateCcw } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
   import type { PageLoadMode } from "../readerLayout";
   import { settingsStore } from "../stores/settings.svelte";
+  import LatticeLoader from "./LatticeLoader.svelte";
 
   const BACKOFF_DELAYS_MS = [600, 1500, 3000];
 
@@ -243,17 +244,17 @@
   {:else if effectiveShouldLoad}
     {#if !loaded}
       <div
-        class="flex flex-col items-center justify-center gap-2 {horizontal
+        class="flex flex-col items-center justify-center gap-2 text-[11px] {horizontal
           ? 'h-full max-h-full aspect-[5/7] max-w-full rounded'
           : 'aspect-[5/7] w-full'}"
-        style={placeholderStyle()}
+        style="{placeholderStyle()} color: var(--text-muted);"
       >
-        <Loader2 size={20} class="animate-spin" style="color: var(--accent);" />
-        <span class="text-[11px] font-medium" style="color: var(--text-muted);">
-          {autoAttempts > 0
+        <LatticeLoader
+          size="md"
+          label={autoAttempts > 0
             ? settingsStore.t.retryingPage(index + 1, autoAttempts)
             : settingsStore.t.pageAlt(index + 1)}
-        </span>
+        />
       </div>
     {/if}
     <img

@@ -14,6 +14,7 @@ use crate::diagnostics::ExtractionStrategyKind;
 use crate::error::ScrapeError;
 use crate::http::HttpClient;
 use crate::model::{Chapter, Resolved};
+use crate::parse::filters::{CatalogFilterQuery, SiteFilterSchema, UnhandledFilterMask};
 
 /// Authentication requirement profile declared by a site adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -55,6 +56,56 @@ pub fn default_adapters() -> Vec<Box<dyn Source>> {
         Box::new(truyenqq::TruyenQQSource),
         Box::new(moetruyen::MoeTruyenSource),
     ]
+}
+
+/// Returns the default baseline [`SiteFilterSchema`] for a built-in adapter ID or host.
+#[must_use]
+pub fn default_filter_schema_for_adapter(
+    adapter_id: Option<&str>,
+    host: Option<&str>,
+) -> SiteFilterSchema {
+    let resolved = adapter_id.or_else(|| host.and_then(crate::cms::match_builtin_adapter_id));
+    match resolved {
+        Some("truyenqq") => {
+            let origin = format!("https://{}", host.unwrap_or("truyenqq.com.vn"));
+            truyenqq::truyenqq_filter_schema(&origin, None, None)
+        }
+        Some("mangadex") => mangadex::mangadex_filter_schema(),
+        _ => SiteFilterSchema::default(),
+    }
+}
+
+pub(crate) fn try_build_builtin_filtered_url(
+    base_url: &Url,
+    current_url: Option<&Url>,
+    parser_ref: Option<&str>,
+    clean_q: Option<&str>,
+    filters: &CatalogFilterQuery,
+    page_num: u32,
+) -> Option<Result<(Url, UnhandledFilterMask), ScrapeError>> {
+    if parser_ref == Some("truyenqq")
+        || base_url
+            .host_str()
+            .is_some_and(|h| truyenqq::is_truyenqq_host(&h.to_ascii_lowercase()))
+    {
+        return Some(truyenqq::build_truyenqq_filtered_url(
+            base_url,
+            current_url,
+            clean_q,
+            filters,
+            page_num,
+        ));
+    }
+    if parser_ref == Some("mangadex")
+        || base_url
+            .host_str()
+            .is_some_and(|h| mangadex::is_mangadex_host(&h.to_ascii_lowercase()))
+    {
+        return Some(mangadex::build_mangadex_filtered_url(
+            clean_q, filters, page_num,
+        ));
+    }
+    None
 }
 
 /// A site adapter capable of resolving manga/chapter URLs and fetching chapter images.

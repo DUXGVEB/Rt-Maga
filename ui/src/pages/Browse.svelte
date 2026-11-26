@@ -5,16 +5,29 @@
     ChevronLeft,
     ChevronRight,
     Globe,
-    Loader2,
     RefreshCw,
     Search,
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
+  import LatticeLoader from "../lib/components/LatticeLoader.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
+  import WebFilterBar from "../lib/components/WebFilterBar.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
-  import type { CatalogEntryView, CatalogPageView, FormattedAppError } from "../lib/types";
+  import {
+    emptyFilterQuery,
+    emptyFilterSchema,
+    filterKeyFor,
+    hasActiveFilters,
+    webFilterStore,
+  } from "../lib/stores/webFilter.svelte";
+  import type {
+    CatalogEntryView,
+    CatalogFilterQuery,
+    CatalogPageView,
+    FormattedAppError,
+  } from "../lib/types";
 
   let {
     url,
@@ -32,6 +45,7 @@
   let searchQuery = $state("");
   let activeQuery = $state<string | null>(null);
   let currentPage = $state(1);
+  let jumpPageInput = $state("");
   let failedCovers = $state<Record<string, boolean>>({});
   let errorState = $state<FormattedAppError | null>(null);
   let verifying = $state(false);
@@ -40,17 +54,41 @@
 
   const t = $derived(settingsStore.t);
 
-  async function loadFromSavedSource(id: number, query: string | null, page: number) {
+  const effectiveSourceId = $derived(sourceId ?? catalog?.sourceId ?? undefined);
+  const activeFilterKey = $derived(filterKeyFor(effectiveSourceId, catalog?.url ?? url));
+  const activeFilters = $derived(webFilterStore.getQuery(activeFilterKey));
+  const activeSchema = $derived(
+    catalog?.filterSchema ?? webFilterStore.getSchema(activeFilterKey) ?? emptyFilterSchema()
+  );
+
+  async function loadFromSavedSource(
+    id: number,
+    query: string | null,
+    page: number,
+    filters: CatalogFilterQuery,
+    forceRefresh = false
+  ) {
     const seq = ++loadSeq;
     loading = true;
     errorState = null;
     failedCovers = {};
     try {
-      const cat = await api.browseSavedSource(id, query, page);
+      const mergedFilters: CatalogFilterQuery = {
+        ...filters,
+        query: query ?? filters.query ?? null,
+      };
+      const cat = await api.browseSavedSource(
+        id,
+        query,
+        page,
+        hasActiveFilters(mergedFilters) ? mergedFilters : null,
+        forceRefresh
+      );
       if (seq !== loadSeq) return;
       catalog = cat;
+      webFilterStore.setSchema(filterKeyFor(id, cat.url), cat.filterSchema);
       activeQuery = query;
-      currentPage = page;
+      currentPage = cat.pagination.currentPage || page;
       searchQuery = cat.query ?? query ?? "";
     } catch (err) {
       if (seq !== loadSeq) return;
@@ -62,9 +100,15 @@
     }
   }
 
-  async function loadCatalogUrl(targetUrl: string) {
-    if (sourceId !== undefined) {
-      await loadFromSavedSource(sourceId, activeQuery, currentPage);
+  async function loadCatalogUrl(
+    targetUrl: string,
+    page = 1,
+    filters?: CatalogFilterQuery | null,
+    forceRefresh = false
+  ) {
+    const activeF = filters ?? webFilterStore.getQuery(filterKeyFor(sourceId, targetUrl));
+    if (sourceId !== undefined && !targetUrl.includes("/the-loai/") && !targetUrl.includes("/trang-")) {
+      await loadFromSavedSource(sourceId, activeQuery, page, activeF, forceRefresh);
       return;
     }
     const seq = ++loadSeq;
@@ -72,18 +116,17 @@
     errorState = null;
     failedCovers = {};
     try {
-      const res = await api.resolveUrl(targetUrl);
+      const cat = await api.browseCatalogUrl(
+        targetUrl,
+        page,
+        hasActiveFilters(activeF) ? activeF : null,
+        forceRefresh
+      );
       if (seq !== loadSeq) return;
-      if (res.kind === "catalog" && res.catalog) {
-        catalog = res.catalog;
-        searchQuery = res.catalog.query ?? "";
-      } else if (res.manga) {
-        if (res.startAt) {
-          router.goReader(res.manga.id, res.startAt.url);
-        } else {
-          router.goManga(res.manga.id);
-        }
-      }
+      catalog = cat;
+      webFilterStore.setSchema(filterKeyFor(cat.sourceId, cat.url), cat.filterSchema);
+      currentPage = cat.pagination.currentPage || page;
+      searchQuery = cat.query ?? "";
     } catch (err) {
       if (seq !== loadSeq) return;
       errorState = formatAppError(err, settingsStore.value.language);
@@ -98,16 +141,19 @@
     const target = url;
     const sid = sourceId;
     const preloaded = initialCatalog;
-    if (sid !== undefined) {
-      void loadFromSavedSource(sid, null, 1);
-    } else if (preloaded && preloaded.url === target) {
+    if (preloaded && (preloaded.url === target || sid !== undefined)) {
       catalog = preloaded;
+      webFilterStore.setSchema(filterKeyFor(sid ?? preloaded.sourceId, preloaded.url), preloaded.filterSchema);
       searchQuery = preloaded.query ?? "";
+      currentPage = preloaded.pagination.currentPage || 1;
       errorState = null;
       loading = false;
       failedCovers = {};
+    } else if (sid !== undefined) {
+      const savedFilters = webFilterStore.getQuery(filterKeyFor(sid, target));
+      void loadFromSavedSource(sid, savedFilters.query ?? null, 1, savedFilters, false);
     } else if (target) {
-      void loadCatalogUrl(target);
+      void loadCatalogUrl(target, 1, null, false);
     }
   });
 
@@ -117,7 +163,7 @@
     try {
       const res = await api.resolveUrl(entry.url);
       if (res.kind === "catalog" && res.catalog) {
-        router.goBrowse(res.catalog.url, res.catalog);
+        router.goBrowse(res.catalog.url, res.catalog, false, res.catalog.sourceId ?? undefined);
       } else if (res.manga) {
         if (res.startAt) {
           router.goReader(res.manga.id, res.startAt.url);
@@ -135,40 +181,131 @@
 
   function submitSearch() {
     const q = searchQuery.trim();
-    if (sourceId !== undefined) {
-      void loadFromSavedSource(sourceId, q || null, 1);
+    const nextFilters: CatalogFilterQuery = {
+      ...activeFilters,
+      query: q || null,
+    };
+    webFilterStore.setQuery(activeFilterKey, nextFilters);
+    if (effectiveSourceId !== undefined) {
+      void loadFromSavedSource(effectiveSourceId, q || null, 1, nextFilters, false);
       return;
     }
-    if (!q || !catalog?.searchUrlTemplate) return;
-    const nextUrl = catalog.searchUrlTemplate.replace("{query}", encodeURIComponent(q));
-    router.goBrowse(nextUrl, undefined, false);
+    if (q && catalog?.searchUrlTemplate && !hasActiveFilters({ ...nextFilters, query: null })) {
+      const nextUrl = catalog.searchUrlTemplate.replace("{query}", encodeURIComponent(q));
+      void loadCatalogUrl(nextUrl, 1, emptyFilterQuery(), false);
+      return;
+    }
+    void loadCatalogUrl(catalog?.url ?? url, 1, nextFilters, false);
   }
 
-  function navigateCatalog(nextUrl: string) {
-    router.goBrowse(nextUrl, undefined, false);
+  function handleApplyFilters(nextFilters: CatalogFilterQuery) {
+    const withSearch: CatalogFilterQuery = {
+      ...nextFilters,
+      query: searchQuery.trim() || null,
+    };
+    webFilterStore.setQuery(activeFilterKey, withSearch);
+    if (effectiveSourceId !== undefined) {
+      void loadFromSavedSource(effectiveSourceId, withSearch.query ?? null, 1, withSearch, false);
+    } else {
+      void loadCatalogUrl(catalog?.url ?? url, 1, withSearch, false);
+    }
   }
 
-  function goPrevPage() {
-    if (sourceId !== undefined) {
-      if (currentPage > 1) {
-        void loadFromSavedSource(sourceId, activeQuery, currentPage - 1);
+  function handleResetFilters() {
+    webFilterStore.resetQuery(activeFilterKey);
+    searchQuery = "";
+    activeQuery = null;
+    if (effectiveSourceId !== undefined) {
+      void loadFromSavedSource(effectiveSourceId, null, 1, emptyFilterQuery(), false);
+    } else {
+      void loadCatalogUrl(url, 1, emptyFilterQuery(), false);
+    }
+  }
+
+  function navigateCategory(nextUrl: string) {
+    webFilterStore.resetQuery(activeFilterKey);
+    void loadCatalogUrl(nextUrl, 1, emptyFilterQuery(), false);
+  }
+
+  function goToPage(targetPage: number) {
+    const p = Math.max(1, Math.floor(targetPage));
+    if (loading || p === currentPage) return;
+
+    if (hasActiveFilters(activeFilters)) {
+      if (effectiveSourceId !== undefined) {
+        void loadFromSavedSource(effectiveSourceId, activeQuery, p, activeFilters, false);
+      } else {
+        void loadCatalogUrl(catalog?.url ?? url, p, activeFilters, false);
       }
       return;
     }
-    if (catalog?.pagination.prevUrl) {
-      navigateCatalog(catalog.pagination.prevUrl);
+
+    const tmpl = catalog?.pagination.pageUrlTemplate;
+    if (tmpl && tmpl.includes("{page}")) {
+      const concreteUrl = tmpl.replace("{page}", String(p));
+      void loadCatalogUrl(concreteUrl, p, emptyFilterQuery(), false);
+      return;
+    }
+
+    if (p === currentPage - 1 && catalog?.pagination.prevUrl) {
+      void loadCatalogUrl(catalog.pagination.prevUrl, p, emptyFilterQuery(), false);
+      return;
+    }
+    if (p === currentPage + 1 && catalog?.pagination.nextUrl) {
+      void loadCatalogUrl(catalog.pagination.nextUrl, p, emptyFilterQuery(), false);
+      return;
+    }
+
+    if (effectiveSourceId !== undefined) {
+      void loadFromSavedSource(effectiveSourceId, activeQuery, p, activeFilters, false);
+    } else {
+      void loadCatalogUrl(catalog?.url ?? url, p, activeFilters, false);
     }
   }
 
-  function goNextPage() {
-    if (sourceId !== undefined) {
-      void loadFromSavedSource(sourceId, activeQuery, currentPage + 1);
-      return;
-    }
-    if (catalog?.pagination.nextUrl) {
-      navigateCatalog(catalog.pagination.nextUrl);
-    }
+  function submitPageJump() {
+    const parsed = Number.parseInt(jumpPageInput.trim(), 10);
+    if (!Number.isFinite(parsed) || parsed < 1) return;
+    jumpPageInput = "";
+    goToPage(parsed);
   }
+
+  const pageNumbers = $derived(() => {
+    const cur = catalog?.pagination.currentPage ?? currentPage;
+    const total = catalog?.pagination.totalPages ?? (catalog?.pagination.nextUrl ? cur + 1 : cur);
+    const maxP = Math.max(cur, total);
+    if (maxP <= 1) return [] as (number | "...")[];
+
+    const out: (number | "...")[] = [];
+    const addPage = (n: number) => {
+      if (n >= 1 && n <= maxP && !out.includes(n)) out.push(n);
+    };
+
+    addPage(1);
+    if (cur > 3) out.push("...");
+    for (let i = Math.max(2, cur - 1); i <= Math.min(maxP - 1, cur + 1); i += 1) {
+      addPage(i);
+    }
+    if (cur < maxP - 2) out.push("...");
+    addPage(maxP);
+    return out;
+  });
+
+  const canGoPrev = $derived(
+    currentPage > 1 || Boolean(catalog?.pagination.prevUrl)
+  );
+  const canGoNext = $derived(
+    Boolean(catalog?.pagination.nextUrl) ||
+      (catalog?.pagination.totalPages !== null &&
+        catalog?.pagination.totalPages !== undefined &&
+        currentPage < catalog.pagination.totalPages) ||
+      (effectiveSourceId !== undefined && (catalog?.entries.length ?? 0) > 0)
+  );
+  const canJumpArbitrary = $derived(
+    Boolean(catalog?.pagination.pageUrlTemplate) ||
+      effectiveSourceId !== undefined ||
+      (catalog?.pagination.totalPages ?? 1) > 1
+  );
 
   async function handleManualVerify(targetUrl?: string) {
     const target = targetUrl || errorState?.blockedUrl || url;
@@ -178,7 +315,7 @@
       toasts.push(t.toastOpeningVerify, "info", 4500);
       await api.openManualVerification(target);
       toasts.push(t.toastVerifyDone, "success");
-      await loadCatalogUrl(target);
+      await loadCatalogUrl(target, currentPage, activeFilters, true);
     } catch (err) {
       errorState = formatAppError(err, settingsStore.value.language);
     } finally {
@@ -195,7 +332,7 @@
       const outcome = await api.openBrowserLoginSession(target);
       if (outcome.cookiesSynced) {
         toasts.push(t.toastLoginSynced, "success");
-        await loadCatalogUrl(target);
+        await loadCatalogUrl(target, currentPage, activeFilters, true);
       } else {
         toasts.push(t.toastLoginExternalOpened, "info", 4500);
       }
@@ -246,7 +383,7 @@
       <button
         type="button"
         disabled={loading}
-        onclick={() => void loadCatalogUrl(catalog?.url ?? url)}
+        onclick={() => void loadCatalogUrl(catalog?.url ?? url, currentPage, activeFilters, true)}
         class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
         style="background-color: var(--surface); border-color: var(--border);"
       >
@@ -256,7 +393,7 @@
     </div>
   </div>
 
-  <!-- Header + Site Search -->
+  <!-- Header + Site Search + Categories -->
   <section
     class="flex flex-col gap-3 rounded-2xl border p-4 sm:p-5"
     style="background-color: var(--surface); border-color: var(--border);"
@@ -271,7 +408,7 @@
         </div>
       </div>
 
-      {#if sourceId !== undefined || catalog?.searchUrlTemplate}
+      {#if effectiveSourceId !== undefined || catalog?.searchUrlTemplate}
         <form
           onsubmit={(e) => {
             e.preventDefault();
@@ -289,7 +426,7 @@
           />
           <button
             type="submit"
-            disabled={(sourceId === undefined && !searchQuery.trim()) || loading}
+            disabled={(effectiveSourceId === undefined && !searchQuery.trim()) || loading}
             class="shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold disabled:opacity-45"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
@@ -304,10 +441,10 @@
         <span class="mr-1 text-[11px] font-medium" style="color: var(--text-muted);">
           {t.browseCategoriesLabel}:
         </span>
-        {#each catalog.categories as cat (cat.url)}
+        {#each catalog.categories.slice(0, 28) as cat (cat.url)}
           <button
             type="button"
-            onclick={() => navigateCatalog(cat.url)}
+            onclick={() => navigateCategory(cat.url)}
             class="rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors hover:brightness-95"
             style="background-color: {cat.url === catalog.url
               ? 'var(--accent-soft)'
@@ -322,12 +459,23 @@
     {/if}
   </section>
 
+  <!-- Synchronized Per-Website Multi-Tag, Min Chapters, Update Recency & Dynamic Filter Bar -->
+  <WebFilterBar
+    schema={activeSchema}
+    value={activeFilters}
+    applying={loading}
+    defaultExpanded={hasActiveFilters(activeFilters)}
+    siteLabel={catalog?.siteName ?? ""}
+    onApply={handleApplyFilters}
+    onReset={handleResetFilters}
+  />
+
   <!-- Body -->
   {#if loading}
     <div class="grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
       {#each Array(10) as _, i (i)}
         <div
-          class="aspect-[3/4] rounded-xl"
+          class="aspect-[3/4] animate-pulse rounded-xl"
           style="background-color: var(--surface-hover);"
         ></div>
       {/each}
@@ -338,7 +486,7 @@
       fallbackUrl={url}
       {verifying}
       {loggingIn}
-      onRetry={() => void loadCatalogUrl(url)}
+      onRetry={() => void loadCatalogUrl(catalog?.url ?? url, currentPage, activeFilters, true)}
       onVerify={(u) => void handleManualVerify(u)}
       onLogin={(u) => void handleBrowserLogin(u)}
       onOpenExternal={(u) => void handleOpenExternal(u)}
@@ -387,6 +535,15 @@
               </div>
             {/if}
 
+            {#if entry.updatedAt}
+              <span
+                class="absolute top-2 left-2 max-w-[60%] truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white"
+                style="background-color: rgba(15, 15, 18, 0.74);"
+              >
+                {entry.updatedAt}
+              </span>
+            {/if}
+
             {#if entry.latestChapter}
               <span
                 class="absolute bottom-2 left-2 max-w-[calc(100%-1rem)] truncate rounded-md px-2 py-0.5 text-[10px] font-semibold text-white"
@@ -409,8 +566,7 @@
               <div
                 class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/55 text-xs font-semibold text-white"
               >
-                <Loader2 size={22} class="animate-spin" />
-                <span>{t.browseOpeningManga}</span>
+                <LatticeLoader size="md" tone="inherit" label={t.browseOpeningManga} showTimer />
               </div>
             {/if}
           </div>
@@ -436,34 +592,86 @@
       {/each}
     </div>
 
-    <!-- Pagination -->
-    {#if sourceId !== undefined || catalog.pagination.prevUrl || catalog.pagination.nextUrl || (catalog.pagination.totalPages ?? 1) > 1}
-      <div class="flex items-center justify-center gap-3 pt-2">
+    <!-- Full Multi-Page Pagination + Direct Page Jump -->
+    {#if canGoPrev || canGoNext || pageNumbers().length > 0}
+      <div class="flex flex-wrap items-center justify-center gap-2 pt-2">
         <button
           type="button"
-          disabled={(sourceId !== undefined ? currentPage <= 1 : !catalog.pagination.prevUrl) || loading}
-          onclick={goPrevPage}
-          class="inline-flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-medium disabled:opacity-40"
+          disabled={!canGoPrev || loading}
+          onclick={() => goToPage(currentPage - 1)}
+          class="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-medium disabled:opacity-40"
           style="background-color: var(--surface); border-color: var(--border);"
         >
           <ChevronLeft size={14} />
           <span>{t.browsePrevPage}</span>
         </button>
 
-        <span class="text-xs font-semibold tabular-nums" style="color: var(--text-muted);">
-          {t.browsePageIndicator(catalog.pagination.currentPage, catalog.pagination.totalPages)}
-        </span>
+        {#if pageNumbers().length > 0}
+          <div class="flex flex-wrap items-center justify-center gap-1">
+            {#each pageNumbers() as item, idx (String(item) + "-" + idx)}
+              {#if item === "..."}
+                <span class="px-1.5 text-xs opacity-60">…</span>
+              {:else}
+                {@const active = item === currentPage}
+                <button
+                  type="button"
+                  disabled={loading}
+                  onclick={() => goToPage(item)}
+                  class="min-w-8 rounded-lg border px-2.5 py-1.5 text-xs font-semibold tabular-nums transition-colors"
+                  style="border-color: {active ? 'var(--accent)' : 'var(--border)'}; background-color: {active
+                    ? 'var(--accent)'
+                    : 'var(--surface)'}; color: {active ? 'var(--accent-fg)' : 'var(--text)'};"
+                >
+                  {item}
+                </button>
+              {/if}
+            {/each}
+          </div>
+        {:else}
+          <span class="px-2 text-xs font-semibold tabular-nums" style="color: var(--text-muted);">
+            {t.browsePageIndicator(catalog.pagination.currentPage, catalog.pagination.totalPages)}
+          </span>
+        {/if}
 
         <button
           type="button"
-          disabled={(sourceId !== undefined ? catalog.entries.length === 0 : !catalog.pagination.nextUrl) || loading}
-          onclick={goNextPage}
-          class="inline-flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-medium disabled:opacity-40"
+          disabled={!canGoNext || loading}
+          onclick={() => goToPage(currentPage + 1)}
+          class="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-medium disabled:opacity-40"
           style="background-color: var(--surface); border-color: var(--border);"
         >
           <span>{t.browseNextPage}</span>
           <ChevronRight size={14} />
         </button>
+
+        {#if canJumpArbitrary}
+          <form
+            onsubmit={(e) => {
+              e.preventDefault();
+              submitPageJump();
+            }}
+            class="ml-1 flex items-center gap-1 rounded-xl border px-2 py-1 text-xs"
+            style="background-color: var(--surface); border-color: var(--border);"
+          >
+            <input
+              type="number"
+              min="1"
+              max={catalog.pagination.totalPages ?? 9999}
+              bind:value={jumpPageInput}
+              placeholder={t.browseJumpPagePlaceholder}
+              class="w-16 bg-transparent py-0.5 text-xs outline-none tabular-nums"
+              style="color: var(--text);"
+            />
+            <button
+              type="submit"
+              disabled={loading || !jumpPageInput.trim()}
+              class="rounded-lg px-2 py-1 text-[11px] font-semibold disabled:opacity-45"
+              style="background-color: var(--accent); color: var(--accent-fg);"
+            >
+              {t.browseJumpGoBtn}
+            </button>
+          </form>
+        {/if}
       </div>
     {/if}
   {/if}

@@ -16,6 +16,7 @@
     Trash2,
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
+  import CbzDropZone from "../lib/components/CbzDropZone.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { router } from "../lib/stores/router.svelte";
@@ -326,16 +327,27 @@
 
     {#if manga}
       <div class="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onclick={refresh}
-          disabled={refreshing}
-          class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
-          style="background-color: var(--surface); border-color: var(--border);"
-        >
-          <RefreshCw size={14} class={refreshing ? "animate-spin" : ""} />
-          <span>{refreshing ? t.refreshing : t.refreshChapters}</span>
-        </button>
+        {#if manga.site === "local:cbz"}
+          <CbzDropZone
+            compact
+            targetMangaId={manga.id}
+            onImported={(updated) => {
+              manga = updated;
+              coverError = false;
+            }}
+          />
+        {:else}
+          <button
+            type="button"
+            onclick={refresh}
+            disabled={refreshing}
+            class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+            style="background-color: var(--surface); border-color: var(--border);"
+          >
+            <RefreshCw size={14} class={refreshing ? "animate-spin" : ""} />
+            <span>{refreshing ? t.refreshing : t.refreshChapters}</span>
+          </button>
+        {/if}
         <button
           type="button"
           onclick={hideManga}
@@ -432,7 +444,7 @@
               class="rounded-md px-2 py-0.5 text-xs font-medium"
               style="background-color: var(--surface-hover); color: var(--text-muted);"
             >
-              {manga.site}
+              {manga.site === "local:cbz" ? t.cbzLocalBadge : manga.site}
             </span>
             <span class="text-xs" style="color: var(--text-muted);">
               {t.chapterCount(manga.chapters.length)}

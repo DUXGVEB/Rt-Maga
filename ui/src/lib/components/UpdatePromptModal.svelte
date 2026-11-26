@@ -4,13 +4,13 @@
     CheckCircle2,
     Download,
     ExternalLink,
-    Loader2,
     ShieldCheck,
     Sparkles,
     X,
   } from "lucide-svelte";
   import { appReleaseStore } from "../stores/appRelease.svelte";
   import { settingsStore } from "../stores/settings.svelte";
+  import LatticeLoader from "./LatticeLoader.svelte";
 
   const t = $derived(settingsStore.t);
   const release = $derived(appReleaseStore.release);
@@ -119,8 +119,7 @@
         <div class="flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs font-medium">
             <span class="flex items-center gap-1.5">
-              <Loader2 size={14} class="animate-spin" style="color: var(--accent);" />
-              {stageLabel()}
+              <LatticeLoader size="xs" label={stageLabel()} showTimer inline />
             </span>
             {#if progress.stage === "downloading" && progress.totalBytes}
               <span style="color: var(--text-muted);">

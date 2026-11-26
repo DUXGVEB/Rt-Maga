@@ -546,6 +546,48 @@ export interface HiddenMangaView {
   latestChapterName: string | null;
 }
 
+export interface FilterTagOption {
+  id: string;
+  label: string;
+  url: string | null;
+}
+
+export interface FilterOptionItem {
+  value: string;
+  label: string;
+}
+
+export type FilterAxisKind = "single_select" | "multi_select";
+
+export interface FilterAxis {
+  key: string;
+  label: string;
+  kind: FilterAxisKind;
+  options: FilterOptionItem[];
+}
+
+export interface SiteFilterSchema {
+  tags: FilterTagOption[];
+  extraAxes: FilterAxis[];
+  filterEndpoint: string | null;
+  includeTagParam: string | null;
+  excludeTagParam: string | null;
+  commaJoinedTags: boolean;
+  minChaptersParam: string | null;
+  keywordParam: string | null;
+}
+
+export type UpdatedWithinFilter = "any" | "last_24h" | "last_7d" | "last_30d" | "last_365d";
+
+export interface CatalogFilterQuery {
+  query?: string | null;
+  includeTags: string[];
+  excludeTags: string[];
+  minChapters?: number | null;
+  updatedWithin?: UpdatedWithinFilter;
+  extra: Record<string, string>;
+}
+
 export interface CatalogEntryView {
   url: string;
   title: string;
@@ -555,6 +597,8 @@ export interface CatalogEntryView {
   status: string | null;
   genres: string[];
   sourceId: string | null;
+  chapterCount: number | null;
+  updatedAt: string | null;
 }
 
 export interface NavLinkView {
@@ -568,6 +612,7 @@ export interface PaginationView {
   totalPages: number | null;
   prevUrl: string | null;
   nextUrl: string | null;
+  pageUrlTemplate: string | null;
 }
 
 export interface CatalogPageView {
@@ -581,6 +626,8 @@ export interface CatalogPageView {
   entries: CatalogEntryView[];
   categories: NavLinkView[];
   pagination: PaginationView;
+  filterSchema: SiteFilterSchema;
+  sourceId: number | null;
 }
 
 export interface ResolveResponse {
@@ -640,16 +687,7 @@ export interface SavedSourceView {
   manualVisibility: boolean;
   createdAt: number;
   updatedAt: number;
-}
-
-export interface RuleSpecView {
-  ruleId: string;
-  name: string;
-  version: number;
-  origin: string;
-  isEnabled: boolean;
-  domains: string[];
-  updatedAt: number;
+  filterSchema: SiteFilterSchema;
 }
 
 export interface SourceSearchGroupView {

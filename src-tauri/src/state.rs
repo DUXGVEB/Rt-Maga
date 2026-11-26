@@ -1,5 +1,6 @@
 //! Shared application state owned by the Tauri runtime.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 
@@ -7,7 +8,7 @@ use mangacore::Registry;
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 
-use crate::cache::{ChapterCache, ImageCache};
+use crate::cache::{CatalogCache, ChapterCache, ImageCache};
 use crate::repo::Database;
 use crate::services::app_release::AppReleaseInfo;
 use crate::services::sync::SyncManager;
@@ -16,6 +17,8 @@ use crate::settings::Settings;
 /// Central state injected into Tauri commands, background tasks, and the `img://` proxy.
 #[derive(Debug)]
 pub(crate) struct AppState {
+    /// Local application data directory (`<app_local_data_dir>`), housing `rtmaga.db`, `cache/`, and `cbz/`.
+    pub data_dir: PathBuf,
     /// Local SQLite database handle.
     pub db: Database,
     /// Multi-tier manga URL resolver and shared HTTP client.
@@ -24,6 +27,8 @@ pub(crate) struct AppState {
     pub images: ImageCache,
     /// Short-lived in-memory chapter metadata cache.
     pub chapters: ChapterCache,
+    /// Short-lived in-memory catalog & filter page cache.
+    pub catalogs: CatalogCache,
     /// Live user settings synchronized with SQLite.
     pub settings: RwLock<Settings>,
     /// Persistent local HMAC key securing `img://` proxy tokens across app restarts.
@@ -47,6 +52,7 @@ pub(crate) struct AppState {
 impl AppState {
     /// Constructs [`AppState`] with a persistent local proxy HMAC key.
     pub(crate) fn new(
+        data_dir: PathBuf,
         db: Database,
         registry: Registry,
         images: ImageCache,
@@ -56,10 +62,12 @@ impl AppState {
         let (chapter_cancel_tx, _rx) = watch::channel(0_u64);
 
         Arc::new(Self {
+            data_dir,
             db,
             registry,
             images,
             chapters: ChapterCache::new(),
+            catalogs: CatalogCache::new(),
             settings: RwLock::new(settings),
             proxy_key,
             update_task: Mutex::new(None),

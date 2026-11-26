@@ -154,8 +154,24 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
         chapter_url: payload.ch.as_deref(),
     };
 
+    if crate::services::cbz::is_cbz_url(&payload.u)
+        && let Ok(cbz_url) = Url::parse(&payload.u)
+        && cbz_url.path().starts_with("/page/")
+    {
+        return match crate::services::cbz::read_cbz_page_bytes(&state.data_dir, state, &cbz_url)
+            .await
+        {
+            Ok((bytes, mime)) => image_ok_response(bytes, &mime, ResponseCachePolicy::NoStorePage),
+            Err(err) => error_response(StatusCode::UNPROCESSABLE_ENTITY, &err.to_string()),
+        };
+    }
+
     if !bypass_cache && let Some(hit) = state.images.get(&cache_key, meta.clone()).await {
         return image_ok_response(hit.bytes.to_vec(), &hit.content_type, policy);
+    }
+
+    if crate::services::cbz::is_cbz_url(&payload.u) {
+        return error_response(StatusCode::NOT_FOUND, "local CBZ cover not found");
     }
 
     let _flight_guard = if bypass_cache {

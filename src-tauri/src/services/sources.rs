@@ -1,13 +1,14 @@
-//! Saved source onboarding, catalog browsing, parallel multi-source search,
-//! supplemental visibility isolation, and custom JSON rule pack management.
+//! Saved source onboarding, catalog browsing, dynamic per-website filter discovery,
+//! parallel multi-source search, and supplemental visibility isolation.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use mangacore::{
-    CatalogPage, CmsKind, CustomRuleSpec, HttpClient, Manga, browse_or_search_cms,
-    detect_site_structure, match_builtin_adapter_id, normalize_source_root,
-    parse::meta::detect_adult_signals, validate_rule_spec,
+    CatalogFilterQuery, CatalogPage, CmsKind, HttpClient, Manga, Resolved, SiteFilterSchema,
+    browse_or_filter_cms, browse_or_search_cms, default_filter_schema_for_adapter,
+    detect_site_structure, match_builtin_adapter_id, merge_filter_schemas, normalize_source_root,
+    normalize_url, parse::meta::detect_adult_signals,
 };
 use serde::Serialize;
 use tokio::sync::Semaphore;
@@ -20,10 +21,12 @@ use crate::error::AppError;
 use crate::image_proxy::encode_cover_token;
 use crate::repo::Database;
 use crate::repo::sources::{
-    RuleSpecRow, SavedSourceRow, SourcePlacement, UpdateSavedSource, UpsertSavedSource,
-    VisibilityFilter, VisibilityPatch,
+    SavedSourceRow, SourcePlacement, UpdateSavedSource, UpsertSavedSource, VisibilityFilter,
+    VisibilityPatch,
 };
-use crate::services::library::{CatalogEntryView, CatalogPageView, map_catalog_view};
+use crate::services::library::{
+    CatalogEntryView, CatalogPageView, enrich_and_cache_catalog_view, map_catalog_view,
+};
 use crate::state::AppState;
 
 /// Source item rendered in the UI Sources list or Settings -> Supplemental Sources.
@@ -43,19 +46,7 @@ pub(crate) struct SavedSourceView {
     pub manual_visibility: bool,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-/// Custom declarative JSON rule pack summary sent to the UI.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RuleSpecView {
-    pub rule_id: String,
-    pub name: String,
-    pub version: i64,
-    pub origin: String,
-    pub is_enabled: bool,
-    pub domains: Vec<String>,
-    pub updated_at: i64,
+    pub filter_schema: SiteFilterSchema,
 }
 
 /// Per-source search results group in a multi-source parallel keyword search.
@@ -84,6 +75,14 @@ pub(crate) struct AutoRecordDeps {
     pub max_mb: u32,
 }
 
+/// Returns built-in baseline [`SiteFilterSchema`] for known first-party adapters.
+pub(crate) fn default_schema_for_host_or_parser(
+    host: Option<&str>,
+    parser_ref: Option<&str>,
+) -> SiteFilterSchema {
+    default_filter_schema_for_adapter(parser_ref, host)
+}
+
 /// Lists saved sources filtered by visibility bucket (`main_only`, `supplemental_only`, `all`).
 ///
 /// # Errors
@@ -100,8 +99,8 @@ pub(crate) async fn list_saved_sources(
         .collect())
 }
 
-/// Probes `raw_url` using structure-first CMS classification + HTML favicon discovery,
-/// caches its icon into `covers/`, and saves the source into SQLite.
+/// Probes `raw_url` using structure-first CMS classification + dynamic filter discovery + favicon caching,
+/// and saves the source into SQLite.
 ///
 /// # Errors
 ///
@@ -112,13 +111,8 @@ pub(crate) async fn add_saved_source(
     custom_name: Option<&str>,
     placement: SourcePlacement,
 ) -> Result<SavedSourceView, AppError> {
-    let custom_rules = state
-        .db
-        .list_enabled_custom_rules()
-        .await
-        .unwrap_or_default();
     let http = state.registry.http();
-    let outcome = detect_site_structure(http, raw_url, &custom_rules)
+    let outcome = detect_site_structure(http, raw_url)
         .await
         .map_err(AppError::from)?;
     let max_mb = state.current_settings().await.cache.max_mb;
@@ -131,6 +125,13 @@ pub(crate) async fn add_saved_source(
         max_mb,
     )
     .await;
+
+    if let Some(h) = outcome.base_url.host_str() {
+        let _ = state
+            .db
+            .merge_host_filter_schema(h, &outcome.filter_schema)
+            .await;
+    }
 
     let display_name = custom_name
         .map(str::trim)
@@ -154,6 +155,7 @@ pub(crate) async fn add_saved_source(
             detected_adult: outcome.adult_detected,
             placement,
             prefer_new_name: custom_name.is_some_and(|s| !s.trim().is_empty()),
+            filter_schema: Some(&outcome.filter_schema),
         })
         .await?;
 
@@ -185,6 +187,7 @@ pub(crate) async fn update_saved_source(
             },
         )
         .await?;
+    state.catalogs.invalidate_all();
     Ok(map_saved_source_view(row, &state.proxy_key))
 }
 
@@ -194,20 +197,93 @@ pub(crate) async fn update_saved_source(
 ///
 /// Returns [`AppError::Db`] on SQLite failure.
 pub(crate) async fn delete_saved_source(state: &AppState, id: i64) -> Result<(), AppError> {
+    state.catalogs.invalidate_all();
     state.db.delete_saved_source(id).await
 }
 
-/// Browses or searches a single saved source (automatically applying its saved mirror URL,
-/// CMS structure kind, and one-shot fallback).
+/// Returns (and lazily discovers if not yet cached) the dynamic per-website [`SiteFilterSchema`]
+/// for either a saved `source_id` or an arbitrary pasted `raw_url` so the multi-tag filter bar
+/// is ready as soon as the user selects a source or types a website link.
+///
+/// # Errors
+///
+/// Returns [`AppError`] on invalid URL or network failure when probing an unseen website.
+pub(crate) async fn get_web_filter_schema(
+    state: &AppState,
+    source_id: Option<i64>,
+    raw_url: Option<&str>,
+) -> Result<SiteFilterSchema, AppError> {
+    if let Some(sid) = source_id {
+        let row =
+            state
+                .db
+                .get_saved_source_by_id(sid)
+                .await?
+                .ok_or_else(|| AppError::NotFound {
+                    message: format!("saved source {sid} not found"),
+                })?;
+        let view = map_saved_source_view(row.clone(), &state.proxy_key);
+        if !view.filter_schema.tags.is_empty() {
+            return Ok(view.filter_schema);
+        }
+        if let Ok(outcome) = detect_site_structure(state.registry.http(), &row.base_url).await {
+            let merged = state
+                .db
+                .merge_saved_source_filter_schema(sid, &outcome.filter_schema)
+                .await?;
+            return Ok(merge_filter_schemas(Some(&view.filter_schema), merged));
+        }
+        return Ok(view.filter_schema);
+    }
+
+    let Some(url_str) = raw_url.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(SiteFilterSchema::default());
+    };
+    let parsed = normalize_url(url_str).map_err(AppError::from)?;
+    let host = parsed.host_str().unwrap_or("");
+    let mut schema = default_schema_for_host_or_parser(Some(host), None);
+
+    if let Ok(Some(saved)) = state.db.find_matching_saved_source(None, Some(host)).await
+        && let Some(ref json) = saved.filter_schema_json
+        && let Ok(s) = serde_json::from_str::<SiteFilterSchema>(json)
+    {
+        schema = merge_filter_schemas(Some(&schema), s);
+    }
+    if let Ok(Some(cached)) = state.db.get_host_filter_schema(host).await {
+        schema = merge_filter_schemas(Some(&schema), cached);
+    }
+    if !schema.tags.is_empty() {
+        return Ok(schema);
+    }
+
+    if let Ok(outcome) = detect_site_structure(state.registry.http(), parsed.as_str()).await {
+        let merged = state
+            .db
+            .merge_host_filter_schema(host, &outcome.filter_schema)
+            .await?;
+        return Ok(merge_filter_schemas(Some(&schema), merged));
+    }
+
+    Ok(schema)
+}
+
+/// Browses, searches, or applies multi-tag/chapter/recency filters against a single saved source,
+/// backed by RAM `CatalogCache` and next-page prefetching.
 ///
 /// # Errors
 ///
 /// Returns [`AppError`] when the source does not exist or upstream resolution fails.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "force_refresh flag bypasses RAM CatalogCache on explicit user refresh"
+)]
 pub(crate) async fn browse_saved_source(
-    state: &AppState,
+    state: &Arc<AppState>,
     source_id: i64,
     query: Option<&str>,
+    filters: Option<CatalogFilterQuery>,
     page: u32,
+    force_refresh: bool,
 ) -> Result<CatalogPageView, AppError> {
     let row = state
         .db
@@ -220,21 +296,30 @@ pub(crate) async fn browse_saved_source(
         message: e.to_string(),
     })?;
     let kind = CmsKind::from_storage_str(&row.source_kind);
-    let custom_rules = state
-        .db
-        .list_enabled_custom_rules()
-        .await
-        .unwrap_or_default();
+    let target_page = page.max(1);
 
-    let mut cat = browse_or_search_cms(
+    let mut effective_filters = filters.unwrap_or_default();
+    if let Some(q) = query.map(str::trim).filter(|s| !s.is_empty()) {
+        effective_filters.query = Some(q.to_owned());
+    }
+
+    let filter_sig = serde_json::to_string(&effective_filters).unwrap_or_default();
+    let cache_key = format!("src:{source_id}|p:{target_page}|f:{filter_sig}");
+    if !force_refresh && let Some(cached) = state.catalogs.get(&cache_key).await {
+        return Ok(cached);
+    }
+
+    let known_schema = build_saved_source_schema(&row);
+    let mut cat = browse_or_filter_cms(
         state.registry.http(),
         kind,
         &base_url,
+        None,
         row.parser_ref.as_deref(),
         row.search_template.as_deref(),
-        query,
-        page.max(1),
-        &custom_rules,
+        Some(&known_schema),
+        &effective_filters,
+        target_page,
     )
     .await
     .map_err(AppError::from)?;
@@ -243,9 +328,58 @@ pub(crate) async fn browse_saved_source(
         cat.site_name.clone_from(&row.display_name);
     }
 
-    let max_mb = state.current_settings().await.cache.max_mb;
-    prefetch_catalog_covers(state.registry.http(), &state.images, &cat, max_mb);
-    Ok(map_catalog_view(cat, &state.proxy_key))
+    Ok(enrich_and_cache_catalog_view(state, cat, Some(source_id), Some(cache_key)).await)
+}
+
+/// Spawns a low-priority background prefetch of `next_url` into `state.catalogs` so clicking
+/// "Next Page" renders instantaneously without competing with visible cover image streams.
+pub(crate) fn spawn_next_catalog_page_prefetch(
+    state: Arc<AppState>,
+    next_url: Url,
+    source_id: Option<i64>,
+) {
+    let empty_sig = serde_json::to_string(&CatalogFilterQuery::default()).unwrap_or_default();
+    let expected_page = mangacore::extract_page_number_from_url(&next_url).unwrap_or(2);
+    let url_key = format!("url:{}|p:{expected_page}|f:{empty_sig}", next_url.as_str());
+
+    tokio::spawn(async move {
+        // Yield briefly so the active page's IPC response and visible `<img>` requests go first.
+        tokio::time::sleep(Duration::from_millis(320)).await;
+        if state.catalogs.get(&url_key).await.is_some() {
+            return;
+        }
+        let policy = state.current_settings().await.headless_policy();
+        if let Ok((Resolved::Catalog(cat), _)) = state
+            .registry
+            .resolve_with_diagnostics(next_url.as_str(), policy)
+            .await
+        {
+            let host = cat.url.host_str().unwrap_or("").to_owned();
+            let mut merged_cat = *cat;
+            let base_schema = default_schema_for_host_or_parser(Some(&host), None);
+            merged_cat.filter_schema =
+                merge_filter_schemas(Some(&base_schema), merged_cat.filter_schema);
+            if let Ok(Some(cached_host)) = state.db.get_host_filter_schema(&host).await {
+                merged_cat.filter_schema =
+                    merge_filter_schemas(Some(&cached_host), merged_cat.filter_schema);
+            }
+            let actual_page = merged_cat.pagination.current_page;
+            let actual_key = format!(
+                "url:{}|p:{actual_page}|f:{empty_sig}",
+                merged_cat.url.as_str()
+            );
+            let view = map_catalog_view(merged_cat, source_id, &state.proxy_key);
+            state.catalogs.insert(actual_key, view.clone()).await;
+            if actual_key_differs(&url_key, &view.url, actual_page, &empty_sig) {
+                state.catalogs.insert(url_key, view).await;
+            }
+        }
+    });
+}
+
+fn actual_key_differs(orig_key: &str, final_url: &str, page: u32, sig: &str) -> bool {
+    let candidate = format!("url:{final_url}|p:{page}|f:{sig}");
+    orig_key != candidate
 }
 
 /// Searches in parallel (capped at 4 concurrent requests, 12s timeout each) across all enabled
@@ -281,21 +415,12 @@ pub(crate) async fn search_across_sources(
         });
     }
 
-    let custom_rules = Arc::new(
-        state
-            .db
-            .list_enabled_custom_rules()
-            .await
-            .unwrap_or_default(),
-    );
-    let max_mb = state.current_settings().await.cache.max_mb;
     let sem = Arc::new(Semaphore::new(4));
     let mut set = JoinSet::new();
 
     for (idx, row) in sources.into_iter().enumerate() {
         let permit_sem = Arc::clone(&sem);
         let state_ref = Arc::clone(state);
-        let rules_ref = Arc::clone(&custom_rules);
         let q_owned = clean_q.to_owned();
         set.spawn(async move {
             let Ok(_permit) = permit_sem.acquire().await else {
@@ -308,7 +433,7 @@ pub(crate) async fn search_across_sources(
                     },
                 );
             };
-            let group = search_single_source(&state_ref, row, &q_owned, &rules_ref, max_mb).await;
+            let group = search_single_source(&state_ref, row, &q_owned).await;
             (idx, group)
         });
     }
@@ -335,9 +460,8 @@ async fn search_single_source(
     state: &AppState,
     row: SavedSourceRow,
     query: &str,
-    custom_rules: &[CustomRuleSpec],
-    max_mb: u32,
 ) -> SourceSearchGroupView {
+    let source_id = row.id;
     let view = map_saved_source_view(row.clone(), &state.proxy_key);
     let Ok(base_url) = Url::parse(&row.base_url) else {
         return SourceSearchGroupView {
@@ -355,13 +479,11 @@ async fn search_single_source(
         row.search_template.as_deref(),
         Some(query),
         1,
-        custom_rules,
     );
 
     match tokio::time::timeout(Duration::from_secs(12), fut).await {
         Ok(Ok(cat)) => {
-            prefetch_catalog_covers(state.registry.http(), &state.images, &cat, max_mb);
-            let mapped = map_catalog_view(cat, &state.proxy_key);
+            let mapped = map_catalog_view(cat, Some(source_id), &state.proxy_key);
             SourceSearchGroupView {
                 source: view,
                 entries: mapped.entries,
@@ -387,16 +509,21 @@ struct AutoSourceRecord {
     source_key_hint: String,
     search_tmpl: Option<String>,
     adult_hint: bool,
+    initial_schema: Option<SiteFilterSchema>,
 }
 
 /// Spawns non-blocking background source recording when a manga is resolved.
 pub(crate) fn spawn_auto_record_from_manga(deps: AutoRecordDeps, url: Url, manga: &Manga) {
+    if crate::services::cbz::is_cbz_url(url.as_str()) {
+        return;
+    }
     let record = AutoSourceRecord {
         adult_hint: detect_adult_signals(&url, "", &manga.genres, &manga.tags),
         site_label: infer_site_label(&url, manga.site.as_storage_key().as_str()),
         source_key_hint: manga.site.as_storage_key(),
         search_tmpl: None,
         url,
+        initial_schema: None,
     };
     tokio::spawn(async move {
         auto_record_source_task(deps, record).await;
@@ -421,6 +548,7 @@ pub(crate) fn spawn_auto_record_from_catalog(deps: AutoRecordDeps, url: Url, cat
         source_key_hint: cat.site.as_storage_key(),
         search_tmpl: cat.search_url_template.clone(),
         adult_hint,
+        initial_schema: Some(cat.filter_schema.clone()),
     };
     tokio::spawn(async move {
         auto_record_source_task(deps, record).await;
@@ -431,34 +559,47 @@ async fn auto_record_source_task(deps: AutoRecordDeps, rec: AutoSourceRecord) {
     let Ok(root) = normalize_source_root(rec.url.as_str()) else {
         return;
     };
-    let rules = deps
-        .db
-        .list_enabled_custom_rules()
-        .await
-        .unwrap_or_default();
-    let outcome = detect_site_structure(&deps.http, root.as_str(), &rules)
-        .await
-        .ok();
+    let outcome = detect_site_structure(&deps.http, root.as_str()).await.ok();
 
-    let (kind, parser_ref, detected_tmpl, icon_candidates, detected_adult, detected_name) =
-        match outcome {
-            Some(o) => (
-                o.kind,
-                o.parser_ref,
-                o.search_template,
-                o.icon_candidates,
-                o.adult_detected || rec.adult_hint,
-                o.display_name,
-            ),
-            None => (
-                default_kind_from_hint(&rec.source_key_hint, &rec.url),
-                None,
-                None,
-                Vec::new(),
-                rec.adult_hint,
-                rec.site_label.clone(),
-            ),
-        };
+    let (
+        kind,
+        parser_ref,
+        detected_tmpl,
+        icon_candidates,
+        detected_adult,
+        detected_name,
+        detected_schema,
+    ) = match outcome {
+        Some(o) => (
+            o.kind,
+            o.parser_ref,
+            o.search_template,
+            o.icon_candidates,
+            o.adult_detected || rec.adult_hint,
+            o.display_name,
+            Some(o.filter_schema),
+        ),
+        None => (
+            default_kind_from_hint(&rec.source_key_hint, &rec.url),
+            None,
+            None,
+            Vec::new(),
+            rec.adult_hint,
+            rec.site_label.clone(),
+            None,
+        ),
+    };
+
+    let combined_schema = match (rec.initial_schema, detected_schema) {
+        (Some(a), Some(b)) => Some(merge_filter_schemas(Some(&a), b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+
+    if let (Some(h), Some(sc)) = (root.host_str(), combined_schema.as_ref()) {
+        let _ = deps.db.merge_host_filter_schema(h, sc).await;
+    }
 
     let chosen_icon = resolve_and_cache_icon(
         &deps.http,
@@ -489,116 +630,9 @@ async fn auto_record_source_task(deps: AutoRecordDeps, rec: AutoSourceRecord) {
             detected_adult,
             placement: SourcePlacement::Auto,
             prefer_new_name: false,
+            filter_schema: combined_schema.as_ref(),
         })
         .await;
-}
-
-/// Lists all stored custom JSON rule specifications.
-///
-/// # Errors
-///
-/// Returns [`AppError::Db`] on SQLite failure.
-pub(crate) async fn list_rule_specs(state: &AppState) -> Result<Vec<RuleSpecView>, AppError> {
-    let rows = state.db.list_rule_specs().await?;
-    Ok(rows.into_iter().map(map_rule_spec_view).collect())
-}
-
-/// Validates and imports a single [`CustomRuleSpec`] JSON object or an array of specs.
-///
-/// # Errors
-///
-/// Returns [`AppError::InvalidUrl`] on JSON syntax/selector validation errors or [`AppError::Db`] on SQLite failure.
-pub(crate) async fn import_rule_specs_json(
-    state: &AppState,
-    raw_json: &str,
-) -> Result<Vec<RuleSpecView>, AppError> {
-    let trimmed = raw_json.trim();
-    if trimmed.is_empty() {
-        return Err(AppError::InvalidUrl {
-            message: "JSON rule specification must not be empty".to_owned(),
-        });
-    }
-
-    let specs: Vec<CustomRuleSpec> = if trimmed.starts_with('[') {
-        serde_json::from_str(trimmed).map_err(|e| AppError::InvalidUrl {
-            message: format!("invalid rule pack JSON array: {e}"),
-        })?
-    } else {
-        let single: CustomRuleSpec =
-            serde_json::from_str(trimmed).map_err(|e| AppError::InvalidUrl {
-                message: format!("invalid rule pack JSON object: {e}"),
-            })?;
-        vec![single]
-    };
-
-    if specs.is_empty() {
-        return Err(AppError::InvalidUrl {
-            message: "rule pack array contains zero entries".to_owned(),
-        });
-    }
-
-    let mut imported = Vec::with_capacity(specs.len());
-    for spec in &specs {
-        if let Err(msg) = validate_rule_spec(spec) {
-            return Err(AppError::InvalidUrl {
-                message: format!("invalid rule '{}': {msg}", spec.name),
-            });
-        }
-        let pretty = serde_json::to_string_pretty(spec).map_err(|e| AppError::Internal {
-            message: format!("failed to serialize validated rule spec: {e}"),
-        })?;
-        let row = state
-            .db
-            .upsert_rule_spec(spec, &pretty, "user_imported")
-            .await?;
-        imported.push(map_rule_spec_view(row));
-    }
-
-    Ok(imported)
-}
-
-/// Exports all stored custom JSON rule packs as a formatted JSON array string.
-///
-/// # Errors
-///
-/// Returns [`AppError`] on SQLite or JSON serialization error.
-pub(crate) async fn export_rule_specs_json(state: &AppState) -> Result<String, AppError> {
-    let rows = state.db.list_rule_specs().await?;
-    let mut specs: Vec<CustomRuleSpec> = Vec::with_capacity(rows.len());
-    for row in rows {
-        if let Ok(spec) = serde_json::from_str::<CustomRuleSpec>(&row.raw_json) {
-            specs.push(spec);
-        }
-    }
-    serde_json::to_string_pretty(&specs).map_err(|e| AppError::Internal {
-        message: format!("failed to export rule specs: {e}"),
-    })
-}
-
-/// Enables or disables a custom JSON rule pack.
-///
-/// # Errors
-///
-/// Returns [`AppError::Db`] on SQLite failure.
-#[expect(
-    clippy::fn_params_excessive_bools,
-    reason = "boolean enable/disable toggle for custom rule spec"
-)]
-pub(crate) async fn set_rule_spec_enabled(
-    state: &AppState,
-    rule_id: &str,
-    enabled: bool,
-) -> Result<(), AppError> {
-    state.db.set_rule_spec_enabled(rule_id, enabled).await
-}
-
-/// Deletes a custom JSON rule pack by ID.
-///
-/// # Errors
-///
-/// Returns [`AppError::Db`] on SQLite failure.
-pub(crate) async fn delete_rule_spec(state: &AppState, rule_id: &str) -> Result<(), AppError> {
-    state.db.delete_rule_spec(rule_id).await
 }
 
 async fn resolve_and_cache_icon(
@@ -647,19 +681,18 @@ async fn resolve_and_cache_icon(
     candidates.first().map(|u| u.as_str().to_owned())
 }
 
-fn prefetch_catalog_covers(http: &HttpClient, images: &ImageCache, cat: &CatalogPage, max_mb: u32) {
-    let site_key = cat.site.as_storage_key();
-    for entry in cat.entries.iter().take(12) {
-        if let Some(ref cover) = entry.cover {
-            images.spawn_cover_prefetch(
-                http.clone(),
-                cover.clone(),
-                cat.url.clone(),
-                Some(site_key.clone()),
-                None,
-                max_mb,
-            );
-        }
+fn build_saved_source_schema(row: &SavedSourceRow) -> SiteFilterSchema {
+    let host = Url::parse(&row.base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned));
+    let builtin = default_schema_for_host_or_parser(host.as_deref(), row.parser_ref.as_deref());
+    match row
+        .filter_schema_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<SiteFilterSchema>(raw).ok())
+    {
+        Some(stored) => merge_filter_schemas(Some(&builtin), stored),
+        None => builtin,
     }
 }
 
@@ -672,6 +705,7 @@ fn map_saved_source_view(row: SavedSourceRow, proxy_key: &[u8; 32]) -> SavedSour
         .icon_url
         .as_deref()
         .map(|icon| encode_cover_token(icon, &row.base_url, None, site_host.as_deref(), proxy_key));
+    let filter_schema = build_saved_source_schema(&row);
 
     SavedSourceView {
         id: row.id,
@@ -687,21 +721,7 @@ fn map_saved_source_view(row: SavedSourceRow, proxy_key: &[u8; 32]) -> SavedSour
         manual_visibility: row.manual_visibility != 0,
         created_at: row.created_at,
         updated_at: row.updated_at,
-    }
-}
-
-fn map_rule_spec_view(row: RuleSpecRow) -> RuleSpecView {
-    let domains = serde_json::from_str::<CustomRuleSpec>(&row.raw_json)
-        .map(|s| s.domains)
-        .unwrap_or_default();
-    RuleSpecView {
-        rule_id: row.rule_id,
-        name: row.name,
-        version: row.version,
-        origin: row.origin,
-        is_enabled: row.is_enabled != 0,
-        domains,
-        updated_at: row.updated_at,
+        filter_schema,
     }
 }
 
@@ -710,11 +730,6 @@ fn build_source_key(kind: CmsKind, parser_ref: Option<&str>, base_url: &Url) -> 
         && let Some(id) = parser_ref
     {
         return format!("builtin:{id}");
-    }
-    if kind == CmsKind::CustomRule
-        && let Some(id) = parser_ref
-    {
-        return format!("rule:{id}");
     }
     let bare = base_url
         .host_str()
@@ -731,13 +746,10 @@ fn infer_site_label(url: &Url, hint: &str) -> String {
     hint.to_owned()
 }
 
-fn default_kind_from_hint(hint: &str, url: &Url) -> CmsKind {
+fn default_kind_from_hint(_hint: &str, url: &Url) -> CmsKind {
     let host = url.host_str().unwrap_or("").to_ascii_lowercase();
     if match_builtin_adapter_id(&host).is_some() {
         return CmsKind::BuiltInAdapter;
-    }
-    if hint.starts_with("rule:") {
-        return CmsKind::CustomRule;
     }
     CmsKind::UniversalHeuristic
 }

@@ -482,10 +482,61 @@ fn truyenqq_amp_catalog_and_canonicalization() {
         catalog.entries[0].source_id.as_deref(),
         Some("truyenqq:7777")
     );
-    assert_eq!(catalog.categories.len(), 3);
+    assert!(
+        catalog.categories.len() >= 10,
+        "TruyenQQ catalog must include built-in public directory tabs plus discovered genre links"
+    );
+    assert!(catalog.categories.iter().any(|c| c.label == "Hoàn thành"));
     assert!(catalog.categories.iter().any(|c| c.label == "Action"));
     assert!(catalog.categories.iter().any(|c| c.label == "Fantasy"));
     assert!(catalog.pagination.next_url.is_some());
+    assert!(
+        !catalog.filter_schema.tags.is_empty(),
+        "TruyenQQ catalog must expose per-site multi-tag schema ready immediately"
+    );
+
+    // Verify `truyenqq.com.vn` root homepage pagination wires page 2 to `/truyen-moi-cap-nhat/trang-2.html`.
+    let vn_home = parse_url("https://truyenqq.com.vn/");
+    assert_eq!(
+        truyenqq::classify_url(&vn_home),
+        Some(UrlKind::WebsiteHome),
+        "truyenqq.com.vn must be recognized by the native TruyenQQ adapter"
+    );
+    let home_html = r#"<!doctype html>
+    <html>
+      <body>
+        <ul class="list_grid grid">
+          <li>
+            <div class="book_avatar">
+              <a href="/truyen-tranh/kiem-tien-tro-lai-12345.html">
+                <img src="https://img.example.invalid/12345.jpg" alt="Kiếm Tiên Trở Lại" />
+              </a>
+              <div class="top-notice"><span class="time-ago">15 Phút Trước</span></div>
+            </div>
+            <div class="book_info">
+              <div class="book_name"><h3><a href="/truyen-tranh/kiem-tien-tro-lai-12345.html">Kiếm Tiên Trở Lại</a></h3></div>
+              <div class="last_chapter"><a href="/truyen-tranh/kiem-tien-tro-lai-12345-chap-128.html">Chương 128</a></div>
+            </div>
+          </li>
+        </ul>
+      </body>
+    </html>"#;
+    let vn_cat = truyenqq::parse_catalog_html(home_html, &vn_home, UrlKind::WebsiteHome)
+        .expect("truyenqq.com.vn homepage parses");
+    assert_eq!(vn_cat.entries.len(), 1);
+    assert_eq!(vn_cat.entries[0].chapter_count, Some(128));
+    assert_eq!(
+        vn_cat.entries[0].updated_at.as_deref(),
+        Some("15 Phút Trước")
+    );
+    assert_eq!(
+        vn_cat.pagination.next_url.as_ref().map(url::Url::as_str),
+        Some("https://truyenqq.com.vn/truyen-moi-cap-nhat/trang-2.html")
+    );
+    assert_eq!(
+        vn_cat.pagination.page_url_template.as_deref(),
+        Some("https://truyenqq.com.vn/truyen-moi-cap-nhat/trang-{page}.html")
+    );
 }
 
 #[test]

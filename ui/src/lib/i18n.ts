@@ -3760,7 +3760,6 @@ export interface V7Dictionary {
   sourcesSearchPlaceholder: string;
   sourcesSearchBtn: string;
   sourcesAddBtn: string;
-  sourcesRulesBtn: string;
   sourcesFilterPlaceholder: string;
   sourcesEmptyTitle: string;
   sourcesEmptyDesc: string;
@@ -3787,14 +3786,37 @@ export interface V7Dictionary {
   sourcesMovedToast: string;
   sourcesResultsHeading: (query: string, count: number) => string;
   sourcesClearSearchBtn: string;
-  sourcesRulesModalTitle: string;
-  sourcesRulesModalDesc: string;
-  sourcesRulesImportPlaceholder: string;
-  sourcesRulesImportBtn: string;
-  sourcesRulesExportBtn: string;
-  sourcesRulesEmpty: string;
-  sourcesRulesImportedToast: (count: number) => string;
-  sourcesRulesExportedToast: string;
+
+  // CBZ Local Archive Support (user-designated only)
+  cbzDropTitle: string;
+  cbzDropSubtitle: string;
+  cbzPickBtn: string;
+  cbzImporting: string;
+  cbzImportedToast: (title: string, chapters: number) => string;
+  cbzAddChaptersBtn: string;
+  cbzLocalBadge: string;
+
+  // Per-Website Multi-Tag & Dynamic Filter Engine
+  webFilterTitle: string;
+  webFilterTagsLabel: string;
+  webFilterTagSearchPlaceholder: string;
+  webFilterTagHint: string;
+  webFilterMinChaptersLabel: string;
+  webFilterAnyOption: string;
+  webFilterUpdatedLabel: string;
+  webFilterUpdated24h: string;
+  webFilterUpdated7d: string;
+  webFilterUpdated30d: string;
+  webFilterUpdated365d: string;
+  webFilterApplyBtn: string;
+  webFilterResetBtn: string;
+  webFilterLoadingSchema: string;
+  webFilterActiveCount: (n: number) => string;
+  webFilterMoreTags: (n: number) => string;
+  webFilterShowLessTags: string;
+  sourcesFilterThisSiteBtn: string;
+  browseJumpPagePlaceholder: string;
+  browseJumpGoBtn: string;
 
   sortByLabel: string;
   sortDateAdded: string;
@@ -3843,7 +3865,6 @@ const V7_EN: V7Dictionary = {
   sourcesSearchPlaceholder: "Search manga title across sources or paste URL...",
   sourcesSearchBtn: "Search",
   sourcesAddBtn: "Add Source",
-  sourcesRulesBtn: "Rule JSON",
   sourcesFilterPlaceholder: "Filter saved sources...",
   sourcesEmptyTitle: "No saved sources yet",
   sourcesEmptyDesc: "Add a comic website URL or open any manga/catalog link to record its source automatically.",
@@ -3873,15 +3894,35 @@ const V7_EN: V7Dictionary = {
   sourcesMovedToast: "Updated source visibility bucket.",
   sourcesResultsHeading: (query: string, count: number) => `Search "${query}" · ${count} results`,
   sourcesClearSearchBtn: "Back to sources",
-  sourcesRulesModalTitle: "Custom Rule Packs (JSON)",
-  sourcesRulesModalDesc:
-    "Import local CSS-selector JSON rules to teach RtMaga how to browse and read custom sites offline.",
-  sourcesRulesImportPlaceholder: 'Paste a JSON rule object or array [...] here...',
-  sourcesRulesImportBtn: "Import JSON",
-  sourcesRulesExportBtn: "Copy All JSON",
-  sourcesRulesEmpty: "No custom rule packs imported yet.",
-  sourcesRulesImportedToast: (count: number) => `Imported ${count} rule pack(s).`,
-  sourcesRulesExportedToast: "Copied all custom rule packs as JSON.",
+
+  cbzDropTitle: "Import local .cbz comic file(s)",
+  cbzDropSubtitle: "Drop .cbz files here or pick manually — stored offline inside RtMaga (no folder scanning).",
+  cbzPickBtn: "Choose .cbz",
+  cbzImporting: "Importing .cbz...",
+  cbzImportedToast: (title: string, chapters: number) => `Imported "${title}" (${chapters} chapter(s)).`,
+  cbzAddChaptersBtn: "Add .cbz chapters",
+  cbzLocalBadge: "Local CBZ",
+
+  webFilterTitle: "Site Filters",
+  webFilterTagsLabel: "Tags / Genres",
+  webFilterTagSearchPlaceholder: "Filter tags...",
+  webFilterTagHint: "1st click: Include (✓) · 2nd click: Exclude (✕) · 3rd click: Clear",
+  webFilterMinChaptersLabel: "Min chapters",
+  webFilterAnyOption: "Any",
+  webFilterUpdatedLabel: "Updated",
+  webFilterUpdated24h: "Last 24 hours",
+  webFilterUpdated7d: "Last 7 days",
+  webFilterUpdated30d: "Last 30 days",
+  webFilterUpdated365d: "Last 1 year",
+  webFilterApplyBtn: "Apply filters",
+  webFilterResetBtn: "Reset",
+  webFilterLoadingSchema: "Detecting site filters...",
+  webFilterActiveCount: (n: number) => `${n} active`,
+  webFilterMoreTags: (n: number) => `+${n} more tags`,
+  webFilterShowLessTags: "Show fewer",
+  sourcesFilterThisSiteBtn: "Filter",
+  browseJumpPagePlaceholder: "Page...",
+  browseJumpGoBtn: "Go",
 
   sortByLabel: "Sort",
   sortDateAdded: "Date added",
@@ -3934,7 +3975,6 @@ const V7_VI: V7Dictionary = {
   sourcesSearchPlaceholder: "Nhập tên truyện để tìm đa nguồn hoặc dán link...",
   sourcesSearchBtn: "Tìm kiếm",
   sourcesAddBtn: "Thêm nguồn",
-  sourcesRulesBtn: "Rule JSON",
   sourcesFilterPlaceholder: "Lọc nguồn đã lưu...",
   sourcesEmptyTitle: "Chưa có nguồn nào được lưu",
   sourcesEmptyDesc: "Hãy thêm link trang truyện hoặc mở bất kỳ link truyện/danh mục nào để tự lưu nguồn.",
@@ -3964,15 +4004,35 @@ const V7_VI: V7Dictionary = {
   sourcesMovedToast: "Đã thay đổi vị trí hiển thị nguồn.",
   sourcesResultsHeading: (query: string, count: number) => `Kết quả "${query}" · ${count} truyện`,
   sourcesClearSearchBtn: "Quay lại danh sách nguồn",
-  sourcesRulesModalTitle: "Gói quy tắc tùy chỉnh (JSON)",
-  sourcesRulesModalDesc:
-    "Nhập quy tắc CSS Selector dạng JSON để đọc và tìm kiếm cục bộ trên trang web tùy chỉnh.",
-  sourcesRulesImportPlaceholder: "Dán 1 object hoặc mảng JSON [...] rule vào đây...",
-  sourcesRulesImportBtn: "Nhập JSON",
-  sourcesRulesExportBtn: "Sao chép tất cả JSON",
-  sourcesRulesEmpty: "Chưa có rule JSON nào được nhập.",
-  sourcesRulesImportedToast: (count: number) => `Đã nhập ${count} gói rule JSON.`,
-  sourcesRulesExportedToast: "Đã sao chép toàn bộ rule JSON.",
+
+  cbzDropTitle: "Nhập file truyện .cbz cục bộ",
+  cbzDropSubtitle: "Kéo thả file .cbz vào đây hoặc chọn thủ công — lưu offline trong RtMaga (không tự quét máy).",
+  cbzPickBtn: "Chọn file .cbz",
+  cbzImporting: "Đang nhập .cbz...",
+  cbzImportedToast: (title: string, chapters: number) => `Đã nhập "${title}" (${chapters} chương).`,
+  cbzAddChaptersBtn: "Thêm chương .cbz",
+  cbzLocalBadge: "CBZ nội bộ",
+
+  webFilterTitle: "Bộ lọc theo web",
+  webFilterTagsLabel: "Thể loại / Tag",
+  webFilterTagSearchPlaceholder: "Tìm nhanh tag...",
+  webFilterTagHint: "Bấm 1: Chọn (✓) · Bấm 2: Loại trừ (✕) · Bấm 3: Bỏ chọn",
+  webFilterMinChaptersLabel: "Số chương tối thiểu",
+  webFilterAnyOption: "Tất cả",
+  webFilterUpdatedLabel: "Ngày cập nhật",
+  webFilterUpdated24h: "24 giờ qua",
+  webFilterUpdated7d: "7 ngày qua",
+  webFilterUpdated30d: "30 ngày qua",
+  webFilterUpdated365d: "1 năm qua",
+  webFilterApplyBtn: "Áp dụng lọc",
+  webFilterResetBtn: "Đặt lại",
+  webFilterLoadingSchema: "Đang đọc bộ lọc từ web...",
+  webFilterActiveCount: (n: number) => `Đang lọc ${n}`,
+  webFilterMoreTags: (n: number) => `+${n} tag nữa`,
+  webFilterShowLessTags: "Thu gọn",
+  sourcesFilterThisSiteBtn: "Lọc tag",
+  browseJumpPagePlaceholder: "Trang...",
+  browseJumpGoBtn: "Đi",
 
   sortByLabel: "Sắp xếp",
   sortDateAdded: "Ngày thêm vào",

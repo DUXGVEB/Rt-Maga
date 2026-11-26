@@ -1,6 +1,6 @@
-//! SQLite repository operations for `saved_source` and `source_rule_spec`.
+//! SQLite repository operations for `saved_source` and `site_filter_cache`.
 
-use mangacore::CustomRuleSpec;
+use mangacore::{SiteFilterSchema, merge_filter_schemas};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
@@ -66,18 +66,7 @@ pub(crate) struct SavedSourceRow {
     pub manual_visibility: i64,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-/// Persisted record in `source_rule_spec`.
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct RuleSpecRow {
-    pub rule_id: String,
-    pub name: String,
-    pub version: i64,
-    pub raw_json: String,
-    pub origin: String,
-    pub is_enabled: i64,
-    pub updated_at: i64,
+    pub filter_schema_json: Option<String>,
 }
 
 /// Input payload for upserting a discovered or manually added source.
@@ -93,6 +82,7 @@ pub(crate) struct UpsertSavedSource<'a> {
     pub detected_adult: bool,
     pub placement: SourcePlacement,
     pub prefer_new_name: bool,
+    pub filter_schema: Option<&'a SiteFilterSchema>,
 }
 
 /// Input patch payload for updating an existing [`SavedSourceRow`].
@@ -197,8 +187,8 @@ impl Database {
         Ok(None)
     }
 
-    /// Inserts or updates a saved source record while respecting user-pinned visibility (`manual_visibility`)
-    /// and user-customized mirror domains (`base_url`).
+    /// Inserts or updates a saved source record while respecting user-pinned visibility (`manual_visibility`),
+    /// user-customized mirror domains (`base_url`), and cumulative dynamic [`SiteFilterSchema`] discovery.
     ///
     /// # Errors
     ///
@@ -258,6 +248,9 @@ impl Database {
         let next_search = input.search_template.or(prev.search_template.as_deref());
         let next_icon = input.icon_url.or(prev.icon_url.as_deref());
 
+        let merged_schema_json =
+            merge_optional_schema_json(prev.filter_schema_json.as_deref(), input.filter_schema);
+
         sqlx::query(
             "UPDATE saved_source
              SET display_name = ?,
@@ -268,6 +261,7 @@ impl Database {
                  icon_url = ?,
                  is_supplemental = ?,
                  manual_visibility = ?,
+                 filter_schema_json = COALESCE(?, filter_schema_json),
                  updated_at = ?
              WHERE id = ?",
         )
@@ -279,6 +273,7 @@ impl Database {
         .bind(next_icon)
         .bind(next_supp)
         .bind(next_manual)
+        .bind(merged_schema_json.as_deref())
         .bind(now)
         .bind(prev.id)
         .execute(&mut **tx)
@@ -302,12 +297,17 @@ impl Database {
             SourcePlacement::ForceSupplemental => (1_i64, 1_i64),
             SourcePlacement::Auto => (i64::from(input.detected_adult), 0_i64),
         };
+        let schema_json = input
+            .filter_schema
+            .filter(|s| !s.tags.is_empty() || !s.extra_axes.is_empty())
+            .and_then(|s| serde_json::to_string(s).ok());
+
         let res = sqlx::query(
             "INSERT INTO saved_source
                 (source_key, display_name, base_url, source_kind, parser_ref,
                  search_template, icon_url, is_enabled, is_supplemental, manual_visibility,
-                 created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                 filter_schema_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
         )
         .bind(input.source_key)
         .bind(input.display_name.trim())
@@ -318,6 +318,7 @@ impl Database {
         .bind(input.icon_url)
         .bind(is_supp)
         .bind(manual_vis)
+        .bind(schema_json.as_deref())
         .bind(now)
         .bind(now)
         .execute(&mut **tx)
@@ -407,115 +408,118 @@ impl Database {
         Ok(())
     }
 
-    /// Lists all custom JSON rule specifications ordered by update time.
+    /// Merges newly discovered tags/filter axes into `saved_source.filter_schema_json`.
     ///
     /// # Errors
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
-    pub(crate) async fn list_rule_specs(&self) -> Result<Vec<RuleSpecRow>, AppError> {
-        let rows = sqlx::query_as::<_, RuleSpecRow>(
-            "SELECT * FROM source_rule_spec ORDER BY updated_at DESC, name ASC",
-        )
-        .fetch_all(self.pool())
-        .await?;
-        Ok(rows)
-    }
-
-    /// Parses and returns all currently enabled [`CustomRuleSpec`] entries.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::Db`] on SQLite failure.
-    pub(crate) async fn list_enabled_custom_rules(&self) -> Result<Vec<CustomRuleSpec>, AppError> {
-        let rows = sqlx::query_as::<_, (String,)>(
-            "SELECT raw_json FROM source_rule_spec WHERE is_enabled = 1 ORDER BY updated_at DESC",
-        )
-        .fetch_all(self.pool())
-        .await?;
-
-        let mut out = Vec::with_capacity(rows.len());
-        for (raw,) in rows {
-            if let Ok(spec) = serde_json::from_str::<CustomRuleSpec>(&raw) {
-                out.push(spec);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Inserts or updates a validated declarative JSON rule pack.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::Db`] on SQLite failure.
-    pub(crate) async fn upsert_rule_spec(
+    pub(crate) async fn merge_saved_source_filter_schema(
         &self,
-        spec: &CustomRuleSpec,
-        raw_json: &str,
-        origin: &str,
-    ) -> Result<RuleSpecRow, AppError> {
-        let now = now_unix_secs();
-        let ver = i64::from(spec.version);
-        sqlx::query(
-            "INSERT INTO source_rule_spec (rule_id, name, version, raw_json, origin, is_enabled, updated_at)
-             VALUES (?, ?, ?, ?, ?, 1, ?)
-             ON CONFLICT(rule_id) DO UPDATE SET
-                name = excluded.name,
-                version = excluded.version,
-                raw_json = excluded.raw_json,
-                origin = excluded.origin,
-                updated_at = excluded.updated_at",
-        )
-        .bind(&spec.id)
-        .bind(&spec.name)
-        .bind(ver)
-        .bind(raw_json)
-        .bind(origin)
-        .bind(now)
-        .execute(self.pool())
-        .await?;
-
-        sqlx::query_as::<_, RuleSpecRow>("SELECT * FROM source_rule_spec WHERE rule_id = ?")
-            .bind(&spec.id)
-            .fetch_one(self.pool())
-            .await
-            .map_err(AppError::from)
-    }
-
-    /// Enables or disables a custom JSON rule pack.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError::Db`] on SQLite failure.
-    #[expect(
-        clippy::fn_params_excessive_bools,
-        reason = "boolean enable/disable toggle matching SQLite column"
-    )]
-    pub(crate) async fn set_rule_spec_enabled(
-        &self,
-        rule_id: &str,
-        enabled: bool,
-    ) -> Result<(), AppError> {
-        sqlx::query("UPDATE source_rule_spec SET is_enabled = ?, updated_at = ? WHERE rule_id = ?")
-            .bind(i64::from(enabled))
+        id: i64,
+        incoming: &SiteFilterSchema,
+    ) -> Result<SiteFilterSchema, AppError> {
+        let prev = self.get_saved_source_by_id(id).await?;
+        let existing_schema = prev
+            .as_ref()
+            .and_then(|r| r.filter_schema_json.as_deref())
+            .and_then(|raw| serde_json::from_str::<SiteFilterSchema>(raw).ok())
+            .unwrap_or_default();
+        let merged = merge_filter_schemas(Some(&existing_schema), incoming.clone());
+        if (!merged.tags.is_empty() || !merged.extra_axes.is_empty())
+            && let Ok(json) = serde_json::to_string(&merged)
+        {
+            sqlx::query(
+                "UPDATE saved_source SET filter_schema_json = ?, updated_at = ? WHERE id = ?",
+            )
+            .bind(&json)
             .bind(now_unix_secs())
-            .bind(rule_id)
+            .bind(id)
             .execute(self.pool())
             .await?;
-        Ok(())
+        }
+        Ok(merged)
     }
 
-    /// Deletes a custom JSON rule pack by ID.
+    /// Loads cached dynamic [`SiteFilterSchema`] for an arbitrary normalized hostname (`site_filter_cache`).
     ///
     /// # Errors
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
-    pub(crate) async fn delete_rule_spec(&self, rule_id: &str) -> Result<(), AppError> {
-        sqlx::query("DELETE FROM source_rule_spec WHERE rule_id = ?")
-            .bind(rule_id)
+    pub(crate) async fn get_host_filter_schema(
+        &self,
+        host: &str,
+    ) -> Result<Option<SiteFilterSchema>, AppError> {
+        let bare = normalize_host_key(host);
+        if bare.is_empty() {
+            return Ok(None);
+        }
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT schema_json FROM site_filter_cache WHERE host = ? LIMIT 1")
+                .bind(&bare)
+                .fetch_optional(self.pool())
+                .await?;
+        Ok(row.and_then(|(raw,)| serde_json::from_str::<SiteFilterSchema>(&raw).ok()))
+    }
+
+    /// Merges and persists dynamic [`SiteFilterSchema`] for `host` in `site_filter_cache`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn merge_host_filter_schema(
+        &self,
+        host: &str,
+        incoming: &SiteFilterSchema,
+    ) -> Result<SiteFilterSchema, AppError> {
+        let bare = normalize_host_key(host);
+        if bare.is_empty() {
+            return Ok(incoming.clone());
+        }
+        let existing = self
+            .get_host_filter_schema(&bare)
+            .await?
+            .unwrap_or_default();
+        let merged = merge_filter_schemas(Some(&existing), incoming.clone());
+        if (!merged.tags.is_empty() || !merged.extra_axes.is_empty())
+            && let Ok(json) = serde_json::to_string(&merged)
+        {
+            sqlx::query(
+                "INSERT INTO site_filter_cache (host, schema_json, updated_at)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(host) DO UPDATE SET
+                    schema_json = excluded.schema_json,
+                    updated_at = excluded.updated_at",
+            )
+            .bind(&bare)
+            .bind(&json)
+            .bind(now_unix_secs())
             .execute(self.pool())
             .await?;
-        Ok(())
+        }
+        Ok(merged)
     }
+}
+
+fn normalize_host_key(host: &str) -> String {
+    host.trim()
+        .trim_start_matches("www.")
+        .trim_start_matches("m.")
+        .to_ascii_lowercase()
+}
+
+fn merge_optional_schema_json(
+    existing_json: Option<&str>,
+    incoming: Option<&SiteFilterSchema>,
+) -> Option<String> {
+    let inc = incoming?;
+    if inc.tags.is_empty() && inc.extra_axes.is_empty() {
+        return None;
+    }
+    let existing = existing_json
+        .and_then(|raw| serde_json::from_str::<SiteFilterSchema>(raw).ok())
+        .unwrap_or_default();
+    let merged = merge_filter_schemas(Some(&existing), inc.clone());
+    serde_json::to_string(&merged).ok()
 }
 
 #[expect(

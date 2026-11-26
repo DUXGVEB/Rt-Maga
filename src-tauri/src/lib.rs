@@ -139,12 +139,14 @@ pub fn run() {
             commands::update_saved_source,
             commands::delete_saved_source,
             commands::browse_saved_source,
+            commands::browse_catalog_url,
+            commands::get_web_filter_schema,
             commands::search_saved_sources,
-            commands::list_rule_specs,
-            commands::import_rule_specs_json,
-            commands::export_rule_specs_json,
-            commands::set_rule_spec_enabled,
-            commands::delete_rule_spec,
+            commands::pick_and_import_cbz,
+            commands::import_cbz_paths,
+            commands::begin_cbz_upload,
+            commands::append_cbz_chunk,
+            commands::finish_cbz_upload,
             commands::build_feedback_report,
             commands::save_feedback_report_file,
         ]);
@@ -175,8 +177,10 @@ fn handle_run_event(handle: &tauri::AppHandle, event: &tauri::RunEvent) {
     {
         let images = state.images.clone();
         let chapters = state.chapters.clone();
+        let catalogs = state.catalogs.clone();
         let _ = tauri::async_runtime::block_on(async move {
             chapters.invalidate_all();
+            catalogs.invalidate_all();
             images.clear_all_chapter_pages().await
         });
     }
@@ -189,18 +193,22 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let crash_file = data_dir.join("crash_last.txt");
     install_panic_hook(crash_file.clone());
 
-    let app_state =
-        match tauri::async_runtime::block_on(init_app_state(&db_path, cache_dir, &crash_file)) {
-            Ok(state) => state,
-            Err(err) => {
-                let report = format!("startup initialization failed: {err}");
-                if let Some(parent) = crash_file.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&crash_file, repo::diagnostics::redact_sensitive(&report));
-                return Err(Box::new(err));
+    let app_state = match tauri::async_runtime::block_on(init_app_state(
+        data_dir,
+        &db_path,
+        cache_dir,
+        &crash_file,
+    )) {
+        Ok(state) => state,
+        Err(err) => {
+            let report = format!("startup initialization failed: {err}");
+            if let Some(parent) = crash_file.parent() {
+                let _ = std::fs::create_dir_all(parent);
             }
-        };
+            let _ = std::fs::write(&crash_file, repo::diagnostics::redact_sensitive(&report));
+            return Err(Box::new(err));
+        }
+    };
 
     let handle = app.handle().clone();
     let handle_for_release = app.handle().clone();
@@ -231,6 +239,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn init_app_state(
+    data_dir: std::path::PathBuf,
     db_path: &std::path::Path,
     cache_dir: std::path::PathBuf,
     crash_file: &std::path::Path,
@@ -279,7 +288,9 @@ async fn init_app_state(
         _ => {}
     }
 
-    Ok(AppState::new(db, registry, images, settings, proxy_key))
+    Ok(AppState::new(
+        data_dir, db, registry, images, settings, proxy_key,
+    ))
 }
 
 #[cfg(all(target_os = "windows", not(test)))]

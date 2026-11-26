@@ -16,8 +16,7 @@ use crate::extract::{
 };
 use crate::http::HttpClient;
 use crate::model::{
-    CatalogEntry, CatalogPage, Chapter, ChapterRef, Manga, NavLink, PaginationInfo, Resolved,
-    SiteId,
+    CatalogEntry, CatalogPage, Chapter, ChapterRef, Manga, NavLink, Resolved, SiteId,
 };
 use crate::parse::chapters::{extract_chapter_number, extract_chapters, format_chapter_num};
 use crate::parse::classify::{PageKind, classify_page};
@@ -177,6 +176,10 @@ impl GenericSource {
     /// # Errors
     ///
     /// Returns [`ScrapeError::NotRecognized`] when too few validated catalog cards are present.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "generic heuristic catalog extractor scanning cards, categories, pagination, and filter schema"
+    )]
     pub fn parse_catalog_html(
         html: &str,
         page_url: &Url,
@@ -252,8 +255,10 @@ impl GenericSource {
                 status: None,
                 genres: Vec::new(),
                 source_id: None,
+                chapter_count: None,
+                updated_at: None,
             });
-            if entries.len() >= 60 {
+            if entries.len() >= 120 {
                 break;
             }
         }
@@ -269,6 +274,13 @@ impl GenericSource {
         let title = extract_title(&doc).unwrap_or_else(|| site_name.clone());
         let search_url_template = discover_search_template(&doc, &base);
         let categories = discover_category_links(&doc, &base, &host);
+        let pagination = crate::parse::pagination::extract_universal_pagination(
+            &doc,
+            &base,
+            page_url,
+            !entries.is_empty(),
+        );
+        let filter_schema = crate::parse::filters::extract_generic_filter_schema(&doc, &base, None);
         Ok(CatalogPage {
             url: page_url.clone(),
             site: SiteId::generic(host),
@@ -279,12 +291,8 @@ impl GenericSource {
             search_url_template,
             entries,
             categories,
-            pagination: PaginationInfo {
-                current_page: 1,
-                total_pages: None,
-                prev_url: None,
-                next_url: None,
-            },
+            pagination,
+            filter_schema,
         })
     }
 
@@ -500,10 +508,16 @@ fn discover_category_links(doc: &Html, base: &Url, host: &str) -> Vec<NavLink> {
             "/genre/",
             "/genres/",
             "/the-loai/",
+            "/manga-genre/",
             "/tag/",
+            "/tags/",
             "/category/",
+            "/danh-muc/",
             "/latest",
             "/popular",
+            "/completed",
+            "/hoan-thanh",
+            "/moi-cap-nhat",
         ]
         .iter()
         .any(|p| path_low.contains(p))
@@ -520,7 +534,7 @@ fn discover_category_links(doc: &Html, base: &Url, host: &str) -> Vec<NavLink> {
                 url: u,
                 kind: UrlKind::CatalogPage,
             });
-            if out.len() >= 18 {
+            if out.len() >= 96 {
                 break;
             }
         }

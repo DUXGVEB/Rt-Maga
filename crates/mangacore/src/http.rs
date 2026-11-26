@@ -447,7 +447,8 @@ struct HttpClientInner {
     session_domains: DashMap<String, usize>,
     user_agent: String,
     timeout: Duration,
-    host_semaphores: DashMap<String, Arc<Semaphore>>,
+    nav_semaphores: DashMap<String, Arc<Semaphore>>,
+    img_semaphores: DashMap<String, Arc<Semaphore>>,
     host_cooldowns: DashMap<String, Instant>,
     max_conn_per_host: AtomicUsize,
     proxy_config: RwLock<ProxyConfig>,
@@ -499,7 +500,8 @@ impl HttpClient {
                 session_domains: DashMap::new(),
                 user_agent: policy.user_agent,
                 timeout: policy.timeout,
-                host_semaphores: DashMap::new(),
+                nav_semaphores: DashMap::new(),
+                img_semaphores: DashMap::new(),
                 host_cooldowns: DashMap::new(),
                 max_conn_per_host: AtomicUsize::new(policy.max_conn_per_host.max(1)),
                 proxy_config: RwLock::new(policy.proxy.sanitized()),
@@ -593,7 +595,8 @@ impl HttpClient {
         let clamped = max_conn.clamp(1, 16);
         let prev = self.inner.max_conn_per_host.swap(clamped, Ordering::AcqRel);
         if prev != clamped {
-            self.inner.host_semaphores.clear();
+            self.inner.nav_semaphores.clear();
+            self.inner.img_semaphores.clear();
         }
     }
 
@@ -936,10 +939,8 @@ impl HttpClient {
         referer: Option<&Url>,
     ) -> Result<FetchedBytes, ScrapeError> {
         validate_public_http_url(url)?;
-        let _permit = self.acquire_host_permit(url).await;
+        let _permit = self.acquire_img_permit(url).await;
         let ctx = self.fetch_ctx();
-
-        // Match explicit per-source rule on image URL first, then explicit rule on referer domain
         // (so CDN images inherit their manga source's ForceProxy / CustomProxy / ForceDirect rule),
         // before falling back to global mode.
         let route = self.proxy_config().resolve_for_image(url, referer);
@@ -1004,7 +1005,7 @@ impl HttpClient {
         let limit = self.inner.max_conn_per_host.load(Ordering::Acquire).max(1);
         let sem = Arc::clone(
             self.inner
-                .host_semaphores
+                .nav_semaphores
                 .entry(host)
                 .or_insert_with(|| Arc::new(Semaphore::new(limit)))
                 .value(),
@@ -1012,7 +1013,31 @@ impl HttpClient {
         let permit = sem
             .acquire_owned()
             .await
-            .expect("host semaphore is never closed");
+            .expect("host navigation semaphore is never closed");
+        wait_for_host_cooldown(&self.inner.host_cooldowns, url).await;
+        permit
+    }
+
+    async fn acquire_img_permit(&self, url: &Url) -> tokio::sync::OwnedSemaphorePermit {
+        wait_for_host_cooldown(&self.inner.host_cooldowns, url).await;
+        let host = url.host_str().unwrap_or("default").to_ascii_lowercase();
+        let base_limit = self.inner.max_conn_per_host.load(Ordering::Acquire).max(1);
+        let img_limit = if base_limit >= 4 {
+            (base_limit.saturating_mul(2)).min(10)
+        } else {
+            base_limit
+        };
+        let sem = Arc::clone(
+            self.inner
+                .img_semaphores
+                .entry(host)
+                .or_insert_with(|| Arc::new(Semaphore::new(img_limit)))
+                .value(),
+        );
+        let permit = sem
+            .acquire_owned()
+            .await
+            .expect("host image semaphore is never closed");
         wait_for_host_cooldown(&self.inner.host_cooldowns, url).await;
         permit
     }
@@ -1163,6 +1188,8 @@ fn build_reqwest_client(
     let mut builder = Client::builder()
         .user_agent(user_agent)
         .default_headers(headers)
+        .tcp_nodelay(true)
+        .pool_idle_timeout(Duration::from_secs(90))
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 10 {

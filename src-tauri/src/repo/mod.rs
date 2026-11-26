@@ -1313,6 +1313,7 @@ mod tests {
                 detected_adult: false,
                 placement: SourcePlacement::Auto,
                 prefer_new_name: false,
+                filter_schema: None,
             })
             .await
             .unwrap();
@@ -1329,6 +1330,7 @@ mod tests {
                 detected_adult: true,
                 placement: SourcePlacement::Auto,
                 prefer_new_name: false,
+                filter_schema: None,
             })
             .await
             .unwrap();
@@ -1376,6 +1378,7 @@ mod tests {
                 detected_adult: true,
                 placement: SourcePlacement::Auto,
                 prefer_new_name: false,
+                filter_schema: None,
             })
             .await
             .unwrap();

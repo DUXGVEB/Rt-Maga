@@ -16,6 +16,10 @@ class LibraryCacheStore {
     this.historyLoaded = true;
   }
 
+  invalidate() {
+    this.historyLoaded = false;
+  }
+
   removeHistoryItem(mangaId: number) {
     this.history = this.history.filter((i) => i.mangaId !== mangaId);
   }

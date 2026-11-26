@@ -20,6 +20,7 @@
   import { toasts } from "../stores/toast.svelte";
   import { updatesStore } from "../stores/updates.svelte";
   import type { SyncDecision, SyncStatusView } from "../types";
+  import LatticeLoader from "./LatticeLoader.svelte";
 
   const s = $derived(settingsStore.value);
   const t = $derived(settingsStore.t);
@@ -461,10 +462,12 @@
       style="border-color: var(--border); background-color: var(--surface-subtle);"
     >
       <div class="flex items-center gap-2.5 text-xs">
-        <Loader2 size={16} class="animate-spin" style="color: var(--accent);" />
-        <span>
-          {status.phase === "transferring" ? t.syncTransferring : t.syncWaitingOtherConfirm}
-        </span>
+        <LatticeLoader
+          size="sm"
+          label={status.phase === "transferring" ? t.syncTransferring : t.syncWaitingOtherConfirm}
+          showTimer
+          inline
+        />
       </div>
       <button
         type="button"
@@ -519,8 +522,7 @@
     >
       <div class="flex w-full flex-wrap items-center justify-between gap-2 text-xs">
         <span class="inline-flex items-center gap-1.5 font-medium">
-          <Loader2 size={13} class="animate-spin" style="color: var(--accent);" />
-          <span>{t.syncWaitingPeer}</span>
+          <LatticeLoader size="xs" label={t.syncWaitingPeer} inline />
         </span>
         <span class="inline-flex items-center gap-1 font-mono font-semibold" style="color: var(--accent);">
           <Clock size={12} />

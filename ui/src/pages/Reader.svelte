@@ -11,7 +11,6 @@
     ChevronUp,
     ExternalLink,
     List,
-    Loader2,
     Maximize,
     Minimize,
     RotateCcw,
@@ -24,8 +23,10 @@
   import { flushSync, tick, untrack } from "svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
   import FloatingControls from "../lib/components/FloatingControls.svelte";
+  import LatticeLoader from "../lib/components/LatticeLoader.svelte";
   import PageImage from "../lib/components/PageImage.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
+  import SquishSwitch from "../lib/components/SquishSwitch.svelte";
   import {
     clampZoomPan,
     computeAnchoredZoom,
@@ -2931,16 +2932,15 @@
 
               <div class="flex items-center justify-between gap-2">
                 <span class="font-medium">{t.horizontalNoGapLabel}</span>
-                <input
-                  type="checkbox"
+                <SquishSwitch
+                  size="sm"
                   checked={hCfg.noGapMode}
-                  onchange={(e) => {
-                    const checked = e.currentTarget.checked;
+                  ariaLabel={t.horizontalNoGapLabel}
+                  onchange={(checked) => {
                     updateMangaReaderSettings((r) => {
                       r.horizontal.noGapMode = checked;
                     });
                   }}
-                  class="h-4 w-4"
                 />
               </div>
             {:else}
@@ -2956,11 +2956,11 @@
                     </span>
                   {/if}
                 </div>
-                <input
-                  type="checkbox"
+                <SquishSwitch
+                  size="sm"
                   checked={effectiveNoGap}
+                  ariaLabel={t.noGapModeLabel}
                   onchange={toggleNoGap}
-                  class="h-4 w-4"
                 />
               </div>
 
@@ -2983,11 +2983,11 @@
 
               <div class="flex items-center justify-between">
                 <span class="font-medium">{t.autoAppendNext}</span>
-                <input
-                  type="checkbox"
+                <SquishSwitch
+                  size="sm"
                   checked={readerSettings.autoNextChapter}
+                  ariaLabel={t.autoAppendNext}
                   onchange={toggleAutoNext}
-                  class="h-4 w-4"
                 />
               </div>
             {/if}
@@ -3050,11 +3050,11 @@
             <div class="flex flex-col gap-1.5">
               <div class="flex items-center justify-between">
                 <span class="font-medium">{t.dimUnfocusedLabel}</span>
-                <input
-                  type="checkbox"
+                <SquishSwitch
+                  size="sm"
                   checked={isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
+                  ariaLabel={t.dimUnfocusedLabel}
                   onchange={toggleDim}
-                  class="h-4 w-4"
                 />
               </div>
               {#if isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
@@ -3105,31 +3105,29 @@
           >
             <div class="flex items-center justify-between">
               <span class="font-medium">{t.keepScreenOnLabel}</span>
-              <input
-                type="checkbox"
+              <SquishSwitch
+                size="sm"
                 checked={behavior.keepScreenOn}
-                onchange={(e) => {
-                  const checked = e.currentTarget.checked;
+                ariaLabel={t.keepScreenOnLabel}
+                onchange={(checked) => {
                   updateMangaReaderSettings((r) => {
                     r.behavior.keepScreenOn = checked;
                   });
                 }}
-                class="h-4 w-4"
               />
             </div>
 
             <div class="flex items-center justify-between">
               <span class="font-medium">{t.skipBrokenImagesLabel}</span>
-              <input
-                type="checkbox"
+              <SquishSwitch
+                size="sm"
                 checked={behavior.skipBrokenImages}
-                onchange={(e) => {
-                  const checked = e.currentTarget.checked;
+                ariaLabel={t.skipBrokenImagesLabel}
+                onchange={(checked) => {
                   updateMangaReaderSettings((r) => {
                     r.behavior.skipBrokenImages = checked;
                   });
                 }}
-                class="h-4 w-4"
               />
             </div>
 
@@ -3208,14 +3206,13 @@
 
         <div class="flex shrink-0 items-center justify-between">
           <span class="font-medium">{t.buttonVisibilityLabel}</span>
-          <input
-            type="checkbox"
+          <SquishSwitch
+            size="sm"
             checked={settingsStore.value.floating.showOrientationLock}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
+            ariaLabel={t.buttonVisibilityLabel}
+            onchange={(checked) => {
               settingsStore.update((d) => (d.floating.showOrientationLock = checked));
             }}
-            class="h-4 w-4"
           />
         </div>
 
@@ -3318,14 +3315,13 @@
 
         <div class="flex shrink-0 items-center justify-between">
           <span class="font-medium">{t.floatingAutoDimLabel}</span>
-          <input
-            type="checkbox"
+          <SquishSwitch
+            size="sm"
             checked={settingsStore.value.floating.autoDimInReader}
-            onchange={(e) => {
-              const checked = e.currentTarget.checked;
+            ariaLabel={t.floatingAutoDimLabel}
+            onchange={(checked) => {
               settingsStore.update((d) => (d.floating.autoDimInReader = checked));
             }}
-            class="h-4 w-4"
           />
         </div>
       {/if}
@@ -3377,8 +3373,7 @@
         class="flex h-full w-full flex-col items-center justify-center gap-3 text-sm"
         style="color: var(--text-muted);"
       >
-        <Loader2 size={28} class="animate-spin" style="color: var(--accent);" />
-        <span>{t.loadingPages}</span>
+        <LatticeLoader size="lg" label={t.loadingPages} showTimer />
       </div>
     {:else if errorState}
       <div class="flex h-full w-full flex-col items-center justify-center gap-4 px-4 py-6">
@@ -3748,8 +3743,7 @@
         >
           {#if appendingNext}
             <div class="flex items-center gap-2 text-xs" style="color: var(--text-muted);">
-              <Loader2 size={16} class="animate-spin" style="color: var(--accent);" />
-              <span>{t.loadingNextChapter}</span>
+              <LatticeLoader size="sm" label={t.loadingNextChapter} inline />
             </div>
           {:else if lastChapter?.next}
             <button

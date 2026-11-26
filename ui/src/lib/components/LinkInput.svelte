@@ -3,7 +3,6 @@
     ArrowRight,
     ClipboardPaste,
     Link2,
-    Loader2,
     X,
   } from "lucide-svelte";
   import { api, formatAppError } from "../api";
@@ -11,6 +10,7 @@
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
   import type { FormattedAppError } from "../types";
+  import LatticeLoader from "./LatticeLoader.svelte";
   import SourceDiagnosticCard from "./SourceDiagnosticCard.svelte";
 
   let urlInput = $state("");
@@ -53,7 +53,7 @@
       const res = await api.resolveUrl(target);
       urlInput = "";
       if (res.kind === "catalog" && res.catalog) {
-        router.goBrowse(res.catalog.url, res.catalog);
+        router.goBrowse(res.catalog.url, res.catalog, false, res.catalog.sourceId ?? undefined);
       } else if (res.manga) {
         if (res.startAt) {
           router.goReader(res.manga.id, res.startAt.url);
@@ -264,8 +264,7 @@
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         {#if loading}
-          <Loader2 size={16} class="animate-spin" />
-          <span>{t.fetching}</span>
+          <LatticeLoader size="xs" tone="inherit" label={t.fetching} showTimer inline />
         {:else}
           <span>{t.open}</span>
           <ArrowRight size={15} />

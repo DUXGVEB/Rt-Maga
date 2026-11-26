@@ -7,7 +7,6 @@ use crate::cms::{CmsKind, browse_or_search_cms, fetch_madara_chapters_ajax};
 use crate::error::ScrapeError;
 use crate::http::{HttpClient, normalize_url};
 use crate::model::Resolved;
-use crate::rule_pack::{CustomRuleSpec, execute_rule_manga};
 use crate::source::generic::GenericSource;
 
 /// Classification of any user-entered search box or deep-link string.
@@ -18,7 +17,7 @@ pub enum UserQueryKind {
     AppDeepLink {
         /// Optional local SQLite manga primary key.
         manga_id: Option<i64>,
-        /// Optional saved source key (`custom_...`).
+        /// Optional saved source key.
         source_key: Option<String>,
         /// Optional target manga/chapter URL inside the source.
         url: Option<String>,
@@ -120,15 +119,11 @@ pub fn within_edit_ratio(a: &str, b: &str, max_ratio: f32) -> bool {
 /// - **Phase 1**: Searches by `title_hint` (if provided) and prefers exact relative path match,
 ///   then closest title match within 20% Levenshtein distance.
 /// - **Phase 2**: Falls back to direct seed resolution against the rewritten mirror URL,
-///   using rule pack / CMS / Madara AJAX / generic extraction.
+///   using CMS / Madara AJAX / generic extraction.
 ///
 /// # Errors
 ///
 /// Returns [`ScrapeError`] if both phases fail to resolve a manga or chapter.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "orchestrates saved source mirror override and two-phase resolution"
-)]
 pub async fn resolve_exact_from_source(
     http: &HttpClient,
     kind: CmsKind,
@@ -137,12 +132,10 @@ pub async fn resolve_exact_from_source(
     search_template: Option<&str>,
     target_url: &Url,
     title_hint: Option<&str>,
-    custom_rules: &[CustomRuleSpec],
 ) -> Result<Resolved, ScrapeError> {
     let overridden_target = rewrite_domain_override(target_url, mirror_base);
     let target_rel = relative_path_key(&overridden_target);
 
-    // Phase 1: Title search + path/Levenshtein match
     if let Some(title) = title_hint.map(str::trim).filter(|t| !t.is_empty())
         && let Ok(catalog) = browse_or_search_cms(
             http,
@@ -152,7 +145,6 @@ pub async fn resolve_exact_from_source(
             search_template,
             Some(title),
             1,
-            custom_rules,
         )
         .await
     {
@@ -168,9 +160,7 @@ pub async fn resolve_exact_from_source(
             && let Ok(res) = resolve_seed_url(
                 http,
                 kind,
-                parser_ref,
                 &rewrite_domain_override(&matched.url, mirror_base),
-                custom_rules,
             )
             .await
         {
@@ -178,26 +168,14 @@ pub async fn resolve_exact_from_source(
         }
     }
 
-    // Phase 2: Direct seed resolution on mirror URL
-    resolve_seed_url(http, kind, parser_ref, &overridden_target, custom_rules).await
+    resolve_seed_url(http, kind, &overridden_target).await
 }
 
 async fn resolve_seed_url(
     http: &HttpClient,
     kind: CmsKind,
-    parser_ref: Option<&str>,
     url: &Url,
-    custom_rules: &[CustomRuleSpec],
 ) -> Result<Resolved, ScrapeError> {
-    if kind == CmsKind::CustomRule
-        && let Some(rule_id) = parser_ref
-        && let Some(spec) = custom_rules.iter().find(|r| r.id == rule_id)
-        && let Ok(manga) = execute_rule_manga(http, url, spec).await
-        && !manga.chapters.is_empty()
-    {
-        return Ok(Resolved::Manga(Box::new(manga)));
-    }
-
     let page = http.fetch_html(url).await?;
     match GenericSource::resolve_html(http, &page.html, &page.final_url).await {
         Ok(mut resolved) => {

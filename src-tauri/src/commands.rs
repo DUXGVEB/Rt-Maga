@@ -1,10 +1,11 @@
 //! Thin Tauri IPC command handlers delegating to [`crate::services`].
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use mangacore::{
-    DohConfig, DohTestResult, NetworkProviderInfo, ProxyEndpoint, ProxyTestResult,
-    network_provider_catalog, test_doh_config,
+    CatalogFilterQuery, DohConfig, DohTestResult, NetworkProviderInfo, ProxyEndpoint,
+    ProxyTestResult, SiteFilterSchema, network_provider_catalog, test_doh_config,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -27,10 +28,10 @@ use crate::services::library::{
     NotificationItemView, ResolveResponse,
 };
 use crate::services::reader::{ChapterLoadPriority, ChapterView};
-use crate::services::sources::{MultiSourceSearchResponse, RuleSpecView, SavedSourceView};
+use crate::services::sources::{MultiSourceSearchResponse, SavedSourceView};
 use crate::services::sync::{SyncDecision, SyncSenderMode, SyncStatusView};
 use crate::services::updater::{CheckScope, UpdateSummary};
-use crate::services::{app_release, library, reader, sources, sync, updater};
+use crate::services::{app_release, cbz, library, reader, sources, sync, updater};
 use crate::settings::{ReaderSettings, Settings, SettingsSection};
 use crate::state::AppState;
 
@@ -985,15 +986,56 @@ pub(crate) async fn delete_saved_source(
     sources::delete_saved_source(&state, id).await
 }
 
-/// Browses or searches a single saved source using its mirror URL and CMS classification.
+/// Browses, searches, or filters a single saved source using its mirror URL, CMS classification,
+/// and per-website multi-tag/chapter/recency filter schema.
 #[tauri::command]
 pub(crate) async fn browse_saved_source(
     state: State<'_, Arc<AppState>>,
     source_id: i64,
     query: Option<String>,
+    filters: Option<CatalogFilterQuery>,
     page: Option<u32>,
+    force_refresh: Option<bool>,
 ) -> Result<CatalogPageView, AppError> {
-    sources::browse_saved_source(&state, source_id, query.as_deref(), page.unwrap_or(1)).await
+    sources::browse_saved_source(
+        &state,
+        source_id,
+        query.as_deref(),
+        filters,
+        page.unwrap_or(1),
+        force_refresh.unwrap_or(false),
+    )
+    .await
+}
+
+/// Browses, paginates, or applies multi-tag/chapter/recency filters directly against an arbitrary
+/// catalog/category/homepage URL.
+#[tauri::command]
+pub(crate) async fn browse_catalog_url(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    filters: Option<CatalogFilterQuery>,
+    page: Option<u32>,
+    force_refresh: Option<bool>,
+) -> Result<CatalogPageView, AppError> {
+    library::browse_catalog_url(
+        &state,
+        &url,
+        filters,
+        page.unwrap_or(1),
+        force_refresh.unwrap_or(false),
+    )
+    .await
+}
+
+/// Returns (or lazily discovers) the dynamic per-website [`SiteFilterSchema`] for a `source_id` or `url`.
+#[tauri::command]
+pub(crate) async fn get_web_filter_schema(
+    state: State<'_, Arc<AppState>>,
+    source_id: Option<i64>,
+    url: Option<String>,
+) -> Result<SiteFilterSchema, AppError> {
+    sources::get_web_filter_schema(&state, source_id, url.as_deref()).await
 }
 
 /// Searches in parallel across all enabled saved sources in the requested visibility scope.
@@ -1006,52 +1048,53 @@ pub(crate) async fn search_saved_sources(
     sources::search_across_sources(&state, &query, filter.unwrap_or_default()).await
 }
 
-/// Lists all imported custom JSON rule specifications.
+/// Opens the native Windows multi-file `.cbz` picker when clicked by the user and imports selected files.
 #[tauri::command]
-pub(crate) async fn list_rule_specs(
+pub(crate) async fn pick_and_import_cbz(
     state: State<'_, Arc<AppState>>,
-) -> Result<Vec<RuleSpecView>, AppError> {
-    sources::list_rule_specs(&state).await
+    target_manga_id: Option<i64>,
+) -> Result<Option<MangaView>, AppError> {
+    cbz::pick_and_import_cbz_windows(state.data_dir.clone(), &state, target_manga_id).await
 }
 
-/// Validates and imports a custom JSON CSS-selector rule specification (single object or array).
+/// Imports user-dropped `.cbz` file paths (from OS drag-and-drop) into internal app storage.
 #[tauri::command]
-pub(crate) async fn import_rule_specs_json(
+pub(crate) async fn import_cbz_paths(
     state: State<'_, Arc<AppState>>,
-    raw_json: String,
-) -> Result<Vec<RuleSpecView>, AppError> {
-    sources::import_rule_specs_json(&state, &raw_json).await
+    paths: Vec<String>,
+    target_manga_id: Option<i64>,
+) -> Result<MangaView, AppError> {
+    let buf_paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    cbz::import_cbz_paths(&state.data_dir, &state, &buf_paths, target_manga_id).await
 }
 
-/// Exports all stored custom JSON rule specifications as a formatted JSON array.
+/// Starts a chunked `.cbz` staging upload (for mobile `WebView` `<input type="file">`).
 #[tauri::command]
-pub(crate) async fn export_rule_specs_json(
+pub(crate) async fn begin_cbz_upload(
     state: State<'_, Arc<AppState>>,
+    filename: String,
 ) -> Result<String, AppError> {
-    sources::export_rule_specs_json(&state).await
+    cbz::begin_cbz_staging(&state.data_dir, &filename).await
 }
 
-/// Enables or disables a custom JSON rule specification.
+/// Appends a base64 chunk to a staged `.cbz` upload.
 #[tauri::command]
-#[expect(
-    clippy::fn_params_excessive_bools,
-    reason = "IPC command toggles custom rule enabled flag"
-)]
-pub(crate) async fn set_rule_spec_enabled(
+pub(crate) async fn append_cbz_chunk(
     state: State<'_, Arc<AppState>>,
-    rule_id: String,
-    enabled: bool,
+    upload_id: String,
+    chunk_base64: String,
 ) -> Result<(), AppError> {
-    sources::set_rule_spec_enabled(&state, &rule_id, enabled).await
+    cbz::append_cbz_staging_chunk(&state.data_dir, &upload_id, &chunk_base64).await
 }
 
-/// Deletes a custom JSON rule specification by ID.
+/// Finalizes one or more staged `.cbz` uploads and imports them as a manga or new chapters.
 #[tauri::command]
-pub(crate) async fn delete_rule_spec(
+pub(crate) async fn finish_cbz_upload(
     state: State<'_, Arc<AppState>>,
-    rule_id: String,
-) -> Result<(), AppError> {
-    sources::delete_rule_spec(&state, &rule_id).await
+    upload_ids: Vec<String>,
+    target_manga_id: Option<i64>,
+) -> Result<MangaView, AppError> {
+    cbz::finish_cbz_staging_import(&state.data_dir, &state, &upload_ids, target_manga_id).await
 }
 
 /// Category of user feedback / issue report.

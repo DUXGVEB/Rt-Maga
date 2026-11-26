@@ -17,25 +17,33 @@ use crate::model::{
 };
 use crate::parse::chapters::extract_chapter_number;
 use crate::parse::dom::{abs_url, clean_text, effective_base_url};
+use crate::parse::filters::{
+    CatalogFilterQuery, FilterAxis, FilterAxisKind, FilterOptionItem, FilterTagOption,
+    SiteFilterSchema, UnhandledFilterMask, UpdatedWithinFilter, extract_select_axes,
+};
+use crate::parse::pagination::template_from_numbered_url;
 use crate::recognize::UrlKind;
 use crate::source::Source;
 
-/// Dedicated source adapter for `TruyenQQ` (`truyenqqko.com` and `m.truyenqqko.com`).
+/// Dedicated source adapter for `TruyenQQ` (`truyenqq.com.vn`, `truyenqqko.com`, and mirrors).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TruyenQQSource;
 
-/// Returns `true` if `host_lower` belongs to `TruyenQQ` (including `m.` and `www.` subdomains).
+/// Returns `true` if `host_lower` belongs to `TruyenQQ` (including `.com.vn`, `.vn`, `.com`, `.net`, and `m.`/`www.` subdomains).
 #[must_use]
 pub fn is_truyenqq_host(host_lower: &str) -> bool {
     let bare = host_lower
         .strip_prefix("www.")
         .or_else(|| host_lower.strip_prefix("m."))
         .unwrap_or(host_lower);
-    bare.starts_with("truyenqq")
-        && bare
-            .rsplit('.')
-            .next()
-            .is_some_and(|tld| matches!(tld, "com" | "net"))
+    let Some((first_label, rest)) = bare.split_once('.') else {
+        return false;
+    };
+    first_label.starts_with("truyenqq")
+        && !rest.is_empty()
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
 }
 
 /// Classifies a `TruyenQQ` URL into its semantic [`UrlKind`], returning `None` for other websites.
@@ -49,6 +57,10 @@ pub fn classify_url(url: &Url) -> Option<UrlKind> {
     let path = url.path().trim_matches('/').to_ascii_lowercase();
     if path.is_empty() || path == "doc-truyen" || path == "index.html" {
         return Some(UrlKind::WebsiteHome);
+    }
+
+    if path.starts_with("tim-kiem-nang-cao") {
+        return Some(UrlKind::CatalogPage);
     }
 
     if path.starts_with("tim-kiem")
@@ -253,14 +265,16 @@ pub fn parse_catalog_html(
         .unwrap_or_else(|| "TruyenQQ".to_owned());
 
     let categories = extract_truyenqq_categories(&doc, &base);
-    let pagination = extract_truyenqq_pagination(&doc, &base, page_url);
+    let pagination =
+        extract_truyenqq_pagination(&doc, &base, page_url, url_kind, !entries.is_empty());
 
     let desktop_origin = canonical_desktop_url(page_url);
     let origin_str = format!(
         "{}://{}",
         desktop_origin.scheme(),
-        desktop_origin.host_str().unwrap_or("truyenqqko.com")
+        desktop_origin.host_str().unwrap_or("truyenqq.com.vn")
     );
+    let filter_schema = truyenqq_filter_schema(&origin_str, Some(&doc), Some(&base));
 
     Ok(CatalogPage {
         url: page_url.clone(),
@@ -273,6 +287,7 @@ pub fn parse_catalog_html(
         entries,
         categories,
         pagination,
+        filter_schema,
     })
 }
 
@@ -315,6 +330,46 @@ fn parse_desktop_card(card: ElementRef<'_>, base: &Url) -> Option<CatalogEntry> 
             let t = clean_text(&el.text().collect::<Vec<_>>().join(" "));
             if t.is_empty() { None } else { Some(t) }
         });
+    let updated_at = card
+        .select(&sel(".time-ago, .chapter-info span.time"))
+        .find_map(|el| {
+            let t = clean_text(&el.text().collect::<Vec<_>>().join(" "));
+            if t.is_empty() { None } else { Some(t) }
+        });
+    let genres: Vec<String> = card
+        .select(&sel(
+            ".more-info .list-tags a, .more-info .list-tags p, .list01 a",
+        ))
+        .filter_map(|el| {
+            let g = clean_text(&el.text().collect::<Vec<_>>().join(" "));
+            if g.is_empty() || g.len() > 36 {
+                None
+            } else {
+                Some(g)
+            }
+        })
+        .fold(Vec::new(), |mut acc, g| {
+            if !acc.contains(&g) {
+                acc.push(g);
+            }
+            acc
+        });
+    let status = card.select(&sel(".more-info .info p")).find_map(|p| {
+        let txt = clean_text(&p.text().collect::<Vec<_>>().join(" "));
+        let low = txt.to_lowercase();
+        if low.contains("tình trạng") {
+            txt.split(':')
+                .nth(1)
+                .map(clean_text)
+                .filter(|s| !s.is_empty())
+        } else {
+            None
+        }
+    });
+    let chapter_count = latest_chapter
+        .as_deref()
+        .and_then(extract_chapter_number)
+        .and_then(non_neg_f32_to_u32);
 
     let source_id = extract_source_id(&title_link.0);
     Some(CatalogEntry {
@@ -323,10 +378,25 @@ fn parse_desktop_card(card: ElementRef<'_>, base: &Url) -> Option<CatalogEntry> 
         alt_titles: Vec::new(),
         cover,
         latest_chapter,
-        status: None,
-        genres: Vec::new(),
+        status,
+        genres,
         source_id,
+        chapter_count,
+        updated_at,
     })
+}
+
+fn non_neg_f32_to_u32(val: f32) -> Option<u32> {
+    if !val.is_finite() || val < 0.0 {
+        return None;
+    }
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped finite non-negative chapter number"
+    )]
+    Some(val.floor().min(f32::from(u16::MAX)) as u32)
 }
 
 fn parse_amp_card(card: ElementRef<'_>, base: &Url) -> Option<CatalogEntry> {
@@ -365,6 +435,10 @@ fn parse_amp_card(card: ElementRef<'_>, base: &Url) -> Option<CatalogEntry> {
             None
         }
     });
+    let chapter_count = latest_chapter
+        .as_deref()
+        .and_then(extract_chapter_number)
+        .and_then(non_neg_f32_to_u32);
 
     let source_id = extract_source_id(&url);
     Some(CatalogEntry {
@@ -376,6 +450,8 @@ fn parse_amp_card(card: ElementRef<'_>, base: &Url) -> Option<CatalogEntry> {
         status: None,
         genres: Vec::new(),
         source_id,
+        chapter_count,
+        updated_at: None,
     })
 }
 
@@ -423,10 +499,40 @@ fn parse_json_ld_item_list(doc: &Html, base: &Url) -> Vec<CatalogEntry> {
                 status: None,
                 genres: Vec::new(),
                 source_id,
+                chapter_count: None,
+                updated_at: None,
             });
         }
     }
     entries
+}
+
+/// Builds a `TruyenQQ` paginated URL for `page_num` from any homepage, category, or search URL.
+#[must_use]
+pub fn build_truyenqq_page_url(base_listing: &Url, page_num: u32) -> Url {
+    let mut clean = canonical_desktop_url(base_listing);
+    let page = page_num.max(1);
+    let raw_path = clean.path().trim_end_matches('/');
+
+    let without_ext = raw_path.strip_suffix(".html").unwrap_or(raw_path);
+    let stem = page_num_re().replace(without_ext, "").into_owned();
+    let trimmed_stem = stem.trim_matches('/');
+
+    let effective_stem = if trimmed_stem.is_empty()
+        || trimmed_stem.eq_ignore_ascii_case("doc-truyen")
+        || trimmed_stem.eq_ignore_ascii_case("index")
+    {
+        "truyen-moi-cap-nhat"
+    } else {
+        trimmed_stem
+    };
+
+    if page <= 1 {
+        clean.set_path(&format!("/{effective_stem}.html"));
+    } else {
+        clean.set_path(&format!("/{effective_stem}/trang-{page}.html"));
+    }
+    clean
 }
 
 fn extract_truyenqq_categories(doc: &Html, base: &Url) -> Vec<NavLink> {
@@ -434,17 +540,31 @@ fn extract_truyenqq_categories(doc: &Html, base: &Url) -> Vec<NavLink> {
     let mut seen = HashSet::new();
 
     let desktop_origin = canonical_desktop_url(base);
-    if let Ok(latest) = Url::parse(&format!(
-        "{}://{}/truyen-moi-cap-nhat.html",
+    let origin_str = format!(
+        "{}://{}",
         desktop_origin.scheme(),
-        desktop_origin.host_str().unwrap_or("truyenqqko.com")
-    )) {
-        seen.insert(latest.as_str().to_owned());
-        out.push(NavLink {
-            label: "Mới cập nhật".to_owned(),
-            url: latest,
-            kind: UrlKind::CatalogPage,
-        });
+        desktop_origin.host_str().unwrap_or("truyenqq.com.vn")
+    );
+
+    for (label, slug) in [
+        ("Mới cập nhật", "/truyen-moi-cap-nhat.html"),
+        ("Hoàn thành", "/truyen-hoan-thanh.html"),
+        ("Top Ngày", "/top-ngay.html"),
+        ("Top Tuần", "/top-tuan.html"),
+        ("Top Tháng", "/top-thang.html"),
+        ("Yêu thích", "/truyen-yeu-thich.html"),
+        ("Con trai", "/truyen-con-trai.html"),
+        ("Con gái", "/truyen-con-gai.html"),
+    ] {
+        if let Ok(u) = Url::parse(&format!("{origin_str}{slug}"))
+            && seen.insert(u.as_str().to_owned())
+        {
+            out.push(NavLink {
+                label: label.to_owned(),
+                url: u,
+                kind: UrlKind::CatalogPage,
+            });
+        }
     }
 
     for a in doc.select(&sel("a[href*='/the-loai/']")) {
@@ -464,7 +584,7 @@ fn extract_truyenqq_categories(doc: &Html, base: &Url) -> Vec<NavLink> {
                 url,
                 kind: UrlKind::CatalogPage,
             });
-            if out.len() >= 18 {
+            if out.len() >= 96 {
                 break;
             }
         }
@@ -472,7 +592,17 @@ fn extract_truyenqq_categories(doc: &Html, base: &Url) -> Vec<NavLink> {
     out
 }
 
-fn extract_truyenqq_pagination(doc: &Html, base: &Url, page_url: &Url) -> PaginationInfo {
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "internal pagination helper receiving has_entries guard flag"
+)]
+fn extract_truyenqq_pagination(
+    doc: &Html,
+    base: &Url,
+    page_url: &Url,
+    url_kind: UrlKind,
+    has_entries: bool,
+) -> PaginationInfo {
     let current_page = page_num_re()
         .captures(page_url.path())
         .and_then(|c| c.get(1)?.as_str().parse::<u32>().ok())
@@ -488,24 +618,38 @@ fn extract_truyenqq_pagination(doc: &Html, base: &Url, page_url: &Url) -> Pagina
     let mut max_page = current_page;
     let mut prev_url = None;
     let mut next_url = None;
+    let mut template = template_from_numbered_url(page_url);
 
     for a in doc.select(&sel(
-        ".page_redirect a[href], .pagination a[href], a[href*='/trang-']",
+        ".page_redirect a[href], .pagination a[href], a[href*='/trang-'], a[href*='page=']",
     )) {
         let Some(href) = a.value().attr("href") else {
             continue;
         };
-        let Some(resolved) = abs_url(base, href).map(|u| canonical_desktop_url(&u)) else {
+        let trimmed = href.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("javascript:") {
+            continue;
+        }
+        let Some(resolved) = abs_url(base, trimmed).map(|u| canonical_desktop_url(&u)) else {
             continue;
         };
-        if let Some(p) = page_num_re()
+        let parsed_p = page_num_re()
             .captures(resolved.path())
             .and_then(|c| c.get(1)?.as_str().parse::<u32>().ok())
-        {
-            if p > max_page {
+            .or_else(|| {
+                resolved
+                    .query_pairs()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("page"))
+                    .and_then(|(_, v)| v.parse::<u32>().ok())
+            });
+        if let Some(p) = parsed_p {
+            if template.is_none() {
+                template = template_from_numbered_url(&resolved);
+            }
+            if p > max_page && p <= 50_000 {
                 max_page = p;
             }
-            if p == current_page.saturating_sub(1) && prev_url.is_none() {
+            if p == current_page.saturating_sub(1) && current_page > 1 && prev_url.is_none() {
                 prev_url = Some(resolved.clone());
             }
             if p == current_page + 1 && next_url.is_none() {
@@ -514,11 +658,26 @@ fn extract_truyenqq_pagination(doc: &Html, base: &Url, page_url: &Url) -> Pagina
         }
     }
 
+    if template.is_none() && has_entries {
+        let sample_p2 = build_truyenqq_page_url(page_url, 2);
+        template = template_from_numbered_url(&sample_p2);
+    }
+    if next_url.is_none()
+        && has_entries
+        && (url_kind == UrlKind::WebsiteHome || max_page > current_page)
+    {
+        next_url = Some(build_truyenqq_page_url(page_url, current_page + 1));
+    }
+    if prev_url.is_none() && current_page > 1 {
+        prev_url = Some(build_truyenqq_page_url(page_url, current_page - 1));
+    }
+
     PaginationInfo {
         current_page,
         total_pages: (max_page > 1).then_some(max_page),
         prev_url,
         next_url,
+        page_url_template: template,
     }
 }
 
@@ -878,3 +1037,323 @@ impl Source for TruyenQQSource {
         parse_chapter_html(&page.html, &page.final_url)
     }
 }
+
+fn cat_id_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)/the-loai/([a-z0-9-]+?)-(\d+)(?:\.html?)?$")
+            .expect("valid truyenqq cat regex")
+    })
+}
+
+/// Builds the full `TruyenQQ` filter schema (`tim-kiem-nang-cao.html`), merging built-in genre IDs
+/// with any newly added `/the-loai/<slug>-<id>.html` links or `<select>` controls found in `doc`.
+#[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "declares complete TruyenQQ built-in filter axes and dynamic DOM tag extraction"
+)]
+pub fn truyenqq_filter_schema(
+    origin: &str,
+    doc: Option<&Html>,
+    base: Option<&Url>,
+) -> SiteFilterSchema {
+    let clean_origin = origin.trim_end_matches('/');
+    let mut tags: Vec<FilterTagOption> = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    if let (Some(d), Some(b)) = (doc, base) {
+        let data_genre_sel = sel("[data-id][class*='genre'], .genre-item[data-id], span[data-id]");
+        let link_sel = sel("a[href]");
+        for el in d.select(&data_genre_sel) {
+            if let Some(id) = el.value().attr("data-id").map(str::trim)
+                && !id.is_empty()
+                && id.bytes().all(|c| c.is_ascii_digit())
+            {
+                let label = clean_text(&el.text().collect::<String>());
+                if !label.is_empty() && label.len() <= 40 && seen_ids.insert(id.to_owned()) {
+                    tags.push(FilterTagOption {
+                        id: id.to_owned(),
+                        label,
+                        url: None,
+                    });
+                }
+            }
+        }
+        for a in d.select(&link_sel) {
+            let Some(href) = a.value().attr("href") else {
+                continue;
+            };
+            let Some(resolved) = abs_url(b, href) else {
+                continue;
+            };
+            if let Some(caps) = cat_id_re().captures(resolved.path())
+                && let Some(id) = caps.get(2).map(|m| m.as_str())
+            {
+                let label = clean_text(&a.text().collect::<String>());
+                if !label.is_empty() && label.len() <= 40 && seen_ids.insert(id.to_owned()) {
+                    tags.push(FilterTagOption {
+                        id: id.to_owned(),
+                        label,
+                        url: Some(resolved.into()),
+                    });
+                }
+            }
+        }
+    }
+
+    for (id, slug, label) in TRUYENQQ_DEFAULT_GENRES {
+        if seen_ids.insert((*id).to_owned()) {
+            tags.push(FilterTagOption {
+                id: (*id).to_owned(),
+                label: (*label).to_owned(),
+                url: Some(format!("{clean_origin}/the-loai/{slug}-{id}.html")),
+            });
+        }
+    }
+
+    let mut extra_axes = vec![
+        FilterAxis {
+            key: "status".to_owned(),
+            label: "Tình trạng".to_owned(),
+            kind: FilterAxisKind::SingleSelect,
+            options: vec![
+                FilterOptionItem {
+                    value: "-1".to_owned(),
+                    label: "Tất cả".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "0".to_owned(),
+                    label: "Đang tiến hành".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "2".to_owned(),
+                    label: "Hoàn thành".to_owned(),
+                },
+            ],
+        },
+        FilterAxis {
+            key: "country".to_owned(),
+            label: "Quốc gia".to_owned(),
+            kind: FilterAxisKind::SingleSelect,
+            options: vec![
+                FilterOptionItem {
+                    value: "0".to_owned(),
+                    label: "Tất cả".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "1".to_owned(),
+                    label: "Trung Quốc (Manhua)".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "2".to_owned(),
+                    label: "Việt Nam".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "3".to_owned(),
+                    label: "Hàn Quốc (Manhwa)".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "4".to_owned(),
+                    label: "Nhật Bản (Manga)".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "5".to_owned(),
+                    label: "Âu Mỹ (Comic)".to_owned(),
+                },
+            ],
+        },
+        FilterAxis {
+            key: "sort".to_owned(),
+            label: "Sắp xếp".to_owned(),
+            kind: FilterAxisKind::SingleSelect,
+            options: vec![
+                FilterOptionItem {
+                    value: "0".to_owned(),
+                    label: "Ngày cập nhật giảm dần".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "1".to_owned(),
+                    label: "Ngày cập nhật tăng dần".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "2".to_owned(),
+                    label: "Ngày đăng mới nhất".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "4".to_owned(),
+                    label: "Lượt xem nhiều nhất".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "5".to_owned(),
+                    label: "Lượt theo dõi nhiều nhất".to_owned(),
+                },
+            ],
+        },
+    ];
+
+    if let Some(d) = doc {
+        for discovered in extract_select_axes(d) {
+            if !discovered.key.eq_ignore_ascii_case("minchapter")
+                && !extra_axes
+                    .iter()
+                    .any(|a| a.key.eq_ignore_ascii_case(&discovered.key))
+            {
+                extra_axes.push(discovered);
+            }
+        }
+    }
+
+    SiteFilterSchema {
+        filter_endpoint: Some(format!("{clean_origin}/tim-kiem-nang-cao.html")),
+        include_tag_param: Some("category".to_owned()),
+        exclude_tag_param: Some("notcategory".to_owned()),
+        comma_joined_tags: true,
+        min_chapters_param: Some("minchapter".to_owned()),
+        keyword_param: None,
+        tags,
+        extra_axes,
+    }
+}
+
+/// Builds a native `TruyenQQ` filtered catalog/search/pagination URL.
+pub(crate) fn build_truyenqq_filtered_url(
+    base_url: &Url,
+    current_url: Option<&Url>,
+    clean_q: Option<&str>,
+    filters: &CatalogFilterQuery,
+    page_num: u32,
+) -> Result<(Url, UnhandledFilterMask), ScrapeError> {
+    let origin = canonical_desktop_url(base_url);
+    let origin_str = format!(
+        "{}://{}",
+        origin.scheme(),
+        origin.host_str().unwrap_or("truyenqq.com.vn")
+    );
+
+    let has_adv = !filters.include_tags.is_empty()
+        || !filters.exclude_tags.is_empty()
+        || filters.min_chapters.unwrap_or(0) > 0
+        || filters
+            .extra
+            .values()
+            .any(|vals| vals.iter().any(|v| !v.trim().is_empty()));
+
+    let unhandled = UnhandledFilterMask {
+        include_tags: false,
+        exclude_tags: false,
+        min_chapters: false,
+        updated_within: filters.updated_within != UpdatedWithinFilter::Any,
+    };
+
+    if let Some(q) = clean_q
+        && !has_adv
+    {
+        let path = if page_num > 1 {
+            format!("{origin_str}/tim-kiem/trang-{page_num}.html")
+        } else {
+            format!("{origin_str}/tim-kiem.html")
+        };
+        let mut u = Url::parse(&path).map_err(|e| ScrapeError::InvalidUrl(e.to_string()))?;
+        u.query_pairs_mut().append_pair("q", q);
+        return Ok((u, unhandled));
+    }
+
+    if has_adv {
+        let path = if page_num > 1 {
+            format!("{origin_str}/tim-kiem-nang-cao/trang-{page_num}.html")
+        } else {
+            format!("{origin_str}/tim-kiem-nang-cao.html")
+        };
+        let mut u = Url::parse(&path).map_err(|e| ScrapeError::InvalidUrl(e.to_string()))?;
+        {
+            let mut qp = u.query_pairs_mut();
+            if !filters.include_tags.is_empty() {
+                qp.append_pair("category", &filters.include_tags.join(","));
+            }
+            if !filters.exclude_tags.is_empty() {
+                qp.append_pair("notcategory", &filters.exclude_tags.join(","));
+            }
+            let status = filters
+                .extra
+                .get("status")
+                .and_then(|v| v.first())
+                .map_or("-1", String::as_str);
+            let country = filters
+                .extra
+                .get("country")
+                .and_then(|v| v.first())
+                .map_or("0", String::as_str);
+            let sort = filters
+                .extra
+                .get("sort")
+                .and_then(|v| v.first())
+                .map_or("0", String::as_str);
+            let min_ch = filters.min_chapters.unwrap_or(0);
+            qp.append_pair("country", country);
+            qp.append_pair("status", status);
+            qp.append_pair("minchapter", &min_ch.to_string());
+            qp.append_pair("sort", sort);
+            for (k, vals) in &filters.extra {
+                if !matches!(k.as_str(), "status" | "country" | "sort") {
+                    for v in vals {
+                        if !v.trim().is_empty() {
+                            qp.append_pair(k, v.trim());
+                        }
+                    }
+                }
+            }
+        }
+        let mut mask = unhandled;
+        if clean_q.is_some() {
+            mask.include_tags = false;
+        }
+        return Ok((u, mask));
+    }
+
+    let base_listing = current_url.unwrap_or(&origin);
+    let target = build_truyenqq_page_url(base_listing, page_num);
+    Ok((target, unhandled))
+}
+
+const TRUYENQQ_DEFAULT_GENRES: &[(&str, &str, &str)] = &[
+    ("26", "action", "Action"),
+    ("27", "adventure", "Adventure"),
+    ("62", "anime", "Anime"),
+    ("91", "chuyen-sinh", "Chuyển Sinh"),
+    ("90", "co-dai", "Cổ Đại"),
+    ("28", "comedy", "Comedy"),
+    ("60", "comic", "Comic"),
+    ("58", "cooking", "Cooking"),
+    ("29", "drama", "Drama"),
+    ("30", "fantasy", "Fantasy"),
+    ("45", "gender-bender", "Gender Bender"),
+    ("47", "harem", "Harem"),
+    ("51", "historical", "Historical"),
+    ("44", "horror", "Horror"),
+    ("96", "isekai", "Isekai"),
+    ("54", "josei", "Josei"),
+    ("35", "manhua", "Manhua"),
+    ("49", "manhwa", "Manhwa"),
+    ("41", "martial-arts", "Martial Arts"),
+    ("48", "mature", "Mature"),
+    ("50", "mecha", "Mecha"),
+    ("39", "mystery", "Mystery"),
+    ("87", "ngon-tinh", "Ngôn Tình"),
+    ("95", "one-shot", "One Shot"),
+    ("40", "psychological", "Psychological"),
+    ("36", "romance", "Romance"),
+    ("37", "school-life", "School Life"),
+    ("43", "sci-fi", "Sci-Fi"),
+    ("42", "seinen", "Seinen"),
+    ("38", "shoujo", "Shoujo"),
+    ("31", "shounen", "Shounen"),
+    ("46", "slice-of-life", "Slice of Life"),
+    ("57", "sports", "Sports"),
+    ("32", "supernatural", "Supernatural"),
+    ("52", "tragedy", "Tragedy"),
+    ("56", "trinh-tham", "Trinh Thám"),
+    ("92", "truyen-mau", "Truyện Màu"),
+    ("55", "webtoon", "Webtoon"),
+    ("88", "xuyen-khong", "Xuyên Không"),
+];

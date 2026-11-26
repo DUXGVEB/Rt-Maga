@@ -1,9 +1,9 @@
-//! Database operations for `manga` and `chapter` tables.
+//! Database operations for `manga`, `chapter`, and `cbz_chapter_archive` tables.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use mangacore::{ChapterRef, Manga};
-use sqlx::FromRow;
+use sqlx::{FromRow, QueryBuilder, Sqlite};
 
 use crate::error::AppError;
 use crate::repo::{Database, now_unix_secs};
@@ -288,6 +288,10 @@ impl Database {
         Ok(found)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "transactional batched chapter upsert with trailing-slash reconciliation and stale pruning"
+    )]
     async fn sync_upserted_chapters(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         manga_id: i64,
@@ -328,9 +332,68 @@ impl Database {
             return Ok(());
         }
 
-        for (i, ch) in manga.chapters.iter().enumerate() {
-            let idx = i64::try_from(i).unwrap_or(i64::MAX);
-            Self::upsert_single_chapter_row(tx, manga_id, ch, idx).await?;
+        // Reconcile any trailing-slash URL renames in-place first so existing `read` flags survive
+        // exact `(manga_id, url)` conflict matching in the batched multi-row upsert below.
+        if !stored_urls.is_empty() {
+            let mut by_norm: HashMap<&str, &str> = HashMap::with_capacity(stored_urls.len());
+            for (stored,) in stored_urls {
+                by_norm.insert(stored.trim_end_matches('/'), stored.as_str());
+            }
+            for ch in &manga.chapters {
+                let fresh = ch.url.as_str();
+                let norm = fresh.trim_end_matches('/');
+                if let Some(&old_exact) = by_norm.get(norm)
+                    && old_exact != fresh
+                {
+                    let _ = sqlx::query(
+                        "UPDATE OR IGNORE chapter SET url = ? WHERE manga_id = ? AND url = ?",
+                    )
+                    .bind(fresh)
+                    .bind(manga_id)
+                    .bind(old_exact)
+                    .execute(&mut **tx)
+                    .await?;
+                }
+            }
+        }
+
+        // Batch-upsert chapters in chunks of 100 rows (900 SQLite bind variables per statement)
+        // so 1,000+ chapter manga persist in milliseconds while preserving `chapter.read`.
+        let indexed: Vec<(i64, &ChapterRef)> = manga
+            .chapters
+            .iter()
+            .enumerate()
+            .map(|(i, ch)| (i64::try_from(i).unwrap_or(i64::MAX), ch))
+            .collect();
+
+        for chunk in indexed.chunks(100) {
+            let mut qb: QueryBuilder<'_, Sqlite> = QueryBuilder::new(
+                "INSERT INTO chapter \
+                 (manga_id, url, name, number, idx, read, volume, published_at, language, source_id) ",
+            );
+            qb.push_values(chunk, |mut b, (idx, ch)| {
+                b.push_bind(manga_id)
+                    .push_bind(ch.url.as_str())
+                    .push_bind(&ch.name)
+                    .push_bind(ch.number.map(f64::from))
+                    .push_bind(*idx)
+                    .push_bind(0_i64)
+                    .push_bind(ch.volume.as_deref())
+                    .push_bind(ch.published_at.as_deref())
+                    .push_bind(ch.language.as_deref())
+                    .push_bind(ch.source_id.as_deref());
+            });
+            qb.push(
+                " ON CONFLICT(manga_id, url) DO UPDATE SET \
+                    name = excluded.name, \
+                    number = excluded.number, \
+                    idx = excluded.idx, \
+                    volume = COALESCE(excluded.volume, chapter.volume), \
+                    published_at = COALESCE(excluded.published_at, chapter.published_at), \
+                    language = COALESCE(excluded.language, chapter.language), \
+                    source_id = COALESCE(excluded.source_id, chapter.source_id)",
+            );
+            qb.build().execute(&mut **tx).await?;
         }
 
         // Prune stale chapter rows if a site renamed or removed old chapter slugs on a full listing.
@@ -356,64 +419,6 @@ impl Database {
             }
         }
 
-        Ok(())
-    }
-
-    async fn upsert_single_chapter_row(
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        manga_id: i64,
-        ch: &ChapterRef,
-        idx: i64,
-    ) -> Result<(), AppError> {
-        let num = ch.number.map(f64::from);
-        let updated = sqlx::query(
-            "UPDATE chapter
-             SET url = ?, name = ?, number = ?, idx = ?,
-                 volume = COALESCE(?, volume),
-                 published_at = COALESCE(?, published_at),
-                 language = COALESCE(?, language),
-                 source_id = COALESCE(?, source_id)
-             WHERE manga_id = ? AND RTRIM(url, '/') = RTRIM(?, '/')",
-        )
-        .bind(ch.url.as_str())
-        .bind(&ch.name)
-        .bind(num)
-        .bind(idx)
-        .bind(ch.volume.as_deref())
-        .bind(ch.published_at.as_deref())
-        .bind(ch.language.as_deref())
-        .bind(ch.source_id.as_deref())
-        .bind(manga_id)
-        .bind(ch.url.as_str())
-        .execute(&mut **tx)
-        .await?;
-
-        if updated.rows_affected() == 0 {
-            sqlx::query(
-                "INSERT INTO chapter
-                    (manga_id, url, name, number, idx, read, volume, published_at, language, source_id)
-                 VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
-                 ON CONFLICT(manga_id, url) DO UPDATE SET
-                    name = excluded.name,
-                    number = excluded.number,
-                    idx = excluded.idx,
-                    volume = COALESCE(excluded.volume, chapter.volume),
-                    published_at = COALESCE(excluded.published_at, chapter.published_at),
-                    language = COALESCE(excluded.language, chapter.language),
-                    source_id = COALESCE(excluded.source_id, chapter.source_id)",
-            )
-            .bind(manga_id)
-            .bind(ch.url.as_str())
-            .bind(&ch.name)
-            .bind(num)
-            .bind(idx)
-            .bind(ch.volume.as_deref())
-            .bind(ch.published_at.as_deref())
-            .bind(ch.language.as_deref())
-            .bind(ch.source_id.as_deref())
-            .execute(&mut **tx)
-            .await?;
-        }
         Ok(())
     }
 
@@ -572,6 +577,7 @@ impl Database {
 
     /// Lists manga eligible for background update checks: **bookmarked manga first**,
     /// followed by remaining reading-history manga, deduplicated by manga ID.
+    /// Local `.cbz` archives (`site = 'local:cbz'`) are excluded from remote polling.
     ///
     /// # Errors
     ///
@@ -582,7 +588,9 @@ impl Database {
              FROM manga m
              LEFT JOIN bookmark b ON b.manga_id = m.id
              LEFT JOIN history h ON h.manga_id = m.id
-             WHERE m.hidden = 0 AND (b.manga_id IS NOT NULL OR h.manga_id IS NOT NULL)
+             WHERE m.hidden = 0
+               AND m.site != 'local:cbz'
+               AND (b.manga_id IS NOT NULL OR h.manga_id IS NOT NULL)
              ORDER BY
                 CASE WHEN b.manga_id IS NOT NULL THEN 0 ELSE 1 END ASC,
                 COALESCE(h.read_at, b.created_at, m.updated_at) DESC",
@@ -590,6 +598,92 @@ impl Database {
         .fetch_all(self.pool())
         .await?;
         Ok(rows)
+    }
+
+    /// Finds a manga ID by its `source_id` (used for grouping imported `.cbz` chapters).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn find_manga_id_by_source_id(
+        &self,
+        source_id: &str,
+    ) -> Result<Option<i64>, AppError> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM manga WHERE source_id = ? LIMIT 1")
+                .bind(source_id)
+                .fetch_optional(self.pool())
+                .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
+    /// Inserts or updates a `.cbz` chapter archive index row in `cbz_chapter_archive`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn upsert_cbz_chapter_archive(
+        &self,
+        manga_id: i64,
+        chapter_url: &str,
+        rel_path: &str,
+        pages_json: &str,
+        file_size: i64,
+    ) -> Result<(), AppError> {
+        let now = now_unix_secs();
+        sqlx::query(
+            "INSERT INTO cbz_chapter_archive (manga_id, chapter_url, rel_path, pages_json, file_size, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(chapter_url) DO UPDATE SET
+                manga_id = excluded.manga_id,
+                rel_path = excluded.rel_path,
+                pages_json = excluded.pages_json,
+                file_size = excluded.file_size",
+        )
+        .bind(manga_id)
+        .bind(chapter_url)
+        .bind(rel_path)
+        .bind(pages_json)
+        .bind(file_size)
+        .bind(now)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Looks up the stored `.cbz` archive `(manga_id, rel_path, pages_json)` by `chapter_url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn get_cbz_archive_by_chapter_url(
+        &self,
+        chapter_url: &str,
+    ) -> Result<Option<(i64, String, String)>, AppError> {
+        let row: Option<(i64, String, String)> = sqlx::query_as(
+            "SELECT manga_id, rel_path, pages_json FROM cbz_chapter_archive WHERE chapter_url = ? LIMIT 1",
+        )
+        .bind(chapter_url)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(row)
+    }
+
+    /// Lists all relative `.cbz` archive file paths owned by `manga_id` for disk cleanup on permanent delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn list_cbz_rel_paths_for_manga(
+        &self,
+        manga_id: i64,
+    ) -> Result<Vec<String>, AppError> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT rel_path FROM cbz_chapter_archive WHERE manga_id = ?")
+                .bind(manga_id)
+                .fetch_all(self.pool())
+                .await?;
+        Ok(rows.into_iter().map(|(p,)| p).collect())
     }
 
     /// Records the result of checking a manga for new chapters.

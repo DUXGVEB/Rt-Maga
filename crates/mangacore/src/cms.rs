@@ -1,4 +1,4 @@
-//! Structure-first website CMS classification, catalog/search execution, and mirror fallback.
+//! Structure-first website CMS classification, catalog/filter execution, and mirror fallback.
 //!
 //! Classifies websites primarily from DOM structure and API shapes rather than hardcoding
 //! third-party domain lists, and preserves genuine upstream errors instead of masking them.
@@ -16,22 +16,25 @@ use url::Url;
 use crate::error::ScrapeError;
 use crate::http::HttpClient;
 use crate::model::{CatalogEntry, CatalogPage, ChapterRef, PaginationInfo, SiteId};
-use crate::parse::chapters::extract_chapters;
+use crate::parse::chapters::{extract_chapter_number, extract_chapters};
 use crate::parse::dom::{
     abs_url, clean_text, effective_base_url, image_candidates, is_ignored_image_url,
+};
+use crate::parse::filters::{
+    CatalogFilterQuery, SiteFilterSchema, UnhandledFilterMask, build_filtered_catalog_url,
+    extract_generic_filter_schema, filter_entries_client_side, merge_filter_schemas,
 };
 use crate::parse::gallery::looks_like_gallery_page;
 use crate::parse::meta::{
     detect_adult_signals, extract_favicon_candidates, extract_tags_and_genres, extract_title,
 };
+use crate::parse::pagination::extract_universal_pagination;
 use crate::recognize::UrlKind;
-use crate::rule_pack::{
-    CustomRuleSpec, execute_rule_catalog, match_rule_by_domain, match_rule_by_fingerprint,
-};
 use crate::source::generic::{GenericSource, discover_search_template};
-use crate::source::mangadex::is_mangadex_host;
+use crate::source::mangadex::{is_mangadex_host, mangadex_filter_schema};
 use crate::source::moetruyen::is_moetruyen_host;
 use crate::source::truyenqq::is_truyenqq_host;
+use crate::source::truyenqq::truyenqq_filter_schema;
 
 static MADARA_ITEM_SEL: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse(".page-item-detail, .c-tabs-item__content, .manga-item")
@@ -57,6 +60,10 @@ static TITLE_HINT_SEL: LazyLock<Selector> = LazyLock::new(|| {
 });
 static LATEST_CH_SEL: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse(".chapter-item a, .epxs, .chapter a, .latest-chapter")
+        .expect("static selector is valid")
+});
+static TIME_HINT_SEL: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse(".post-on, .time, .date, .chapter-time, .time-ago")
         .expect("static selector is valid")
 });
 static WP_ID_ATTR_RE: LazyLock<Regex> =
@@ -85,8 +92,6 @@ pub enum CmsKind {
     ComickApi,
     /// `FoolSlide2` / Guya-compatible JSON endpoint structure.
     FoolSlide,
-    /// Matched a declarative [`CustomRuleSpec`] JSON rule pack.
-    CustomRule,
     /// Generic HTML catalog & heuristic extraction engine.
     #[default]
     UniversalHeuristic,
@@ -107,7 +112,6 @@ impl CmsKind {
             Self::MangaDexApi => "mangadex_api",
             Self::ComickApi => "comick_api",
             Self::FoolSlide => "fool_slide",
-            Self::CustomRule => "custom_rule",
             Self::UniversalHeuristic => "universal_heuristic",
             Self::BrowserOnly => "browser_only",
         }
@@ -125,7 +129,6 @@ impl CmsKind {
             "mangadex_api" => Self::MangaDexApi,
             "comick_api" => Self::ComickApi,
             "fool_slide" => Self::FoolSlide,
-            "custom_rule" => Self::CustomRule,
             "browser_only" => Self::BrowserOnly,
             _ => Self::UniversalHeuristic,
         }
@@ -160,7 +163,7 @@ pub struct SiteDetectionOutcome {
     pub display_name: String,
     /// Classified CMS or engine kind.
     pub kind: CmsKind,
-    /// Built-in adapter ID or custom rule ID when applicable.
+    /// Built-in adapter ID when applicable.
     pub parser_ref: Option<String>,
     /// Discovered `{query}` search URL template if available.
     pub search_template: Option<String>,
@@ -170,6 +173,8 @@ pub struct SiteDetectionOutcome {
     pub adult_detected: bool,
     /// Reachability state during onboarding.
     pub reachability: SiteReachability,
+    /// Discovered per-website multi-tag & dynamic filter schema.
+    pub filter_schema: SiteFilterSchema,
 }
 
 /// Normalizes a website URL down to its root origin (`https://host`) for source deduplication.
@@ -201,10 +206,10 @@ pub fn match_builtin_adapter_id(host_lower: &str) -> Option<&'static str> {
     }
 }
 
-/// Executes the 3-step structure-first onboarding pipeline on `raw_url`:
-/// 1) Built-in adapters & zero-cost custom domain rules (`0` requests)
-/// 2) Single homepage HTML fetch -> structure-first CMS signature inspection & favicon harvest
-/// 3) Custom rule HTML fingerprints / probe paths -> Universal Heuristic -> Browser fallback
+/// Executes the structure-first onboarding pipeline on `raw_url`:
+/// 1) Built-in adapters (`0` requests, instant filter schema)
+/// 2) Single homepage HTML fetch -> structure-first CMS signature inspection, favicon & filter harvest
+/// 3) Known API probes -> Universal Heuristic -> Browser fallback
 ///
 /// # Errors
 ///
@@ -212,7 +217,6 @@ pub fn match_builtin_adapter_id(host_lower: &str) -> Option<&'static str> {
 pub async fn detect_site_structure(
     http: &HttpClient,
     raw_url: &str,
-    custom_rules: &[CustomRuleSpec],
 ) -> Result<SiteDetectionOutcome, ScrapeError> {
     let base_url = normalize_source_root(raw_url)?;
     let host_lower = base_url
@@ -222,7 +226,6 @@ pub async fn detect_site_structure(
     let bare_host = host_lower.trim_start_matches("www.").to_owned();
     let default_icons = default_origin_favicons(&base_url);
 
-    // Step 1a: Built-in adapter domain lookup (0 requests).
     if let Some(adapter_id) = match_builtin_adapter_id(&host_lower) {
         return Ok(build_builtin_outcome(
             base_url,
@@ -232,26 +235,8 @@ pub async fn detect_site_structure(
         ));
     }
 
-    // Step 1b: Custom rule domain lookup (0 requests).
-    if let Some(rule) = match_rule_by_domain(&host_lower, custom_rules) {
-        let search_template = build_rule_search_hint(&base_url, rule);
-        return Ok(SiteDetectionOutcome {
-            base_url,
-            display_name: rule.name.clone(),
-            kind: CmsKind::CustomRule,
-            parser_ref: Some(rule.id.clone()),
-            search_template,
-            icon_candidates: default_icons,
-            adult_detected: false,
-            reachability: SiteReachability::Reachable,
-        });
-    }
-
-    // Step 2: Single homepage HTML fetch + structure-first CMS detection.
     match http.fetch_html(&base_url).await {
-        Ok(page) => {
-            Ok(classify_fetched_site_html(http, &base_url, &bare_host, &page, custom_rules).await)
-        }
+        Ok(page) => Ok(classify_fetched_site_html(http, &base_url, &bare_host, &page).await),
         Err(ScrapeError::Blocked { .. }) => Ok(SiteDetectionOutcome {
             base_url,
             display_name: bare_host,
@@ -261,6 +246,7 @@ pub async fn detect_site_structure(
             icon_candidates: default_icons,
             adult_detected: false,
             reachability: SiteReachability::ChallengeProtected,
+            filter_schema: SiteFilterSchema::default(),
         }),
         Err(_) => Ok(probe_unreachable_html_site(http, base_url, bare_host, default_icons).await),
     }
@@ -272,10 +258,11 @@ fn build_builtin_outcome(
     bare_host: &str,
     icon_candidates: Vec<Url>,
 ) -> SiteDetectionOutcome {
+    let origin = base_url.as_str().trim_end_matches('/');
     let search_template = match adapter_id {
         "mangadex" => Some("https://mangadex.org/search?q={query}".to_owned()),
-        "truyenqq" => Some(format!("{base_url}/tim-kiem.html?q={{query}}")),
-        "moetruyen" => Some(format!("{base_url}/manga?q={{query}}")),
+        "truyenqq" => Some(format!("{origin}/tim-kiem.html?q={{query}}")),
+        "moetruyen" => Some(format!("{origin}/manga?q={{query}}")),
         _ => None,
     };
     let display_name = match adapter_id {
@@ -283,6 +270,11 @@ fn build_builtin_outcome(
         "truyenqq" => "TruyenQQ".to_owned(),
         "moetruyen" => "MoeTruyen".to_owned(),
         _ => bare_host.to_owned(),
+    };
+    let filter_schema = match adapter_id {
+        "mangadex" => mangadex_filter_schema(),
+        "truyenqq" => truyenqq_filter_schema(origin, None, None),
+        _ => SiteFilterSchema::default(),
     };
     SiteDetectionOutcome {
         base_url,
@@ -293,6 +285,7 @@ fn build_builtin_outcome(
         icon_candidates,
         adult_detected: false,
         reachability: SiteReachability::Reachable,
+        filter_schema,
     }
 }
 
@@ -303,6 +296,11 @@ async fn probe_unreachable_html_site(
     icon_candidates: Vec<Url>,
 ) -> SiteDetectionOutcome {
     if let Some((api_kind, tmpl)) = probe_known_api_endpoints(http, &base_url).await {
+        let filter_schema = if api_kind == CmsKind::MangaDexApi {
+            mangadex_filter_schema()
+        } else {
+            SiteFilterSchema::default()
+        };
         return SiteDetectionOutcome {
             base_url,
             display_name: bare_host,
@@ -312,6 +310,7 @@ async fn probe_unreachable_html_site(
             icon_candidates,
             adult_detected: false,
             reachability: SiteReachability::Reachable,
+            filter_schema,
         };
     }
     SiteDetectionOutcome {
@@ -323,6 +322,7 @@ async fn probe_unreachable_html_site(
         icon_candidates,
         adult_detected: false,
         reachability: SiteReachability::Unreachable,
+        filter_schema: SiteFilterSchema::default(),
     }
 }
 
@@ -333,6 +333,7 @@ struct SiteHtmlSummary {
     display_name: String,
     discovered_search: Option<String>,
     detected_cms: Option<CmsKind>,
+    filter_schema: SiteFilterSchema,
 }
 
 fn summarize_fetched_site_html(
@@ -358,6 +359,7 @@ fn summarize_fetched_site_html(
         });
     let discovered_search = discover_search_template(&doc, &root_final);
     let detected_cms = detect_cms_from_html(&doc, &fetched.html);
+    let filter_schema = extract_generic_filter_schema(&doc, &base, detected_cms);
     SiteHtmlSummary {
         root_final,
         icon_candidates,
@@ -365,6 +367,7 @@ fn summarize_fetched_site_html(
         display_name,
         discovered_search,
         detected_cms,
+        filter_schema,
     }
 }
 
@@ -373,7 +376,6 @@ async fn classify_fetched_site_html(
     base_url: &Url,
     bare_host: &str,
     fetched: &crate::http::FetchedPage,
-    custom_rules: &[CustomRuleSpec],
 ) -> SiteDetectionOutcome {
     let SiteHtmlSummary {
         root_final,
@@ -382,6 +384,7 @@ async fn classify_fetched_site_html(
         display_name,
         discovered_search,
         detected_cms,
+        filter_schema,
     } = summarize_fetched_site_html(base_url, bare_host, fetched);
 
     if let Some(cms_kind) = detected_cms {
@@ -396,19 +399,7 @@ async fn classify_fetched_site_html(
             icon_candidates,
             adult_detected,
             reachability: SiteReachability::Reachable,
-        };
-    }
-
-    if let Some(rule) = match_rule_by_fingerprint(&fetched.html, custom_rules) {
-        return SiteDetectionOutcome {
-            base_url: root_final.clone(),
-            display_name,
-            kind: CmsKind::CustomRule,
-            parser_ref: Some(rule.id.clone()),
-            search_template: build_rule_search_hint(&root_final, rule).or(discovered_search),
-            icon_candidates,
-            adult_detected,
-            reachability: SiteReachability::Reachable,
+            filter_schema,
         };
     }
 
@@ -422,19 +413,7 @@ async fn classify_fetched_site_html(
             icon_candidates,
             adult_detected,
             reachability: SiteReachability::Reachable,
-        };
-    }
-
-    if let Some(rule) = probe_rule_endpoints(http, &root_final, custom_rules).await {
-        return SiteDetectionOutcome {
-            base_url: root_final.clone(),
-            display_name,
-            kind: CmsKind::CustomRule,
-            parser_ref: Some(rule.id.clone()),
-            search_template: build_rule_search_hint(&root_final, rule).or(discovered_search),
-            icon_candidates,
-            adult_detected,
-            reachability: SiteReachability::Reachable,
+            filter_schema,
         };
     }
 
@@ -460,6 +439,7 @@ async fn classify_fetched_site_html(
         icon_candidates,
         adult_detected,
         reachability: SiteReachability::Reachable,
+        filter_schema,
     }
 }
 
@@ -468,13 +448,11 @@ async fn classify_fetched_site_html(
 pub fn detect_cms_from_html(doc: &Html, html: &str) -> Option<CmsKind> {
     let lower = html.to_ascii_lowercase();
 
-    // 1) Gallery / Doujinshi card grids and gallery embedded metadata (check before generic WordPress)
     let has_gallery_cards = doc.select(&GALLERY_CARD_SEL).count() >= 4;
     if has_gallery_cards || looks_like_gallery_page(doc, html) {
         return Some(CmsKind::FlatGallery);
     }
 
-    // 2) Madara (WordPress)
     let has_madara_dom = doc.select(&MADARA_ITEM_SEL).count() >= 2;
     if lower.contains("wp-content/themes/madara")
         || lower.contains("wp-manga")
@@ -484,7 +462,6 @@ pub fn detect_cms_from_html(doc: &Html, html: &str) -> Option<CmsKind> {
         return Some(CmsKind::Madara);
     }
 
-    // 3) MangaThemesia / MangaStream / MangaReader
     let has_themesia_dom = doc.select(&THEMESIA_ITEM_SEL).count() >= 2;
     if lower.contains("wp-content/themes/mangastream")
         || lower.contains("wp-content/themes/mangareader")
@@ -494,13 +471,11 @@ pub fn detect_cms_from_html(doc: &Html, html: &str) -> Option<CmsKind> {
         return Some(CmsKind::MangaThemesia);
     }
 
-    // 4) WPComics-style item structure
     let has_wpcomics_dom = doc.select(&WPCOMICS_ITEM_SEL).count() >= 3;
     if has_wpcomics_dom || lower.contains("ctl00_divcenter") {
         return Some(CmsKind::WpComics);
     }
 
-    // 5) Embedded client-side directory variables
     if lower.contains("vm.directory =") || lower.contains("vm.chapters =") {
         return Some(CmsKind::UniversalHeuristic);
     }
@@ -508,19 +483,11 @@ pub fn detect_cms_from_html(doc: &Html, html: &str) -> Option<CmsKind> {
     None
 }
 
-/// Browses or searches a saved/detected source using its [`CmsKind`], automatically applying
-/// domain mirror overrides and one-shot CMS fallback if a dedicated parser fails structurally.
-///
-/// Genuine network/gate/HTTP errors are returned directly (`Err(ScrapeError)`) instead of being
-/// masked as empty search results.
+/// Browses or searches a saved/detected source using keyword + page number.
 ///
 /// # Errors
 ///
 /// Returns [`ScrapeError`] when upstream requests fail or parsing cannot interpret the page.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "orchestrates saved source CMS dispatch, search template, and custom rule fallback"
-)]
 pub async fn browse_or_search_cms(
     http: &HttpClient,
     kind: CmsKind,
@@ -529,96 +496,195 @@ pub async fn browse_or_search_cms(
     search_template: Option<&str>,
     query: Option<&str>,
     page: u32,
-    custom_rules: &[CustomRuleSpec],
+) -> Result<CatalogPage, ScrapeError> {
+    let filters = CatalogFilterQuery {
+        query: query.map(str::to_owned),
+        ..CatalogFilterQuery::default()
+    };
+    browse_or_filter_cms(
+        http,
+        kind,
+        base_url,
+        None,
+        parser_ref,
+        search_template,
+        None,
+        &filters,
+        page,
+    )
+    .await
+}
+
+/// Browses, searches, or filters a source using its [`CmsKind`], [`SiteFilterSchema`], and
+/// [`CatalogFilterQuery`] (applying server pushdown first and client-side fallback second).
+///
+/// # Errors
+///
+/// Returns [`ScrapeError`] when upstream requests fail or parsing cannot interpret the page.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "orchestrates saved source CMS dispatch, dynamic filter schema, and pagination"
+)]
+pub async fn browse_or_filter_cms(
+    http: &HttpClient,
+    kind: CmsKind,
+    base_url: &Url,
+    current_url: Option<&Url>,
+    parser_ref: Option<&str>,
+    search_template: Option<&str>,
+    cached_schema: Option<&SiteFilterSchema>,
+    filters: &CatalogFilterQuery,
+    page: u32,
 ) -> Result<CatalogPage, ScrapeError> {
     let page_num = page.max(1);
-    let clean_query = query.map(str::trim).filter(|q| !q.is_empty());
+    let clean_query = filters
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
 
-    match kind {
-        CmsKind::CustomRule => {
-            if let Some(rule_id) = parser_ref
-                && let Some(spec) = custom_rules.iter().find(|r| r.id == rule_id)
-            {
-                match execute_rule_catalog(http, base_url, spec, clean_query, page_num).await {
-                    Ok(cat) if !cat.entries.is_empty() || clean_query.is_some() => return Ok(cat),
-                    Err(err) if is_gate_or_transport_err(&err) => return Err(err),
-                    Ok(_) | Err(_) => {}
-                }
-            }
-            browse_generic_or_cms_fallback(http, base_url, search_template, clean_query, page_num)
-                .await
-        }
+    let default_schema = SiteFilterSchema::default();
+    let active_schema = cached_schema.unwrap_or(&default_schema);
+    let (target_url, unhandled) = build_filtered_catalog_url(
+        base_url,
+        current_url,
+        kind,
+        parser_ref,
+        search_template,
+        active_schema,
+        filters,
+        page_num,
+    )?;
+
+    let mut cat = match kind {
         CmsKind::BuiltInAdapter => {
-            browse_builtin_adapter(
-                http,
-                base_url,
-                parser_ref,
-                search_template,
-                clean_query,
-                page_num,
-            )
-            .await
+            browse_builtin_adapter_url(http, base_url, &target_url, parser_ref, clean_query).await?
         }
         CmsKind::MangaDexApi => {
-            browse_mangadex_compatible_api(http, base_url, clean_query, page_num).await
+            browse_mangadex_compatible_api(http, base_url, clean_query, page_num).await?
         }
         CmsKind::ComickApi => {
-            browse_comick_compatible_api(http, base_url, clean_query, page_num).await
+            browse_comick_compatible_api(http, base_url, clean_query, page_num).await?
         }
         CmsKind::Madara
         | CmsKind::MangaThemesia
         | CmsKind::WpComics
         | CmsKind::FlatGallery
         | CmsKind::FoolSlide => {
-            browse_cms_html_family(
+            fetch_and_parse_cms_url(
                 http,
                 kind,
+                &target_url,
                 base_url,
-                parser_ref,
                 search_template,
                 clean_query,
                 page_num,
             )
-            .await
+            .await?
         }
         CmsKind::UniversalHeuristic | CmsKind::BrowserOnly => {
-            browse_generic_or_cms_fallback(http, base_url, search_template, clean_query, page_num)
-                .await
+            fetch_and_parse_generic_url(
+                http,
+                &target_url,
+                base_url,
+                search_template,
+                clean_query,
+                page_num,
+            )
+            .await?
+        }
+    };
+
+    cat.filter_schema = merge_filter_schemas(cached_schema, cat.filter_schema);
+    apply_client_filters_with_bounded_scan(http, kind, base_url, &mut cat, filters, unhandled)
+        .await;
+
+    Ok(cat)
+}
+
+async fn apply_client_filters_with_bounded_scan(
+    http: &HttpClient,
+    kind: CmsKind,
+    base_url: &Url,
+    cat: &mut CatalogPage,
+    filters: &CatalogFilterQuery,
+    unhandled: UnhandledFilterMask,
+) {
+    if !unhandled.any() {
+        return;
+    }
+
+    filter_entries_client_side(&mut cat.entries, &cat.filter_schema, filters, unhandled);
+
+    // If client-side filtering pruned the first page below 6 results and more pages exist,
+    // scan up to 2 bounded follow-up pages so the user sees a healthy set of matching titles.
+    let mut next_cursor = cat.pagination.next_url.clone();
+    let mut extra_scans = 0_u8;
+    while cat.entries.len() < 6 && extra_scans < 2 {
+        let Some(next_url) = next_cursor.take() else {
+            break;
+        };
+        extra_scans += 1;
+        let Ok(fetched) = http.fetch_html(&next_url).await else {
+            break;
+        };
+        let next_cat_opt = parse_cms_catalog_html(
+            kind,
+            &fetched.html,
+            &fetched.final_url,
+            base_url,
+            cat.query.as_deref(),
+            cat.pagination.current_page + u32::from(extra_scans),
+        )
+        .or_else(|| {
+            GenericSource::parse_catalog_html(
+                &fetched.html,
+                &fetched.final_url,
+                UrlKind::CatalogPage,
+            )
+            .ok()
+        });
+        let Some(mut next_cat) = next_cat_opt else {
+            break;
+        };
+        next_cursor.clone_from(&next_cat.pagination.next_url);
+        cat.pagination.next_url = next_cat.pagination.next_url;
+        filter_entries_client_side(
+            &mut next_cat.entries,
+            &cat.filter_schema,
+            filters,
+            unhandled,
+        );
+        let seen: HashSet<String> = cat
+            .entries
+            .iter()
+            .map(|e| e.url.as_str().trim_end_matches('/').to_owned())
+            .collect();
+        for item in next_cat.entries {
+            if !seen.contains(item.url.as_str().trim_end_matches('/')) {
+                cat.entries.push(item);
+            }
         }
     }
 }
 
-async fn browse_builtin_adapter(
+async fn browse_builtin_adapter_url(
     http: &HttpClient,
     base_url: &Url,
+    target_url: &Url,
     parser_ref: Option<&str>,
-    search_template: Option<&str>,
     clean_query: Option<&str>,
-    page_num: u32,
 ) -> Result<CatalogPage, ScrapeError> {
-    let target_url = build_cms_target_url(
-        base_url,
-        CmsKind::BuiltInAdapter,
-        parser_ref,
-        search_template,
-        clean_query,
-        page_num,
-    )?;
     let adapters = crate::source::default_adapters();
     if let Some(adapter_id) = parser_ref
         && let Some(adapter) = adapters.iter().find(|a| a.id() == adapter_id)
     {
-        let mut effective_target = target_url;
-        if adapter_id == "mangadex" && !is_mangadex_host(base_url.host_str().unwrap_or("")) {
-            effective_target = build_cms_target_url(
-                &MANGADEX_CANONICAL_BASE,
-                CmsKind::BuiltInAdapter,
-                Some("mangadex"),
-                None,
-                clean_query,
-                page_num,
-            )?;
-        }
+        let effective_target =
+            if adapter_id == "mangadex" && !is_mangadex_host(target_url.host_str().unwrap_or("")) {
+                crate::link_matcher::rewrite_domain_override(target_url, &MANGADEX_CANONICAL_BASE)
+            } else {
+                target_url.clone()
+            };
         match adapter.resolve(http, &effective_target).await {
             Ok(crate::model::Resolved::Catalog(cat)) => {
                 if !cat.entries.is_empty() || clean_query.is_some() {
@@ -631,27 +697,19 @@ async fn browse_builtin_adapter(
             Ok(_) | Err(_) => {}
         }
     }
-    browse_generic_or_cms_fallback(http, base_url, search_template, clean_query, page_num).await
+    fetch_and_parse_generic_url(http, target_url, base_url, None, clean_query, 1).await
 }
 
-async fn browse_cms_html_family(
+async fn fetch_and_parse_cms_url(
     http: &HttpClient,
     kind: CmsKind,
+    target_url: &Url,
     base_url: &Url,
-    parser_ref: Option<&str>,
     search_template: Option<&str>,
     clean_query: Option<&str>,
     page_num: u32,
 ) -> Result<CatalogPage, ScrapeError> {
-    let target_url = build_cms_target_url(
-        base_url,
-        kind,
-        parser_ref,
-        search_template,
-        clean_query,
-        page_num,
-    )?;
-    let fetched = http.fetch_html(&target_url).await?;
+    let fetched = http.fetch_html(target_url).await?;
     if let Some(cat) = parse_cms_catalog_html(
         kind,
         &fetched.html,
@@ -673,7 +731,9 @@ async fn browse_cms_html_family(
     )
     .map(|mut cat| {
         cat.query = clean_query.map(str::to_owned);
-        cat.pagination.current_page = page_num;
+        if cat.pagination.current_page <= 1 && page_num > 1 {
+            cat.pagination.current_page = page_num;
+        }
         if cat.search_url_template.is_none() {
             cat.search_url_template = search_template
                 .map(str::to_owned)
@@ -725,22 +785,15 @@ pub async fn fetch_madara_chapters_ajax(
     Vec::new()
 }
 
-async fn browse_generic_or_cms_fallback(
+async fn fetch_and_parse_generic_url(
     http: &HttpClient,
+    target: &Url,
     base_url: &Url,
     search_template: Option<&str>,
     clean_query: Option<&str>,
     page_num: u32,
 ) -> Result<CatalogPage, ScrapeError> {
-    let target = build_cms_target_url(
-        base_url,
-        CmsKind::UniversalHeuristic,
-        None,
-        search_template,
-        clean_query,
-        page_num,
-    )?;
-    let fetched = http.fetch_html(&target).await?;
+    let fetched = http.fetch_html(target).await?;
     let doc = Html::parse_document(&fetched.html);
     if let Some(detected) = detect_cms_from_html(&doc, &fetched.html)
         && let Some(cat) = parse_cms_catalog_html(
@@ -763,142 +816,15 @@ async fn browse_generic_or_cms_fallback(
     };
     let mut cat = GenericSource::parse_catalog_html(&fetched.html, &fetched.final_url, kind)?;
     cat.query = clean_query.map(str::to_owned);
-    cat.pagination.current_page = page_num;
-    if page_num > 1 {
-        cat.pagination.prev_url = build_cms_target_url(
-            base_url,
-            CmsKind::UniversalHeuristic,
-            None,
-            search_template,
-            clean_query,
-            page_num - 1,
-        )
-        .ok();
+    if cat.pagination.current_page <= 1 && page_num > 1 {
+        cat.pagination.current_page = page_num;
     }
-    if !cat.entries.is_empty() {
-        cat.pagination.next_url = build_cms_target_url(
-            base_url,
-            CmsKind::UniversalHeuristic,
-            None,
-            search_template,
-            clean_query,
-            page_num + 1,
-        )
-        .ok();
+    if cat.search_url_template.is_none()
+        && let Some(tmpl) = search_template
+    {
+        cat.search_url_template = Some(tmpl.to_owned());
     }
     Ok(cat)
-}
-
-fn build_cms_target_url(
-    base_url: &Url,
-    kind: CmsKind,
-    parser_ref: Option<&str>,
-    search_template: Option<&str>,
-    clean_query: Option<&str>,
-    page_num: u32,
-) -> Result<Url, ScrapeError> {
-    if let Some(q) = clean_query {
-        if let Some(tmpl) = search_template.filter(|t| t.contains("{query}")) {
-            let encoded = percent_encode_query(q);
-            let raw = tmpl.replace("{query}", &encoded);
-            let mut u = Url::parse(&raw).map_err(|e| ScrapeError::InvalidUrl(e.to_string()))?;
-            if page_num > 1 {
-                u.query_pairs_mut()
-                    .append_pair("page", &page_num.to_string());
-            }
-            return Ok(u);
-        }
-
-        let mut u = base_url.clone();
-        match kind {
-            CmsKind::BuiltInAdapter => {
-                match parser_ref {
-                    Some("mangadex") => {
-                        u.set_path("/search");
-                        u.query_pairs_mut().append_pair("q", q);
-                    }
-                    Some("truyenqq") => {
-                        u.set_path("/tim-kiem.html");
-                        u.query_pairs_mut().append_pair("q", q);
-                    }
-                    Some("moetruyen") => {
-                        u.set_path("/manga");
-                        u.query_pairs_mut().append_pair("q", q);
-                    }
-                    _ => {
-                        u.query_pairs_mut().append_pair("s", q);
-                    }
-                }
-                if page_num > 1 {
-                    u.query_pairs_mut()
-                        .append_pair("page", &page_num.to_string());
-                }
-            }
-            CmsKind::Madara => {
-                if page_num > 1 {
-                    u.set_path(&format!("/page/{page_num}/"));
-                }
-                u.query_pairs_mut()
-                    .append_pair("s", q)
-                    .append_pair("post_type", "wp-manga");
-            }
-            CmsKind::MangaThemesia => {
-                if page_num > 1 {
-                    u.set_path(&format!("/page/{page_num}/"));
-                }
-                u.query_pairs_mut().append_pair("s", q);
-            }
-            CmsKind::WpComics => {
-                u.set_path("/tim-truyen");
-                u.query_pairs_mut().append_pair("keyword", q);
-                if page_num > 1 {
-                    u.query_pairs_mut()
-                        .append_pair("page", &page_num.to_string());
-                }
-            }
-            CmsKind::FlatGallery => {
-                u.set_path("/search/");
-                u.query_pairs_mut().append_pair("q", q);
-                if page_num > 1 {
-                    u.query_pairs_mut()
-                        .append_pair("page", &page_num.to_string());
-                }
-            }
-            _ => {
-                u.query_pairs_mut().append_pair("s", q);
-                if page_num > 1 {
-                    u.query_pairs_mut()
-                        .append_pair("page", &page_num.to_string());
-                }
-            }
-        }
-        return Ok(u);
-    }
-
-    let mut u = base_url.clone();
-    match kind {
-        CmsKind::BuiltInAdapter => {
-            if parser_ref == Some("mangadex") {
-                u.set_path("/titles");
-            }
-            if page_num > 1 {
-                u.query_pairs_mut()
-                    .append_pair("page", &page_num.to_string());
-            }
-        }
-        CmsKind::Madara | CmsKind::MangaThemesia => {
-            if page_num > 1 {
-                u.set_path(&format!("/page/{page_num}/"));
-            }
-        }
-        _ => {
-            if page_num > 1 {
-                u.query_pairs_mut()
-                    .append_pair("page", &page_num.to_string());
-            }
-        }
-    }
-    Ok(u)
 }
 
 fn parse_cms_catalog_html(
@@ -922,16 +848,11 @@ fn parse_cms_catalog_html(
         .to_ascii_lowercase();
     let site_name = host.trim_start_matches("www.").to_owned();
     let title = extract_title(&doc).unwrap_or_else(|| site_name.clone());
-    let next_url = if entries.is_empty() {
-        None
-    } else {
-        build_cms_target_url(base_root, kind, None, None, clean_query, page_num + 1).ok()
-    };
-    let prev_url = if page_num > 1 {
-        build_cms_target_url(base_root, kind, None, None, clean_query, page_num - 1).ok()
-    } else {
-        None
-    };
+    let mut pagination = extract_universal_pagination(&doc, &base, page_url, !entries.is_empty());
+    if pagination.current_page <= 1 && page_num > 1 {
+        pagination.current_page = page_num;
+    }
+    let filter_schema = extract_generic_filter_schema(&doc, &base, Some(kind));
 
     Some(CatalogPage {
         url: page_url.clone(),
@@ -952,12 +873,8 @@ fn parse_cms_catalog_html(
             .or_else(|| default_cms_search_template(base_root, kind)),
         entries,
         categories: Vec::new(),
-        pagination: PaginationInfo {
-            current_page: page_num,
-            total_pages: None,
-            prev_url,
-            next_url,
-        },
+        pagination,
+        filter_schema,
     })
 }
 
@@ -1019,6 +936,27 @@ fn extract_cms_cards(kind: CmsKind, doc: &Html, base: &Url) -> Option<Vec<Catalo
             .next()
             .map(|el| clean_text(&el.text().collect::<String>()))
             .filter(|s| !s.is_empty());
+        let updated_at = card
+            .select(&TIME_HINT_SEL)
+            .next()
+            .map(|el| clean_text(&el.text().collect::<String>()))
+            .filter(|s| !s.is_empty());
+        let chapter_count = latest_chapter
+            .as_deref()
+            .and_then(extract_chapter_number)
+            .and_then(|n| {
+                if n.is_finite() && n >= 0.0 {
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "clamped non-negative chapter number"
+                    )]
+                    Some(n.floor().min(f32::from(u16::MAX)) as u32)
+                } else {
+                    None
+                }
+            });
 
         let key = url.as_str().trim_end_matches('/').to_owned();
         if !seen.insert(key) {
@@ -1033,6 +971,8 @@ fn extract_cms_cards(kind: CmsKind, doc: &Html, base: &Url) -> Option<Vec<Catalo
             status: None,
             genres: Vec::new(),
             source_id: None,
+            chapter_count,
+            updated_at,
         });
     }
     Some(entries)
@@ -1074,30 +1014,6 @@ async fn probe_known_api_endpoints(
         return Some((CmsKind::FoolSlide, None));
     }
 
-    None
-}
-
-async fn probe_rule_endpoints<'a>(
-    http: &HttpClient,
-    base_url: &Url,
-    rules: &'a [CustomRuleSpec],
-) -> Option<&'a CustomRuleSpec> {
-    for rule in rules {
-        for path in &rule.probe_paths {
-            let trimmed = path.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let Ok(u) = base_url.join(trimmed) else {
-                continue;
-            };
-            if let Ok(resp) = http.fetch_html(&u).await
-                && match_rule_by_fingerprint(&resp.html, std::slice::from_ref(rule)).is_some()
-            {
-                return Some(rule);
-            }
-        }
-    }
     None
 }
 
@@ -1154,6 +1070,8 @@ async fn browse_mangadex_compatible_api(
                         .map(str::to_owned),
                     genres: Vec::new(),
                     source_id: Some(id.to_owned()),
+                    chapter_count: None,
+                    updated_at: None,
                 });
             }
         }
@@ -1178,7 +1096,9 @@ async fn browse_mangadex_compatible_api(
             total_pages: None,
             prev_url: None,
             next_url: None,
+            page_url_template: None,
         },
+        filter_schema: mangadex_filter_schema(),
     })
 }
 
@@ -1225,6 +1145,8 @@ async fn browse_comick_compatible_api(
                     status: None,
                     genres: Vec::new(),
                     source_id: item.get("hid").and_then(Value::as_str).map(str::to_owned),
+                    chapter_count: None,
+                    updated_at: None,
                 });
             }
         }
@@ -1249,7 +1171,9 @@ async fn browse_comick_compatible_api(
             total_pages: None,
             prev_url: None,
             next_url: None,
+            page_url_template: None,
         },
+        filter_schema: SiteFilterSchema::default(),
     })
 }
 
@@ -1279,25 +1203,6 @@ fn default_cms_search_template(base_url: &Url, kind: CmsKind) -> Option<String> 
     }
 }
 
-fn build_rule_search_hint(base_url: &Url, rule: &CustomRuleSpec) -> Option<String> {
-    let ep = rule
-        .catalog
-        .search_endpoint
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or("/");
-    let param = rule
-        .catalog
-        .search_param
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or("s");
-    base_url.join(ep).ok().map(|u| {
-        let sep = if u.query().is_some() { "&" } else { "?" };
-        format!("{u}{sep}{param}={{query}}")
-    })
-}
-
 fn is_gate_or_transport_err(err: &ScrapeError) -> bool {
     matches!(
         err,
@@ -1310,11 +1215,4 @@ fn is_gate_or_transport_err(err: &ScrapeError) -> bool {
             | ScrapeError::Proxy(_)
             | ScrapeError::DisallowedHost(_)
     )
-}
-
-fn percent_encode_query(raw: &str) -> String {
-    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    serializer.append_pair("q", raw);
-    let encoded = serializer.finish();
-    encoded.strip_prefix("q=").unwrap_or(&encoded).to_owned()
 }

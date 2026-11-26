@@ -22,14 +22,13 @@ pub mod parse;
 pub mod recognize;
 pub mod registry;
 pub mod resolver;
-pub mod rule_pack;
 pub mod source;
 pub mod throttle;
 
 pub use cms::{
-    CmsKind, SiteDetectionOutcome, SiteReachability, browse_or_search_cms, detect_cms_from_html,
-    detect_site_structure, fetch_madara_chapters_ajax, match_builtin_adapter_id,
-    normalize_source_root,
+    CmsKind, SiteDetectionOutcome, SiteReachability, browse_or_filter_cms, browse_or_search_cms,
+    detect_cms_from_html, detect_site_structure, fetch_madara_chapters_ajax,
+    match_builtin_adapter_id, normalize_source_root,
 };
 pub use diagnostics::{
     BrowserFallbackAvailability, ErrorCodeDescriptor, ExtractionStrategyKind, FailureCategoryGroup,
@@ -53,6 +52,16 @@ pub use model::{
     CatalogEntry, CatalogPage, Chapter, ChapterRef, Manga, NavLink, PageImage, PaginationInfo,
     Resolved, SiteId,
 };
+pub use parse::filters::{
+    CatalogFilterQuery, FilterAxis, FilterAxisKind, FilterOptionItem, FilterTagOption,
+    SiteFilterSchema, UnhandledFilterMask, UpdatedWithinFilter, build_filtered_catalog_url,
+    estimate_age_hours_from_label, extract_generic_filter_schema, filter_entries_client_side,
+    merge_filter_schemas,
+};
+pub use parse::pagination::{
+    apply_page_to_template, extract_page_number_from_url, extract_universal_pagination,
+    template_from_numbered_url,
+};
 pub use recognize::{
     PreFetchClassification, RecognitionDiagnostic, RecognitionStatus, UrlKind,
     classify_normalized_url, classify_url_pre_fetch, diagnostic_from_error,
@@ -62,10 +71,6 @@ pub use resolver::{
     CandidateOrigin, DetectedImageFormat, ImageHeaderInfo, ImageValidationError, RawImageCandidate,
     ResolvedImageCollection, inspect_image_bytes,
 };
-pub use rule_pack::{
-    CustomRuleSpec, RuleCatalogConfig, RuleChaptersConfig, RuleDetailConfig, RulePagesConfig,
-    RulePaginationKind, execute_rule_catalog, execute_rule_chapter, execute_rule_manga,
-    parse_rule_catalog_html, parse_rule_chapter_html, parse_rule_manga_html, validate_rule_spec,
-};
 pub use source::Source;
+pub use source::default_filter_schema_for_adapter;
 pub use throttle::{BandwidthLimiter, MAX_SPEED_LIMIT_KBPS};

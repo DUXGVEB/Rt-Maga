@@ -10,6 +10,7 @@ import type {
   CacheInfo,
   CacheMangaStats,
   CacheSourceStats,
+  CatalogFilterQuery,
   CatalogPageView,
   ChapterLoadPriority,
   ChapterView,
@@ -41,11 +42,11 @@ import type {
   ReaderModeOverride,
   ReaderSettings,
   ResolveResponse,
-  RuleSpecView,
   SavedDiagnosticFile,
   SavedSourceView,
   Settings,
   SettingsSection,
+  SiteFilterSchema,
   SourcePlacement,
   SyncDecision,
   SyncSenderMode,
@@ -428,22 +429,78 @@ export const api = {
       visibility: patch.visibility ?? "unchanged",
     }),
   deleteSavedSource: (id: number) => invoke<void>("delete_saved_source", { id }),
-  browseSavedSource: (sourceId: number, query?: string | null, page = 1) =>
+  browseSavedSource: (
+    sourceId: number,
+    query?: string | null,
+    page = 1,
+    filters?: CatalogFilterQuery | null,
+    forceRefresh = false
+  ) =>
     invoke<CatalogPageView>("browse_saved_source", {
       sourceId,
       query: query ?? null,
+      filters: filters ?? null,
       page,
+      forceRefresh,
+    }),
+  browseCatalogUrl: (
+    url: string,
+    page = 1,
+    filters?: CatalogFilterQuery | null,
+    forceRefresh = false
+  ) =>
+    invoke<CatalogPageView>("browse_catalog_url", {
+      url,
+      filters: filters ?? null,
+      page,
+      forceRefresh,
+    }),
+  getWebFilterSchema: (params: { sourceId?: number | null; url?: string | null }) =>
+    invoke<SiteFilterSchema>("get_web_filter_schema", {
+      sourceId: params.sourceId ?? null,
+      url: params.url ?? null,
     }),
   searchSavedSources: (query: string, filter: VisibilityFilter = "main_only") =>
     invoke<MultiSourceSearchResponse>("search_saved_sources", { query, filter }),
 
-  listRuleSpecs: () => invoke<RuleSpecView[]>("list_rule_specs"),
-  importRuleSpecsJson: (rawJson: string) =>
-    invoke<RuleSpecView[]>("import_rule_specs_json", { rawJson }),
-  exportRuleSpecsJson: () => invoke<string>("export_rule_specs_json"),
-  setRuleSpecEnabled: (ruleId: string, enabled: boolean) =>
-    invoke<void>("set_rule_spec_enabled", { ruleId, enabled }),
-  deleteRuleSpec: (ruleId: string) => invoke<void>("delete_rule_spec", { ruleId }),
+  pickAndImportCbz: (targetMangaId?: number | null) =>
+    invoke<MangaView | null>("pick_and_import_cbz", {
+      targetMangaId: targetMangaId ?? null,
+    }),
+  importCbzPaths: (paths: string[], targetMangaId?: number | null) =>
+    invoke<MangaView>("import_cbz_paths", {
+      paths,
+      targetMangaId: targetMangaId ?? null,
+    }),
+  importCbzBrowserFiles: async (
+    files: File[],
+    targetMangaId?: number | null
+  ): Promise<MangaView> => {
+    const CHUNK_BYTES = 512 * 1024;
+    const uploadIds: string[] = [];
+    for (const file of files) {
+      const uploadId = await invoke<string>("begin_cbz_upload", { filename: file.name });
+      uploadIds.push(uploadId);
+      let offset = 0;
+      while (offset < file.size) {
+        const slice = file.slice(offset, offset + CHUNK_BYTES);
+        const buf = new Uint8Array(await slice.arrayBuffer());
+        let binary = "";
+        for (let i = 0; i < buf.length; i += 0x8000) {
+          binary += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+        }
+        await invoke<void>("append_cbz_chunk", {
+          uploadId,
+          chunkBase64: btoa(binary),
+        });
+        offset += CHUNK_BYTES;
+      }
+    }
+    return invoke<MangaView>("finish_cbz_upload", {
+      uploadIds,
+      targetMangaId: targetMangaId ?? null,
+    });
+  },
 
   buildFeedbackReport: (request: FeedbackReportRequest) =>
     invoke<FormattedFeedbackReport>("build_feedback_report", { request }),

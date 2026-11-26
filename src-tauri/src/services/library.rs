@@ -1,10 +1,12 @@
-//! Manga resolution, detail loading, and reading history workflows.
+//! Manga resolution, catalog browsing/filtering, detail loading, and reading history workflows.
+
+use std::sync::Arc;
 
 use mangacore::{
-    CatalogPage, CmsKind, RecognitionDiagnostic, RecognitionStatus, Resolved, ScrapeError, UrlKind,
-    UserQueryKind, classify_user_input, execute_rule_catalog, execute_rule_chapter,
-    execute_rule_manga, normalize_url, resolve_exact_from_source, rewrite_domain_override,
-    rule_pack::match_rule_by_domain,
+    CatalogFilterQuery, CatalogPage, CmsKind, RecognitionDiagnostic, RecognitionStatus, Resolved,
+    ScrapeError, SiteFilterSchema, UrlKind, UserQueryKind, apply_page_to_template,
+    browse_or_filter_cms, classify_user_input, match_builtin_adapter_id, merge_filter_schemas,
+    normalize_url, resolve_exact_from_source, rewrite_domain_override,
 };
 use serde::Serialize;
 use url::Url;
@@ -17,7 +19,8 @@ use crate::repo::history::{HistoryEntryRow, HistoryProgressRow, LastReadingDesti
 use crate::repo::manga::{ChapterRow, HideAction, MangaRow};
 use crate::repo::notification::NotificationRow;
 use crate::services::sources::{
-    AutoRecordDeps, spawn_auto_record_from_catalog, spawn_auto_record_from_manga,
+    AutoRecordDeps, default_schema_for_host_or_parser, spawn_auto_record_from_catalog,
+    spawn_auto_record_from_manga, spawn_next_catalog_page_prefetch,
 };
 use crate::settings::ReaderSettings;
 use crate::state::AppState;
@@ -119,6 +122,8 @@ pub(crate) struct CatalogEntryView {
     pub status: Option<String>,
     pub genres: Vec<String>,
     pub source_id: Option<String>,
+    pub chapter_count: Option<u32>,
+    pub updated_at: Option<String>,
 }
 
 /// Category or navigation shortcut extracted from a website catalog/homepage.
@@ -138,6 +143,7 @@ pub(crate) struct PaginationView {
     pub total_pages: Option<u32>,
     pub prev_url: Option<String>,
     pub next_url: Option<String>,
+    pub page_url_template: Option<String>,
 }
 
 /// Resolved catalog/homepage/search view sent to the Svelte Browse page.
@@ -154,6 +160,8 @@ pub(crate) struct CatalogPageView {
     pub entries: Vec<CatalogEntryView>,
     pub categories: Vec<NavLinkView>,
     pub pagination: PaginationView,
+    pub filter_schema: SiteFilterSchema,
+    pub source_id: Option<i64>,
 }
 
 /// Response returned when the user submits any homepage, catalog, search, manga, or chapter URL.
@@ -233,14 +241,14 @@ pub(crate) struct NotificationItemView {
     pub created_at: i64,
 }
 
-/// Resolves an arbitrary pasted link (web URL or `rtmaga://` deep link), persists the manga
-/// in SQLite, prefetches covers, auto-records discovered sources, and returns the UI view.
+/// Resolves an arbitrary pasted link (web URL or `rtmaga://` deep link), persists manga/filter
+/// metadata in SQLite, auto-records discovered sources, and returns the UI view.
 ///
 /// # Errors
 ///
 /// Returns [`AppError`] on invalid URL, network/scrape failure, or database error.
 pub(crate) async fn resolve_url(
-    state: &AppState,
+    state: &Arc<AppState>,
     raw_url: &str,
 ) -> Result<ResolveResponse, AppError> {
     let policy = state.current_settings().await.headless_policy();
@@ -273,21 +281,222 @@ pub(crate) async fn resolve_url(
             .ok();
             finish_resolved_response(state, parsed_target, resolved, diagnostic).await
         }
-        Err(boxed) => {
-            let (err, diag) = *boxed;
-            if matches!(
-                err,
-                ScrapeError::NotRecognized { .. } | ScrapeError::UnsupportedSource { .. }
-            ) && let Ok(parsed) = normalize_url(&effective_input)
-                && let Some((fallback_res, fallback_diag)) =
-                    try_custom_rule_fallback(state, &parsed, &diag).await
-            {
-                return finish_resolved_response(state, Some(parsed), fallback_res, fallback_diag)
-                    .await;
-            }
-            record_and_return_resolve_error(state, err, diag).await
-        }
+        Err(boxed) => record_and_return_resolve_error(state, boxed.0, boxed.1).await,
     }
+}
+
+/// Browses, paginates, or applies multi-tag/chapter/recency filters directly against an arbitrary
+/// catalog/category/homepage URL, backed by RAM `CatalogCache` and next-page prefetching.
+///
+/// # Errors
+///
+/// Returns [`AppError`] on invalid URL or upstream scraping failure.
+#[expect(
+    clippy::too_many_lines,
+    clippy::fn_params_excessive_bools,
+    reason = "handles cached catalog browsing, pagination jumps, and dynamic filter pushdown"
+)]
+pub(crate) async fn browse_catalog_url(
+    state: &Arc<AppState>,
+    raw_url: &str,
+    filters: Option<CatalogFilterQuery>,
+    page: u32,
+    force_refresh: bool,
+) -> Result<CatalogPageView, AppError> {
+    let effective_input = rewrite_raw_url_if_mirrored(state, raw_url).await;
+    let parsed_url = normalize_url(&effective_input).map_err(AppError::from)?;
+    let filter_query = filters.unwrap_or_default();
+    let target_page = page.max(1);
+    let filter_sig = serde_json::to_string(&filter_query).unwrap_or_default();
+    let cache_key = format!("url:{}|p:{target_page}|f:{filter_sig}", parsed_url.as_str());
+
+    if !force_refresh && let Some(cached) = state.catalogs.get(&cache_key).await {
+        return Ok(cached);
+    }
+
+    let host = parsed_url.host_str().unwrap_or("");
+    let matched_source = state
+        .db
+        .find_matching_saved_source(None, Some(host))
+        .await
+        .ok()
+        .flatten();
+
+    let mut cat = if filter_query.is_empty() {
+        let concrete_url = if target_page > 1
+            && let Some(tmpl) = mangacore::template_from_numbered_url(&parsed_url)
+            && let Some(jumped) = apply_page_to_template(&tmpl, target_page)
+        {
+            jumped
+        } else {
+            parsed_url.clone()
+        };
+        let policy = state.current_settings().await.headless_policy();
+        let (resolved, diag) = match state
+            .registry
+            .resolve_with_diagnostics(concrete_url.as_str(), policy)
+            .await
+        {
+            Ok(pair) => pair,
+            Err(boxed) => return record_and_return_resolve_error(state, boxed.0, boxed.1).await,
+        };
+        match resolved {
+            Resolved::Catalog(c) => *c,
+            other => {
+                let finish =
+                    finish_resolved_response(state, Some(concrete_url), other, diag).await?;
+                if let Some(cview) = finish.catalog {
+                    return Ok(cview);
+                }
+                return Err(AppError::InvalidUrl {
+                    message: "target URL resolved to a single manga rather than a catalog page"
+                        .to_owned(),
+                });
+            }
+        }
+    } else {
+        let (kind, parser_ref, search_tmpl, filter_base) =
+            if let Some(saved) = matched_source.as_ref() {
+                (
+                    CmsKind::from_storage_str(&saved.source_kind),
+                    saved.parser_ref.clone(),
+                    saved.search_template.clone(),
+                    Url::parse(&saved.base_url).unwrap_or_else(|_| parsed_url.clone()),
+                )
+            } else {
+                let builtin = match_builtin_adapter_id(host);
+                let kind = if builtin.is_some() {
+                    CmsKind::BuiltInAdapter
+                } else {
+                    CmsKind::UniversalHeuristic
+                };
+                (
+                    kind,
+                    builtin.map(str::to_owned),
+                    None,
+                    mangacore::normalize_source_root(parsed_url.as_str())
+                        .unwrap_or_else(|_| parsed_url.clone()),
+                )
+            };
+        let known_schema = load_known_schema_for_url(state, matched_source.as_ref(), host).await;
+        browse_or_filter_cms(
+            state.registry.http(),
+            kind,
+            &filter_base,
+            Some(&parsed_url),
+            parser_ref.as_deref(),
+            search_tmpl.as_deref(),
+            Some(&known_schema),
+            &filter_query,
+            target_page,
+        )
+        .await
+        .map_err(AppError::from)?
+    };
+
+    if let Some(ref saved) = matched_source
+        && (cat.site_name.trim().is_empty() || cat.site_name == cat.site.as_storage_key())
+    {
+        cat.site_name.clone_from(&saved.display_name);
+    }
+
+    let view = enrich_and_cache_catalog_view(
+        state,
+        cat,
+        matched_source.as_ref().map(|s| s.id),
+        Some(cache_key),
+    )
+    .await;
+    Ok(view)
+}
+
+async fn load_known_schema_for_url(
+    state: &AppState,
+    saved: Option<&crate::repo::sources::SavedSourceRow>,
+    host: &str,
+) -> SiteFilterSchema {
+    let mut base =
+        default_schema_for_host_or_parser(Some(host), saved.and_then(|s| s.parser_ref.as_deref()));
+    if let Some(s) = saved
+        && let Some(ref raw) = s.filter_schema_json
+        && let Ok(parsed) = serde_json::from_str::<SiteFilterSchema>(raw)
+    {
+        base = merge_filter_schemas(Some(&base), parsed);
+    }
+    if let Ok(Some(host_cached)) = state.db.get_host_filter_schema(host).await {
+        base = merge_filter_schemas(Some(&base), host_cached);
+    }
+    base
+}
+
+pub(crate) async fn enrich_and_cache_catalog_view(
+    state: &Arc<AppState>,
+    mut cat: CatalogPage,
+    explicit_source_id: Option<i64>,
+    cache_key: Option<String>,
+) -> CatalogPageView {
+    let host = cat.url.host_str().unwrap_or("").to_owned();
+    let matched_source = if let Some(sid) = explicit_source_id {
+        state.db.get_saved_source_by_id(sid).await.ok().flatten()
+    } else {
+        state
+            .db
+            .find_matching_saved_source(None, Some(&host))
+            .await
+            .ok()
+            .flatten()
+    };
+
+    let builtin_schema = default_schema_for_host_or_parser(
+        Some(&host),
+        matched_source
+            .as_ref()
+            .and_then(|s| s.parser_ref.as_deref()),
+    );
+    cat.filter_schema = merge_filter_schemas(Some(&builtin_schema), cat.filter_schema);
+
+    if !host.is_empty()
+        && let Ok(merged_host) = state
+            .db
+            .merge_host_filter_schema(&host, &cat.filter_schema)
+            .await
+    {
+        cat.filter_schema = merged_host;
+    }
+
+    let resolved_source_id = if let Some(ref saved) = matched_source {
+        if let Ok(merged_src) = state
+            .db
+            .merge_saved_source_filter_schema(saved.id, &cat.filter_schema)
+            .await
+        {
+            cat.filter_schema = merged_src;
+        }
+        Some(saved.id)
+    } else {
+        explicit_source_id
+    };
+
+    let next_to_prefetch = cat.pagination.next_url.clone();
+    let view = map_catalog_view(cat, resolved_source_id, &state.proxy_key);
+
+    let url_cache_key = format!(
+        "url:{}|p:{}|f:{}",
+        view.url,
+        view.pagination.current_page,
+        serde_json::to_string(&CatalogFilterQuery::default()).unwrap_or_default()
+    );
+    if let Some(key) = cache_key {
+        state.catalogs.insert(key, view.clone()).await;
+    } else {
+        state.catalogs.insert(url_cache_key, view.clone()).await;
+    }
+
+    if let Some(next_url) = next_to_prefetch {
+        spawn_next_catalog_page_prefetch(Arc::clone(state), next_url, resolved_source_id);
+    }
+
+    view
 }
 
 async fn rewrite_raw_url_if_mirrored(state: &AppState, raw_url: &str) -> String {
@@ -313,7 +522,7 @@ async fn rewrite_raw_url_if_mirrored(state: &AppState, raw_url: &str) -> String 
 }
 
 async fn resolve_app_deep_link(
-    state: &AppState,
+    state: &Arc<AppState>,
     raw_url: &str,
     manga_id: Option<i64>,
     source_key: Option<String>,
@@ -346,11 +555,6 @@ async fn resolve_app_deep_link(
         .await
         && let Ok(mirror_base) = Url::parse(&saved.base_url)
     {
-        let rules = state
-            .db
-            .list_enabled_custom_rules()
-            .await
-            .unwrap_or_default();
         let kind = CmsKind::from_storage_str(&saved.source_kind);
         if let Ok(resolved) = resolve_exact_from_source(
             state.registry.http(),
@@ -360,7 +564,6 @@ async fn resolve_app_deep_link(
             saved.search_template.as_deref(),
             &parsed,
             title.as_deref(),
-            &rules,
         )
         .await
         {
@@ -394,51 +597,8 @@ async fn resolve_app_deep_link(
     finish_resolved_response(state, Some(parsed), resolved, diag).await
 }
 
-async fn try_custom_rule_fallback(
-    state: &AppState,
-    parsed: &Url,
-    orig_diag: &RecognitionDiagnostic,
-) -> Option<(Resolved, RecognitionDiagnostic)> {
-    let rules = state.db.list_enabled_custom_rules().await.ok()?;
-    let host = parsed.host_str()?.to_ascii_lowercase();
-    let spec = match_rule_by_domain(&host, &rules)?;
-    let http = state.registry.http();
-
-    let resolved = if orig_diag.url_kind == UrlKind::WebsiteHome
-        || orig_diag.url_kind == UrlKind::CatalogPage
-        || orig_diag.url_kind == UrlKind::SearchPage
-    {
-        execute_rule_catalog(http, parsed, spec, None, 1)
-            .await
-            .map(|c| Resolved::Catalog(Box::new(c)))
-            .ok()?
-    } else if orig_diag.url_kind == UrlKind::ChapterPage {
-        let ch = execute_rule_chapter(http, parsed, spec).await.ok()?;
-        let parent_url = ch.manga_url.clone().unwrap_or_else(|| parsed.clone());
-        let manga = execute_rule_manga(http, &parent_url, spec).await.ok()?;
-        let at = manga
-            .chapters
-            .first()
-            .cloned()
-            .unwrap_or_else(|| mangacore::ChapterRef::simple(parsed.clone(), ch.name, None));
-        Resolved::Chapter {
-            manga: Box::new(manga),
-            at: Box::new(at),
-        }
-    } else {
-        let manga = execute_rule_manga(http, parsed, spec).await.ok()?;
-        Resolved::Manga(Box::new(manga))
-    };
-
-    let mut diag = orig_diag.clone();
-    diag.adapter = Some(format!("rule:{}", spec.id));
-    "custom_rule_pack".clone_into(&mut diag.stage);
-    diag.status = RecognitionStatus::MangaIdentified;
-    Some((resolved, diag))
-}
-
 async fn finish_resolved_response(
-    state: &AppState,
+    state: &Arc<AppState>,
     submitted_url: Option<Url>,
     resolved: Resolved,
     diagnostic: RecognitionDiagnostic,
@@ -456,23 +616,14 @@ async fn finish_resolved_response(
             if let Some(u) = submitted_url.or_else(|| Some(cat.url.clone())) {
                 spawn_auto_record_from_catalog(deps, u, &cat);
             }
-            for entry in cat.entries.iter().take(12) {
-                if let Some(ref cover) = entry.cover {
-                    state.images.spawn_cover_prefetch(
-                        state.registry.http().clone(),
-                        cover.clone(),
-                        cat.url.clone(),
-                        Some(cat.site.as_storage_key()),
-                        None,
-                        settings.cache.max_mb,
-                    );
-                }
-            }
+            // Note: do NOT bulk-prefetch catalog cover images here; letting `<img loading="lazy">`
+            // stream visible covers through the dedicated `img_semaphores` lane keeps navigation fast!
+            let view = enrich_and_cache_catalog_view(state, *cat, None, None).await;
             Ok(ResolveResponse {
                 kind: "catalog".to_owned(),
                 manga: None,
                 start_at: None,
-                catalog: Some(map_catalog_view(*cat, &state.proxy_key)),
+                catalog: Some(view),
                 diagnostic,
             })
         }
@@ -565,7 +716,9 @@ async fn record_and_return_resolve_error<T>(
 }
 
 fn prefetch_manga_cover(state: &AppState, manga_id: i64, manga: &mangacore::Manga, max_mb: u32) {
-    if let Some(ref cover) = manga.cover {
+    if let Some(ref cover) = manga.cover
+        && !crate::services::cbz::is_cbz_url(cover.as_str())
+    {
         state.images.spawn_cover_prefetch(
             state.registry.http().clone(),
             cover.clone(),
@@ -595,7 +748,11 @@ fn local_diagnostic(raw_url: &str, view: &MangaView) -> RecognitionDiagnostic {
     }
 }
 
-pub(crate) fn map_catalog_view(cat: CatalogPage, proxy_key: &[u8; 32]) -> CatalogPageView {
+pub(crate) fn map_catalog_view(
+    cat: CatalogPage,
+    source_id: Option<i64>,
+    proxy_key: &[u8; 32],
+) -> CatalogPageView {
     let site_key = cat.site.as_storage_key();
     let referer = cat.url.as_str();
     let entries =
@@ -614,6 +771,8 @@ pub(crate) fn map_catalog_view(cat: CatalogPage, proxy_key: &[u8; 32]) -> Catalo
                     status: entry.status,
                     genres: entry.genres,
                     source_id: entry.source_id,
+                    chapter_count: entry.chapter_count,
+                    updated_at: entry.updated_at,
                 }
             })
             .collect();
@@ -643,11 +802,15 @@ pub(crate) fn map_catalog_view(cat: CatalogPage, proxy_key: &[u8; 32]) -> Catalo
             total_pages: cat.pagination.total_pages,
             prev_url: cat.pagination.prev_url.map(Into::into),
             next_url: cat.pagination.next_url.map(Into::into),
+            page_url_template: cat.pagination.page_url_template,
         },
+        filter_schema: cat.filter_schema,
+        source_id,
     }
 }
 
 /// Loads a stored manga by ID, optionally refreshing its chapter list from the web first.
+/// Local `.cbz` archives return stored chapters directly without remote HTTP scraping.
 ///
 /// # Errors
 ///
@@ -665,7 +828,7 @@ pub(crate) async fn get_manga(
             message: format!("manga {manga_id} not found"),
         })?;
 
-    if mode == FetchMode::RefreshFromWeb {
+    if mode == FetchMode::RefreshFromWeb && row.site != "local:cbz" {
         let policy = state.current_settings().await.headless_policy();
         let (resolved, _diag) = match state
             .registry
@@ -883,7 +1046,8 @@ pub(crate) async fn list_hidden_manga(state: &AppState) -> Result<Vec<HiddenMang
         .collect())
 }
 
-/// Permanently deletes a manga, its chapters, history, bookmarks, notifications, and cached images.
+/// Permanently deletes a manga, its internal `.cbz` archives (if any), chapters, history,
+/// bookmarks, notifications, and cached images.
 ///
 /// # Errors
 ///
@@ -892,6 +1056,7 @@ pub(crate) async fn delete_manga_permanently(
     state: &AppState,
     manga_id: i64,
 ) -> Result<(), AppError> {
+    crate::services::cbz::delete_cbz_files_for_manga(&state.data_dir, state, manga_id).await;
     let _ = state.images.clear_by_manga(manga_id).await;
     state.db.delete_manga_permanently(manga_id).await?;
     state.chapters.invalidate_all();

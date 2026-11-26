@@ -2,6 +2,7 @@
   import { ArrowDown, ArrowUp, BookOpen, CheckCircle2, Play, RotateCcw, Sparkles, X } from "lucide-svelte";
   import { onMount } from "svelte";
   import { api } from "../lib/api";
+  import CbzDropZone from "../lib/components/CbzDropZone.svelte";
   import LinkInput from "../lib/components/LinkInput.svelte";
   import MangaCard from "../lib/components/MangaCard.svelte";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
@@ -137,11 +138,14 @@
     </div>
   {/if}
 
-  <!-- Hero Paste Box -->
-  <section class="flex flex-col items-center gap-4 pt-2 text-center">
+  <!-- Hero Paste Box + User-Designated CBZ Importer -->
+  <section class="flex flex-col items-center gap-3.5 pt-2 text-center">
     <h1 class="text-2xl font-bold tracking-tight">{t.homeTitle}</h1>
     <div class="mt-1 flex w-full justify-center">
       <LinkInput />
+    </div>
+    <div class="flex w-full justify-center">
+      <CbzDropZone />
     </div>
   </section>
 

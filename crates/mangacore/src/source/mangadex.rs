@@ -17,6 +17,10 @@ use crate::model::{
     CatalogEntry, CatalogPage, Chapter, ChapterRef, Manga, NavLink, PageImage, PaginationInfo,
     Resolved, SiteId,
 };
+use crate::parse::filters::{
+    CatalogFilterQuery, FilterAxis, FilterAxisKind, FilterOptionItem, FilterTagOption,
+    SiteFilterSchema, UnhandledFilterMask, UpdatedWithinFilter,
+};
 use crate::recognize::UrlKind;
 use crate::source::Source;
 
@@ -579,6 +583,8 @@ pub fn parse_catalog_json(
             status: item.attributes.status,
             genres,
             source_id: Some(format!("mangadex:{}", item.id)),
+            chapter_count: None,
+            updated_at: None,
         });
     }
 
@@ -597,6 +603,8 @@ pub fn parse_catalog_json(
     } else {
         None
     };
+    let page_url_template = build_browse_page_url(submitted_url, 2, query.as_deref())
+        .and_then(|u| crate::parse::pagination::template_from_numbered_url(&u));
 
     let page_title = match &query {
         Some(q) => format!("MangaDex Search: {q}"),
@@ -619,7 +627,9 @@ pub fn parse_catalog_json(
             total_pages,
             prev_url,
             next_url,
+            page_url_template,
         },
+        filter_schema: mangadex_filter_schema(),
     })
 }
 
@@ -894,6 +904,27 @@ impl MangaDexSource {
             if let Some(tid) = tag_id.as_deref() {
                 pairs.append_pair("includedTags[]", tid);
             }
+            for (k, v) in url.query_pairs() {
+                let val = v.trim();
+                if val.is_empty() {
+                    continue;
+                }
+                match k.as_ref() {
+                    "includedTags[]" | "includedTags" if is_uuid(val) => {
+                        pairs.append_pair("includedTags[]", val);
+                    }
+                    "excludedTags[]" | "excludedTags" if is_uuid(val) => {
+                        pairs.append_pair("excludedTags[]", val);
+                    }
+                    "status[]" | "status" => {
+                        pairs.append_pair("status[]", val);
+                    }
+                    "publicationDemographic[]" | "publicationDemographic" => {
+                        pairs.append_pair("publicationDemographic[]", val);
+                    }
+                    _ => {}
+                }
+            }
         }
 
         let resp = http
@@ -1041,3 +1072,164 @@ impl Source for MangaDexSource {
         })
     }
 }
+
+/// Builds the official `MangaDex` REST API v5 filter schema (UUID tags + status/demographic/sort axes).
+#[must_use]
+pub fn mangadex_filter_schema() -> SiteFilterSchema {
+    let tags = MANGADEX_DEFAULT_TAGS
+        .iter()
+        .map(|(id, label)| FilterTagOption {
+            id: (*id).to_owned(),
+            label: (*label).to_owned(),
+            url: Some(format!("https://mangadex.org/tag/{id}")),
+        })
+        .collect();
+
+    let extra_axes = vec![
+        FilterAxis {
+            key: "status[]".to_owned(),
+            label: "Status".to_owned(),
+            kind: FilterAxisKind::MultiSelect,
+            options: vec![
+                FilterOptionItem {
+                    value: "ongoing".to_owned(),
+                    label: "Ongoing".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "completed".to_owned(),
+                    label: "Completed".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "hiatus".to_owned(),
+                    label: "Hiatus".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "cancelled".to_owned(),
+                    label: "Cancelled".to_owned(),
+                },
+            ],
+        },
+        FilterAxis {
+            key: "publicationDemographic[]".to_owned(),
+            label: "Demographic".to_owned(),
+            kind: FilterAxisKind::MultiSelect,
+            options: vec![
+                FilterOptionItem {
+                    value: "shounen".to_owned(),
+                    label: "Shounen".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "seinen".to_owned(),
+                    label: "Seinen".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "shoujo".to_owned(),
+                    label: "Shoujo".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "josei".to_owned(),
+                    label: "Josei".to_owned(),
+                },
+            ],
+        },
+        FilterAxis {
+            key: "order".to_owned(),
+            label: "Sort".to_owned(),
+            kind: FilterAxisKind::SingleSelect,
+            options: vec![
+                FilterOptionItem {
+                    value: "latestUploadedChapter".to_owned(),
+                    label: "Latest Updates".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "followedCount".to_owned(),
+                    label: "Most Popular".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "rating".to_owned(),
+                    label: "Top Rated".to_owned(),
+                },
+                FilterOptionItem {
+                    value: "createdAt".to_owned(),
+                    label: "Recently Added".to_owned(),
+                },
+            ],
+        },
+    ];
+
+    SiteFilterSchema {
+        filter_endpoint: Some("https://mangadex.org/titles".to_owned()),
+        include_tag_param: Some("includedTags[]".to_owned()),
+        exclude_tag_param: Some("excludedTags[]".to_owned()),
+        comma_joined_tags: false,
+        min_chapters_param: None,
+        keyword_param: Some("q".to_owned()),
+        tags,
+        extra_axes,
+    }
+}
+
+pub(crate) fn build_mangadex_filtered_url(
+    clean_q: Option<&str>,
+    filters: &CatalogFilterQuery,
+    page_num: u32,
+) -> Result<(Url, UnhandledFilterMask), ScrapeError> {
+    let mut u = Url::parse("https://mangadex.org/titles")
+        .map_err(|e| ScrapeError::InvalidUrl(e.to_string()))?;
+    {
+        let mut qp = u.query_pairs_mut();
+        if let Some(q) = clean_q {
+            qp.append_pair("q", q);
+        }
+        for inc in &filters.include_tags {
+            qp.append_pair("includedTags[]", inc);
+        }
+        for exc in &filters.exclude_tags {
+            qp.append_pair("excludedTags[]", exc);
+        }
+        for (k, vals) in &filters.extra {
+            for v in vals {
+                if !v.trim().is_empty() {
+                    qp.append_pair(k, v.trim());
+                }
+            }
+        }
+        if page_num > 1 {
+            qp.append_pair("page", &page_num.to_string());
+        }
+    }
+    let unhandled = UnhandledFilterMask {
+        include_tags: false,
+        exclude_tags: false,
+        min_chapters: filters.min_chapters.unwrap_or(0) > 0,
+        updated_within: filters.updated_within != UpdatedWithinFilter::Any,
+    };
+    Ok((u, unhandled))
+}
+
+const MANGADEX_DEFAULT_TAGS: &[(&str, &str)] = &[
+    ("391b0423-d847-456f-aff0-8b0cfc03066b", "Action"),
+    ("87cc87cd-a395-47af-b27a-93258283bbc6", "Adventure"),
+    ("4d32cc48-9f00-4cca-9b5a-a839f0764984", "Comedy"),
+    ("b9af3a63-f058-46de-a9a0-e0c13906197a", "Drama"),
+    ("cdc58593-87dd-415e-bbc0-2ec27bf404cc", "Fantasy"),
+    ("33771934-028e-4cb3-8744-691e866a923e", "Historical"),
+    ("cdad7e68-1419-41dd-bdce-27753074a640", "Horror"),
+    ("ace04997-f6bd-436e-b261-779182193d3d", "Isekai"),
+    ("799c202e-7daa-44eb-9cf7-8a3c0441531e", "Martial Arts"),
+    ("50880a9d-5440-4732-9afb-8f457127e836", "Mecha"),
+    ("ee968100-4191-4968-93d3-f82d72be7e46", "Mystery"),
+    ("3b60b75c-a2d7-4860-ab56-05f391bb889c", "Psychological"),
+    ("423e2eae-a7a2-4a8b-ac03-a8351462d71d", "Romance"),
+    ("caaa44eb-cd40-4177-b930-79d3ef2afe87", "School Life"),
+    ("256c8bd9-4904-4360-bf4f-508a76d67183", "Sci-Fi"),
+    ("e5301a23-ebd9-49dd-a0cb-2add944c7fe9", "Slice of Life"),
+    ("69964a64-2f90-4d33-beeb-f3ed2875eb4c", "Sports"),
+    ("eabc5b4c-6aff-42f3-b657-3e90cbd00b75", "Supernatural"),
+    ("07251805-a27e-4d59-b488-f0bfbec15168", "Thriller"),
+    ("f8f62932-27da-4fe4-8ee1-6779a8c5edba", "Tragedy"),
+    ("e197df38-d0e7-43b5-9b09-2842d0c326dd", "Web Comic"),
+    ("f5ba408b-0e7a-484d-8d49-4e9125ac96de", "Full Color"),
+    ("3e2b8dae-350e-4ab8-a8ce-016e844b9f0d", "Long Strip"),
+    ("0bc90acb-ccc1-44ca-a34a-b9f3a73259d0", "Reincarnation"),
+];

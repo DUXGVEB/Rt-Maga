@@ -231,6 +231,8 @@ pub fn parse_catalog_html(
             status: None,
             genres: Vec::new(),
             source_id,
+            chapter_count: None,
+            updated_at: None,
         });
     }
 
@@ -248,6 +250,7 @@ pub fn parse_catalog_html(
     }
 
     let pagination = extract_moetruyen_pagination(&doc, &base, page_url);
+    let filter_schema = crate::parse::filters::extract_generic_filter_schema(&doc, &base, None);
     let title = match &query {
         Some(q) => format!("MoeTruyen: {q}"),
         None if url_kind == UrlKind::WebsiteHome => "MoeTruyen".to_owned(),
@@ -265,6 +268,7 @@ pub fn parse_catalog_html(
         entries,
         categories: moetruyen_categories(),
         pagination,
+        filter_schema,
     })
 }
 
@@ -370,11 +374,17 @@ fn extract_moetruyen_pagination(doc: &Html, base: &Url, page_url: &Url) -> Pagin
         }
     }
 
+    let page_url_template = next_url
+        .as_ref()
+        .or(prev_url.as_ref())
+        .and_then(crate::parse::pagination::template_from_numbered_url);
+
     PaginationInfo {
         current_page,
         total_pages: (max_page > 1).then_some(max_page),
         prev_url,
         next_url,
+        page_url_template,
     }
 }
 
