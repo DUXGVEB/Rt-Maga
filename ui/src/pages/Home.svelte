@@ -244,7 +244,6 @@
         >
           <BookOpen size={30} strokeWidth={1.5} />
           <div class="text-sm font-medium" style="color: var(--text);">{t.noRecentTitle}</div>
-          <p class="max-w-xs text-xs">{t.noRecentDesc}</p>
         </div>
       {:else}
         <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
@@ -284,10 +283,6 @@
           aria-hidden="true"
         ></div>
       </div>
-
-      <p class="text-center text-xs" style="color: var(--text-muted);">
-        {t.completedSectionDesc}
-      </p>
 
       <div class="grid grid-cols-2 gap-4 opacity-90 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
         {#each completedItems as item (item.mangaId)}

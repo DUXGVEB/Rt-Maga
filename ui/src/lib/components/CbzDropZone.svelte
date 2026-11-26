@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { FileArchive, FolderLock, Upload } from "lucide-svelte";
+  import { FileArchive, Upload } from "lucide-svelte";
   import { onMount } from "svelte";
   import { api, formatAppError } from "../api";
   import { libraryCache } from "../stores/libraryCache.svelte";
@@ -228,13 +228,6 @@
               {importing ? t.cbzImporting : t.cbzDropTitle}
             </span>
             <span class="dz-ext-pill">.CBZ</span>
-          </div>
-          <p class="mt-0.5 truncate text-[11px]" style="color: var(--text-muted);">
-            {t.cbzDropSubtitle}
-          </p>
-          <div class="mt-1 flex items-center gap-1.5 text-[10px]" style="color: var(--text-muted);">
-            <FolderLock size={11} class="shrink-0 opacity-75" />
-            <span class="truncate">{t.cbzLocalBadge}</span>
             {#if importing}
               <LatticeLoader size="xs" status="loading" showTimer inline />
             {/if}

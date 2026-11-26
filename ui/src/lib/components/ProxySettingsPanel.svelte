@@ -150,7 +150,6 @@
         <Globe size={15} />
         <span>{t.proxySection}</span>
       </h2>
-      <div class="desc">{t.proxySubtitle}</div>
     </div>
 
     <div class="flex shrink-0 gap-1.5">
@@ -285,12 +284,9 @@
 
       <!-- Fail-closed toggle -->
       <div class="flex items-start justify-between gap-3 pt-1">
-        <div class="flex items-start gap-2">
-          <ShieldAlert size={15} class="mt-0.5 shrink-0 opacity-75" />
-          <div>
-            <div class="text-xs font-medium">{t.proxyFailClosedLabel}</div>
-            <div class="desc">{t.proxyFailClosedDesc}</div>
-          </div>
+        <div class="flex items-center gap-2">
+          <ShieldAlert size={15} class="shrink-0 opacity-75" />
+          <div class="text-xs font-medium">{t.proxyFailClosedLabel}</div>
         </div>
         <ToggleSwitch
           size="sm"
@@ -348,10 +344,7 @@
 
   <!-- Per-Domain Rules -->
   <div class="flex flex-col gap-2.5 border-t pt-3" style="border-color: var(--border);">
-    <div>
-      <div class="label">{t.proxyDomainRulesTitle}</div>
-      <div class="desc">{t.proxyDomainRulesDesc}</div>
-    </div>
+    <div class="label">{t.proxyDomainRulesTitle}</div>
 
     {#if proxy.domainRules.length === 0}
       <div class="text-xs italic" style="color: var(--text-muted);">{t.proxyNoRules}</div>
@@ -480,12 +473,6 @@
   .label {
     font-size: 0.875rem;
     font-weight: 500;
-  }
-
-  .desc {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-top: 0.15rem;
   }
 
   .pill {

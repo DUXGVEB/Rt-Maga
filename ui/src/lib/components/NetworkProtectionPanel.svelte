@@ -5,7 +5,6 @@
     CheckCircle2,
     ChevronDown,
     ChevronUp,
-    Info,
     Loader2,
     RotateCcw,
     Shield,
@@ -128,9 +127,6 @@
       </div>
       <div>
         <h2 class="text-sm font-semibold">{t.netProtectionSection}</h2>
-        <p class="mt-0.5 text-xs" style="color: var(--text-muted);">
-          {t.netProtectionSubtitle}
-        </p>
       </div>
     </div>
 
@@ -170,15 +166,6 @@
     </div>
   </div>
 
-  <!-- Honest DNS vs Tunnel explanation banner -->
-  <div
-    class="flex items-start gap-2 rounded-xl border px-3 py-2.5 text-[11px] leading-relaxed"
-    style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
-  >
-    <Info size={14} class="mt-0.5 shrink-0" style="color: var(--accent);" />
-    <span>{doh.enabled ? t.netHonestDisclaimer : t.netSystemDnsActiveNote}</span>
-  </div>
-
   {#if doh.enabled}
     <!-- Zero-Config Provider Catalog -->
     <div class="flex flex-col gap-2">
@@ -207,9 +194,6 @@
                 {serviceTypeLabel(provider.serviceType)}
               </span>
             </div>
-            <p class="text-[11px] leading-snug" style="color: var(--text-muted);">
-              {provider.summary}
-            </p>
           </button>
         {/each}
       </div>
@@ -236,11 +220,6 @@
               </button>
             {/each}
           </div>
-          {#each selectedProvider.profiles as profile (profile.id)}
-            {#if profile.id === doh.profileId}
-              <p class="text-[11px]" style="color: var(--text-muted);">{profile.description}</p>
-            {/if}
-          {/each}
         </div>
 
         {#if selectedProvider.requiresAccountId}
@@ -275,12 +254,7 @@
         {/if}
 
         <div class="flex items-center justify-between gap-2 text-xs">
-          <div>
-            <div class="font-medium">{t.netSystemFallbackLabel}</div>
-            <div class="text-[11px]" style="color: var(--text-muted);">
-              {t.netSystemFallbackDesc}
-            </div>
-          </div>
+          <div class="font-medium">{t.netSystemFallbackLabel}</div>
           <ToggleSwitch
             size="sm"
             checked={doh.allowSystemFallback}
@@ -290,8 +264,6 @@
             }}
           />
         </div>
-
-        <p class="text-[11px]" style="color: var(--text-muted);">{selectedProvider.limitations}</p>
 
         <!-- Live Connectivity & Latency Test -->
         <div class="flex flex-wrap items-center justify-between gap-2 pt-1">

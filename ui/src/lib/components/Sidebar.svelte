@@ -48,9 +48,6 @@
         <img src={logoUrl} alt="RtMaga" class="h-8 w-8 shrink-0 rounded-lg shadow-sm" />
         <div class="min-w-0 leading-tight">
           <div class="truncate text-base font-semibold tracking-tight">RtMaga</div>
-          <div class="truncate text-[11px]" style="color: var(--text-muted);">
-            {t.brandSubtitle}
-          </div>
         </div>
       </button>
 

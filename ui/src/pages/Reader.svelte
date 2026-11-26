@@ -2814,13 +2814,6 @@
             </button>
           {/if}
         </div>
-      {:else}
-        <div
-          class="shrink-0 rounded-xl border px-3 py-1.5 text-[11px]"
-          style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
-        >
-          {t.perMangaSettingsHint}
-        </div>
       {/if}
 
       <!-- Category 1: Layout & Spacing -->

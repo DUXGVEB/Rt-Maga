@@ -697,7 +697,6 @@
       >
         <Compass size={28} strokeWidth={1.5} />
         <div class="text-sm font-medium" style="color: var(--text);">{t.sourcesEmptyTitle}</div>
-        <p class="max-w-sm px-4 text-xs">{t.sourcesEmptyDesc}</p>
       </div>
     {:else}
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">

@@ -499,7 +499,6 @@
     >
       <BookOpen size={30} strokeWidth={1.5} />
       <div class="text-sm font-medium" style="color: var(--text);">{t.browseEmptyTitle}</div>
-      <p class="max-w-sm text-xs">{t.browseEmptyDesc}</p>
     </div>
   {:else}
     <div class="grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">

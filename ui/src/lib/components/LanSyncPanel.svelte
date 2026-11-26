@@ -9,7 +9,6 @@
     Laptop,
     Loader2,
     QrCode,
-    ShieldCheck,
     Smartphone,
     Wifi,
     XCircle,
@@ -355,7 +354,6 @@
         <Wifi size={15} />
         <span>{t.syncSection}</span>
       </h2>
-      <div class="desc">{t.syncSubtitle}</div>
     </div>
 
     <span
@@ -804,11 +802,6 @@
       {errorMsg}
     </div>
   {/if}
-
-  <div class="flex items-start gap-1.5 text-[11px]" style="color: var(--text-muted);">
-    <ShieldCheck size={13} class="mt-0.5 shrink-0 opacity-75" />
-    <span>{t.syncSecurityNote}</span>
-  </div>
 </section>
 
 <style>
@@ -826,12 +819,6 @@
     font-size: 0.9rem;
     font-weight: 600;
     margin: 0;
-  }
-
-  .desc {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-top: 0.15rem;
   }
 
   .pill {

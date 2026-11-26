@@ -1124,7 +1124,6 @@
                 </span>
                 <div>
                   <h2 class="card-title">{t.appearanceSection}</h2>
-                  <p class="card-sub">{t.colorThemeDesc}</p>
                 </div>
               </div>
               <button
@@ -1201,7 +1200,6 @@
               <div class="compact-row">
                 <div class="min-w-0">
                   <div class="text-xs font-semibold sm:text-sm">{t.accentColorTitle}</div>
-                  <div class="text-[11px]" style="color: var(--text-muted);">{t.accentColorDesc}</div>
                 </div>
 
                 <div
@@ -1326,7 +1324,6 @@
                 </span>
                 <div>
                   <h2 class="card-title">{t.updatesSection}</h2>
-                  <p class="card-sub">{t.autoCheckDesc}</p>
                 </div>
               </div>
               <div class="flex items-center gap-1.5">
@@ -1570,7 +1567,6 @@
                 </span>
                 <div>
                   <h2 class="card-title">{t.navOrderSection}</h2>
-                  <p class="card-sub">{t.navOrderDesc}</p>
                 </div>
               </div>
               <button
@@ -2191,7 +2187,6 @@
               </span>
               <div>
                 <h2 class="card-title">{t.floatingSection}</h2>
-                <p class="card-sub">{t.floatingSubtitle}</p>
               </div>
             </div>
             <div class="flex items-center gap-2">
@@ -2575,7 +2570,6 @@
                 </span>
                 <div>
                   <h2 class="card-title">{t.suppSourcesTitle}</h2>
-                  <p class="card-sub">{t.suppSourcesDesc}</p>
                 </div>
               </div>
             </div>
@@ -2594,7 +2588,6 @@
               </span>
               <div>
                 <h2 class="card-title">{t.cacheSection}</h2>
-                <p class="card-sub">{t.cachePreservesUserDataNote}</p>
               </div>
             </div>
 
@@ -2882,7 +2875,6 @@
                 </span>
                 <div>
                   <h2 class="card-title">{t.feedbackSectionTitle}</h2>
-                  <p class="card-sub">{t.feedbackSectionDesc}</p>
                 </div>
               </div>
             </div>
@@ -2897,7 +2889,6 @@
                 </span>
                 <div>
                   <h2 class="card-title">{t.diagnosticsSection}</h2>
-                  <p class="card-sub">{t.diagnosticsDesc}</p>
                 </div>
               </div>
             </div>
@@ -2908,7 +2899,6 @@
             <div class="compact-row">
               <div class="min-w-0">
                 <h2 class="card-title">{t.resetAllSection}</h2>
-                <p class="card-sub">{t.resetAllDesc}</p>
               </div>
               <button
                 type="button"

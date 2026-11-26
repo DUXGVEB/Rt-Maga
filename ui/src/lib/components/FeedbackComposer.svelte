@@ -224,10 +224,7 @@
     style="border-color: var(--border); background-color: var(--surface-subtle);"
   >
     <div class="flex items-center justify-between gap-2">
-      <div class="min-w-0">
-        <div class="font-semibold">{t.feedbackAttachLogsLabel}</div>
-        <div class="text-[11px]" style="color: var(--text-muted);">{t.feedbackAttachLogsDesc}</div>
-      </div>
+      <div class="min-w-0 font-semibold">{t.feedbackAttachLogsLabel}</div>
       <ToggleSwitch
         size="sm"
         checked={attachLogs}
@@ -241,7 +238,7 @@
     {#if attachLogs}
       <div class="flex flex-wrap items-center justify-between gap-2 border-t pt-2" style="border-color: var(--border);">
         <span class="text-[11px] font-medium" style="color: var(--text-muted);">
-          {t.feedbackSelectLogsHint} ({t.feedbackSelectedCount(selectedLogIds.size)})
+          {t.feedbackSelectedCount(selectedLogIds.size)}
         </span>
         <div class="flex items-center gap-1.5">
           <button

@@ -275,9 +275,6 @@
             <span class="text-[11px] font-semibold" style="color: var(--text-muted);">
               {t.webFilterTagsLabel} ({schema.tags.length})
             </span>
-            <span class="text-[10px] opacity-75" style="color: var(--text-muted);">
-              {t.webFilterTagHint}
-            </span>
           </div>
 
           {#if schema.tags.length > 10}

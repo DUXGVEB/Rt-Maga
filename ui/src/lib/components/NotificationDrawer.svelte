@@ -109,7 +109,6 @@
         >
           <Bell size={28} strokeWidth={1.5} />
           <div class="text-sm font-medium" style="color: var(--text);">{t.notifEmptyTitle}</div>
-          <p class="text-xs">{t.notifEmptyDesc}</p>
         </div>
       {:else}
         <div class="flex flex-col gap-2">

@@ -118,9 +118,6 @@
   <div class="flex items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold tracking-tight">{t.historyTitle}</h1>
-      <p class="mt-1 text-xs" style="color: var(--text-muted);">
-        {t.historySubtitle}
-      </p>
     </div>
 
     {#if items.length > 0}
@@ -177,7 +174,6 @@
     >
       <Clock size={30} strokeWidth={1.5} />
       <div class="text-sm font-medium" style="color: var(--text);">{t.historyEmptyTitle}</div>
-      <p class="text-xs">{t.historyEmptyDesc}</p>
     </div>
   {:else}
     {#each grouped() as group (group.key)}

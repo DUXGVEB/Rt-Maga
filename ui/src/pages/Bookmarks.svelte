@@ -98,9 +98,6 @@
   <div class="flex flex-wrap items-center justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold tracking-tight">{t.bookmarksTitle}</h1>
-      <p class="mt-1 text-xs" style="color: var(--text-muted);">
-        {t.bookmarksSubtitle}
-      </p>
     </div>
 
     {#if items().length > 0}
@@ -150,7 +147,6 @@
     >
       <Bookmark size={30} strokeWidth={1.5} />
       <div class="text-sm font-medium" style="color: var(--text);">{t.bookmarksEmptyTitle}</div>
-      <p class="max-w-sm text-xs">{t.bookmarksEmptyDesc}</p>
     </div>
   {:else}
     <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
