@@ -8,7 +8,7 @@ use moka::future::Cache;
 use crate::services::library::CatalogPageView;
 
 const CATALOG_CACHE_MAX_ENTRIES: u64 = 48;
-const CATALOG_CACHE_TTL: Duration = Duration::from_secs(3 * 60);
+const CATALOG_CACHE_TTL: Duration = Duration::from_mins(3);
 
 /// Concurrent TTL cache for catalog/search pages keyed by canonical request signature.
 #[derive(Debug, Clone)]

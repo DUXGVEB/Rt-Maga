@@ -93,6 +93,14 @@ pub(crate) enum AppError {
     #[error("corrupted data: {message}")]
     CorruptedData { message: String },
 
+    /// Local archive or document is encrypted / password-protected and cannot be read.
+    #[error("encrypted archive: {message}")]
+    EncryptedArchive { message: String },
+
+    /// Local file format is unsupported or contains no readable comic pages.
+    #[error("unsupported format: {message}")]
+    UnsupportedFormat { message: String },
+
     /// Requested database record does not exist.
     #[error("not found: {message}")]
     NotFound { message: String },
@@ -149,6 +157,8 @@ impl AppError {
             Self::MissingImages { .. } => "missing_images",
             Self::InvalidImageFormat { .. } => "invalid_image_format",
             Self::CorruptedData { .. } => "corrupted_data",
+            Self::EncryptedArchive { .. } => "encrypted_archive",
+            Self::UnsupportedFormat { .. } => "unsupported_format",
             Self::NotFound { .. } => "not_found",
             Self::Db { .. } => "database",
             Self::SourceFailure { .. } => "source_failure",

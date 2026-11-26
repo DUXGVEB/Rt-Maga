@@ -49,11 +49,12 @@ pub(crate) async fn get_chapter(
     known_manga_id: Option<i64>,
     priority: ChapterLoadPriority,
 ) -> Result<ChapterView, AppError> {
-    if crate::services::cbz::is_cbz_url(raw_url.trim()) {
-        let cbz_url = url::Url::parse(raw_url.trim()).map_err(|e| AppError::InvalidUrl {
-            message: format!("invalid CBZ chapter URL: {e}"),
+    if crate::services::comics::is_local_comic_url(raw_url.trim()) {
+        let local_url = url::Url::parse(raw_url.trim()).map_err(|e| AppError::InvalidUrl {
+            message: format!("invalid local comic chapter URL: {e}"),
         })?;
-        let (chapter, manga_id) = crate::services::cbz::load_cbz_chapter(state, &cbz_url).await?;
+        let (chapter, manga_id) =
+            crate::services::comics::load_local_chapter(state, &local_url).await?;
         return build_chapter_view(state, &chapter, known_manga_id.or(Some(manga_id))).await;
     }
 

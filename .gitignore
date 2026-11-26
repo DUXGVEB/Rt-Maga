@@ -9,6 +9,7 @@
 
 # Packaged releases & signing keys (keys stay LOCAL, never commit)
 /dist
+/release-v*/
 *.jks
 *.keystore
 /src-tauri/gen/android/release-signing.properties

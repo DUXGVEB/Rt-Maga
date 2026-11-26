@@ -31,7 +31,7 @@ use crate::services::reader::{ChapterLoadPriority, ChapterView};
 use crate::services::sources::{MultiSourceSearchResponse, SavedSourceView};
 use crate::services::sync::{SyncDecision, SyncSenderMode, SyncStatusView};
 use crate::services::updater::{CheckScope, UpdateSummary};
-use crate::services::{app_release, cbz, library, reader, sources, sync, updater};
+use crate::services::{app_release, comics, library, reader, sources, sync, updater};
 use crate::settings::{ReaderSettings, Settings, SettingsSection};
 use crate::state::AppState;
 
@@ -1048,16 +1048,17 @@ pub(crate) async fn search_saved_sources(
     sources::search_across_sources(&state, &query, filter.unwrap_or_default()).await
 }
 
-/// Opens the native Windows multi-file `.cbz` picker when clicked by the user and imports selected files.
+/// Opens the native Windows multi-format comic picker when clicked by the user and imports selected files.
 #[tauri::command]
 pub(crate) async fn pick_and_import_cbz(
     state: State<'_, Arc<AppState>>,
     target_manga_id: Option<i64>,
 ) -> Result<Option<MangaView>, AppError> {
-    cbz::pick_and_import_cbz_windows(state.data_dir.clone(), &state, target_manga_id).await
+    comics::pick_and_import_comics_windows(state.data_dir.clone(), &state, target_manga_id).await
 }
 
-/// Imports user-dropped `.cbz` file paths (from OS drag-and-drop) into internal app storage.
+/// Imports user-selected or dropped comic files/folders (`.cbz`, `.cbr`, `.cb7`, `.cbt`, `.epub`,
+/// `.pdf`, image folders, or loose images) into internal app storage.
 #[tauri::command]
 pub(crate) async fn import_cbz_paths(
     state: State<'_, Arc<AppState>>,
@@ -1065,36 +1066,36 @@ pub(crate) async fn import_cbz_paths(
     target_manga_id: Option<i64>,
 ) -> Result<MangaView, AppError> {
     let buf_paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    cbz::import_cbz_paths(&state.data_dir, &state, &buf_paths, target_manga_id).await
+    comics::import_comic_paths(&state.data_dir, &state, &buf_paths, target_manga_id).await
 }
 
-/// Starts a chunked `.cbz` staging upload (for mobile `WebView` `<input type="file">`).
+/// Starts a chunked multi-format comic staging upload (for mobile `WebView` `<input type="file">`).
 #[tauri::command]
 pub(crate) async fn begin_cbz_upload(
     state: State<'_, Arc<AppState>>,
     filename: String,
 ) -> Result<String, AppError> {
-    cbz::begin_cbz_staging(&state.data_dir, &filename).await
+    comics::begin_comic_staging(&state.data_dir, &filename).await
 }
 
-/// Appends a base64 chunk to a staged `.cbz` upload.
+/// Appends a base64 chunk to a staged comic upload.
 #[tauri::command]
 pub(crate) async fn append_cbz_chunk(
     state: State<'_, Arc<AppState>>,
     upload_id: String,
     chunk_base64: String,
 ) -> Result<(), AppError> {
-    cbz::append_cbz_staging_chunk(&state.data_dir, &upload_id, &chunk_base64).await
+    comics::append_comic_staging_chunk(&state.data_dir, &upload_id, &chunk_base64).await
 }
 
-/// Finalizes one or more staged `.cbz` uploads and imports them as a manga or new chapters.
+/// Finalizes one or more staged comic uploads and imports them as a manga or new chapters.
 #[tauri::command]
 pub(crate) async fn finish_cbz_upload(
     state: State<'_, Arc<AppState>>,
     upload_ids: Vec<String>,
     target_manga_id: Option<i64>,
 ) -> Result<MangaView, AppError> {
-    cbz::finish_cbz_staging_import(&state.data_dir, &state, &upload_ids, target_manga_id).await
+    comics::finish_comic_staging_import(&state.data_dir, &state, &upload_ids, target_manga_id).await
 }
 
 /// Category of user feedback / issue report.

@@ -154,12 +154,16 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
         chapter_url: payload.ch.as_deref(),
     };
 
-    if crate::services::cbz::is_cbz_url(&payload.u)
-        && let Ok(cbz_url) = Url::parse(&payload.u)
-        && cbz_url.path().starts_with("/page/")
+    if crate::services::comics::is_local_comic_url(&payload.u)
+        && let Ok(local_url) = Url::parse(&payload.u)
+        && local_url.path().starts_with("/page/")
     {
-        return match crate::services::cbz::read_cbz_page_bytes(&state.data_dir, state, &cbz_url)
-            .await
+        return match crate::services::comics::read_local_page_bytes(
+            &state.data_dir,
+            state,
+            &local_url,
+        )
+        .await
         {
             Ok((bytes, mime)) => image_ok_response(bytes, &mime, ResponseCachePolicy::NoStorePage),
             Err(err) => error_response(StatusCode::UNPROCESSABLE_ENTITY, &err.to_string()),
@@ -170,8 +174,8 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
         return image_ok_response(hit.bytes.to_vec(), &hit.content_type, policy);
     }
 
-    if crate::services::cbz::is_cbz_url(&payload.u) {
-        return error_response(StatusCode::NOT_FOUND, "local CBZ cover not found");
+    if crate::services::comics::is_local_comic_url(&payload.u) {
+        return error_response(StatusCode::NOT_FOUND, "local comic cover not found");
     }
 
     let _flight_guard = if bypass_cache {

@@ -902,6 +902,8 @@ export type AppError =
   | { kind: "missing_images"; message: string }
   | { kind: "invalid_image_format"; message: string }
   | { kind: "corrupted_data"; message: string }
+  | { kind: "encrypted_archive"; message: string }
+  | { kind: "unsupported_format"; message: string }
   | { kind: "not_found"; message: string }
   | { kind: "db"; message: string }
   | {

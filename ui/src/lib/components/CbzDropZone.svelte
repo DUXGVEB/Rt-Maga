@@ -1,8 +1,14 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { FileArchive, Upload } from "lucide-svelte";
+  import { open as openNativeDialog } from "@tauri-apps/plugin-dialog";
+  import { FileArchive, FolderOpen, Upload } from "lucide-svelte";
   import { onMount } from "svelte";
   import { api, formatAppError } from "../api";
+  import {
+    BROWSER_FILE_ACCEPT,
+    COMIC_DIALOG_FILTERS,
+    shouldUploadBrowserFile,
+  } from "../comicFormats";
   import { libraryCache } from "../stores/libraryCache.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
@@ -25,6 +31,7 @@
   let dragOver = $state(false);
   let platform = $state<"windows" | "android" | "other">("windows");
   let fileInputEl = $state<HTMLInputElement | null>(null);
+  let folderInputEl = $state<HTMLInputElement | null>(null);
   let statusResetTimer: number | null = null;
 
   const t = $derived(settingsStore.t);
@@ -35,6 +42,17 @@
       uploadStatus = "idle";
       statusResetTimer = null;
     }, ms);
+  }
+
+  function showImportError(err: unknown) {
+    uploadStatus = "error";
+    scheduleStatusReset(2400);
+    const formatted = formatAppError(err, settingsStore.value.language);
+    const message =
+      formatted.title && !formatted.detail.toLowerCase().includes(formatted.title.toLowerCase())
+        ? `${formatted.title}: ${formatted.detail}`
+        : formatted.detail;
+    toasts.push(message, "error", 5000);
   }
 
   onMount(() => {
@@ -58,11 +76,11 @@
             dragOver = false;
           } else if (event.payload.type === "drop") {
             dragOver = false;
-            const cbzPaths = event.payload.paths.filter((p) =>
-              p.toLowerCase().endsWith(".cbz")
-            );
-            if (cbzPaths.length > 0) {
-              void importDroppedPaths(cbzPaths);
+            const droppedPaths = event.payload.paths.filter((p) => p.trim().length > 0);
+            if (droppedPaths.length > 0) {
+              // Hand all dropped files & folders to Rust magic-byte detection so mislabeled
+              // archives (e.g. a RAR named .cbz) and chapter/series folders import seamlessly.
+              void importDroppedPaths(droppedPaths);
             }
           }
         });
@@ -72,7 +90,7 @@
           unlisten = fn;
         }
       } catch {
-        // Non-Tauri preview or unsupported platform: file picker button still works.
+        // Non-Tauri preview or unsupported platform: file picker buttons still work.
       }
     })();
 
@@ -103,45 +121,87 @@
       const manga = await api.importCbzPaths(paths, targetMangaId);
       await finishImport(manga);
     } catch (err) {
-      uploadStatus = "error";
-      scheduleStatusReset(2200);
-      toasts.push(formatAppError(err, settingsStore.value.language).detail, "error", 4000);
+      showImportError(err);
     } finally {
       importing = false;
     }
   }
 
-  async function handlePickClick() {
+  function normalizeDialogSelection(selected: string | string[] | null): string[] {
+    if (!selected) return [];
+    return Array.isArray(selected) ? selected.filter((p) => p.trim().length > 0) : [selected];
+  }
+
+  async function handlePickFilesClick() {
     if (importing) return;
-    if (platform === "windows") {
-      importing = true;
-      uploadStatus = "loading";
+    if (platform !== "android") {
       try {
-        const manga = await api.pickAndImportCbz(targetMangaId);
-        if (manga) {
-          await finishImport(manga);
-        } else {
-          uploadStatus = "idle";
+        const picked = await openNativeDialog({
+          multiple: true,
+          directory: false,
+          filters: COMIC_DIALOG_FILTERS,
+        });
+        const paths = normalizeDialogSelection(picked);
+        if (paths.length > 0) {
+          await importDroppedPaths(paths);
         }
-      } catch (err) {
-        uploadStatus = "error";
-        scheduleStatusReset(2200);
-        toasts.push(formatAppError(err, settingsStore.value.language).detail, "error", 4000);
-      } finally {
-        importing = false;
+        return;
+      } catch {
+        // Fallback to native Win32 picker command if dialog plugin is unavailable.
+        if (platform === "windows") {
+          importing = true;
+          uploadStatus = "loading";
+          try {
+            const manga = await api.pickAndImportCbz(targetMangaId);
+            if (manga) {
+              await finishImport(manga);
+            } else {
+              uploadStatus = "idle";
+            }
+          } catch (err) {
+            showImportError(err);
+          } finally {
+            importing = false;
+          }
+          return;
+        }
       }
-      return;
     }
     fileInputEl?.click();
   }
 
-  async function handleBrowserFileChange(e: Event) {
+  async function handlePickFolderClick(e?: MouseEvent) {
+    e?.stopPropagation();
+    if (importing) return;
+    if (platform !== "android") {
+      try {
+        const picked = await openNativeDialog({
+          multiple: true,
+          directory: true,
+        });
+        const paths = normalizeDialogSelection(picked);
+        if (paths.length > 0) {
+          await importDroppedPaths(paths);
+        }
+        return;
+      } catch {
+        // Fall through to WebView folder input if native dialog unavailable.
+      }
+    }
+    folderInputEl?.click();
+  }
+
+  async function handleBrowserFileChange(e: Event, isFolderInput = false) {
     const input = e.currentTarget as HTMLInputElement;
-    const files = Array.from(input.files ?? []).filter((f) =>
-      f.name.toLowerCase().endsWith(".cbz")
-    );
+    const rawFiles = Array.from(input.files ?? []);
     input.value = "";
-    if (files.length === 0 || importing) return;
+    if (rawFiles.length === 0 || importing) return;
+
+    const files = rawFiles.filter((f) => shouldUploadBrowserFile(f, isFolderInput));
+    if (files.length === 0) {
+      toasts.push(t.cbzNoSupportedFilesToast, "error", 3800);
+      return;
+    }
 
     importing = true;
     uploadStatus = "loading";
@@ -149,9 +209,7 @@
       const manga = await api.importCbzBrowserFiles(files, targetMangaId);
       await finishImport(manga);
     } catch (err) {
-      uploadStatus = "error";
-      scheduleStatusReset(2200);
-      toasts.push(formatAppError(err, settingsStore.value.language).detail, "error", 4000);
+      showImportError(err);
     } finally {
       importing = false;
     }
@@ -161,28 +219,51 @@
 <input
   bind:this={fileInputEl}
   type="file"
-  accept=".cbz,application/vnd.comicbook+zip,application/zip"
+  accept={BROWSER_FILE_ACCEPT}
   multiple
-  onchange={(e) => void handleBrowserFileChange(e)}
+  onchange={(e) => void handleBrowserFileChange(e, false)}
+  class="hidden"
+/>
+
+<input
+  bind:this={folderInputEl}
+  type="file"
+  webkitdirectory
+  multiple
+  onchange={(e) => void handleBrowserFileChange(e, true)}
   class="hidden"
 />
 
 {#if compact}
-  <button
-    type="button"
-    disabled={importing}
-    onclick={() => void handlePickClick()}
-    class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors hover:brightness-95 disabled:opacity-55"
-    style="background-color: var(--accent-soft); border-color: var(--accent); color: var(--accent);"
-  >
-    {#if importing}
-      <LatticeLoader size="xs" status="loading" tone="inherit" inline />
-      <span>{t.cbzImporting}</span>
-    {:else}
-      <FileArchive size={14} />
-      <span>{t.cbzAddChaptersBtn}</span>
+  <div class="inline-flex flex-wrap items-center gap-1.5">
+    <button
+      type="button"
+      disabled={importing}
+      onclick={() => void handlePickFilesClick()}
+      class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors hover:brightness-95 disabled:opacity-55"
+      style="background-color: var(--accent-soft); border-color: var(--accent); color: var(--accent);"
+    >
+      {#if importing}
+        <LatticeLoader size="xs" status="loading" tone="inherit" inline />
+        <span>{t.cbzImporting}</span>
+      {:else}
+        <FileArchive size={14} />
+        <span>{t.cbzAddChaptersBtn}</span>
+      {/if}
+    </button>
+    {#if !importing}
+      <button
+        type="button"
+        onclick={(e) => void handlePickFolderClick(e)}
+        class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors hover:opacity-90"
+        style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
+        title={t.cbzPickFolderBtn}
+      >
+        <FolderOpen size={13} />
+        <span>{t.cbzPickFolderBtn}</span>
+      </button>
     {/if}
-  </button>
+  </div>
 {:else}
   <!-- Drag-and-Drop Upload Zone (#032) -->
   <div
@@ -190,11 +271,11 @@
     tabindex={importing ? -1 : 0}
     aria-disabled={importing}
     aria-label={t.cbzDropTitle}
-    onclick={() => void handlePickClick()}
+    onclick={() => void handlePickFilesClick()}
     onkeydown={(e) => {
       if ((e.key === "Enter" || e.key === " ") && !importing) {
         e.preventDefault();
-        void handlePickClick();
+        void handlePickFilesClick();
       }
     }}
     class="dropzone-032 group relative w-full max-w-2xl cursor-pointer overflow-hidden rounded-2xl border-2 border-dashed px-5 py-4 text-left transition-all duration-200 focus-visible:outline-2 focus-visible:outline-offset-2"
@@ -223,29 +304,51 @@
         </div>
 
         <div class="min-w-0 flex-1">
-          <div class="flex flex-wrap items-center gap-2">
+          <div class="flex flex-wrap items-center gap-1.5">
             <span class="text-xs font-semibold sm:text-sm" style="color: var(--text);">
               {importing ? t.cbzImporting : t.cbzDropTitle}
             </span>
-            <span class="dz-ext-pill">.CBZ</span>
             {#if importing}
               <LatticeLoader size="xs" status="loading" showTimer inline />
             {/if}
           </div>
+          <div class="mt-1.5 flex flex-wrap items-center gap-1">
+            <span class="dz-ext-pill">.CBZ</span>
+            <span class="dz-ext-pill">.CBR</span>
+            <span class="dz-ext-pill">.CB7</span>
+            <span class="dz-ext-pill">.CBT</span>
+            <span class="dz-ext-pill">.EPUB</span>
+            <span class="dz-ext-pill">.PDF</span>
+            <span class="dz-ext-pill dz-ext-pill-subtle">IMG / DIR</span>
+          </div>
         </div>
       </div>
 
-      <span
-        class="dz-cta inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition-transform duration-200 group-hover:scale-[1.02]"
-      >
-        {#if importing}
-          <LatticeLoader size="xs" status="loading" tone="inherit" inline />
-          <span>{t.cbzImporting}</span>
-        {:else}
-          <Upload size={13} />
-          <span>{t.cbzPickBtn}</span>
+      <div class="flex shrink-0 items-center gap-2">
+        {#if !importing}
+          <button
+            type="button"
+            onclick={(e) => void handlePickFolderClick(e)}
+            class="dz-cta-secondary inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors hover:brightness-95"
+            title={t.cbzPickFolderBtn}
+          >
+            <FolderOpen size={13} />
+            <span>{t.cbzPickFolderBtn}</span>
+          </button>
         {/if}
-      </span>
+
+        <span
+          class="dz-cta inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition-transform duration-200 group-hover:scale-[1.02]"
+        >
+          {#if importing}
+            <LatticeLoader size="xs" status="loading" tone="inherit" inline />
+            <span>{t.cbzImporting}</span>
+          {:else}
+            <Upload size={13} />
+            <span>{t.cbzPickBtn}</span>
+          {/if}
+        </span>
+      </div>
     </div>
   </div>
 {/if}
@@ -394,9 +497,20 @@
     color: var(--accent);
   }
 
+  .dz-ext-pill-subtle {
+    background-color: var(--surface-hover);
+    color: var(--text-muted);
+  }
+
   .dz-cta {
     background-color: var(--accent);
     color: var(--accent-fg);
+  }
+
+  .dz-cta-secondary {
+    background-color: var(--surface-subtle);
+    border-color: var(--border);
+    color: var(--text);
   }
 
   @media (prefers-reduced-motion: reduce) {

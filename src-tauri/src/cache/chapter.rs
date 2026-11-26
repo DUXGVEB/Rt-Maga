@@ -8,7 +8,7 @@ use moka::future::Cache;
 use url::Url;
 
 const CHAPTER_CACHE_MAX_ENTRIES: u64 = 128;
-const CHAPTER_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+const CHAPTER_CACHE_TTL: Duration = Duration::from_mins(30);
 
 /// Concurrent TTL cache for resolved chapters.
 #[derive(Debug, Clone)]

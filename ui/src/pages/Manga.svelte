@@ -16,6 +16,7 @@
     Trash2,
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
+  import { isLocalComicSite } from "../lib/comicFormats";
   import CbzDropZone from "../lib/components/CbzDropZone.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
@@ -327,7 +328,7 @@
 
     {#if manga}
       <div class="flex flex-wrap items-center gap-2">
-        {#if manga.site === "local:cbz"}
+        {#if isLocalComicSite(manga.site)}
           <CbzDropZone
             compact
             targetMangaId={manga.id}
@@ -444,7 +445,7 @@
               class="rounded-md px-2 py-0.5 text-xs font-medium"
               style="background-color: var(--surface-hover); color: var(--text-muted);"
             >
-              {manga.site === "local:cbz" ? t.cbzLocalBadge : manga.site}
+              {isLocalComicSite(manga.site) ? t.cbzLocalBadge : manga.site}
             </span>
             <span class="text-xs" style="color: var(--text-muted);">
               {t.chapterCount(manga.chapters.length)}

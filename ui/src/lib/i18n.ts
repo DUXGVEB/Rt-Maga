@@ -3787,14 +3787,18 @@ export interface V7Dictionary {
   sourcesResultsHeading: (query: string, count: number) => string;
   sourcesClearSearchBtn: string;
 
-  // CBZ Local Archive Support (user-designated only)
+  // Local Multi-Format Comic Support (user-designated only)
   cbzDropTitle: string;
   cbzDropSubtitle: string;
   cbzPickBtn: string;
+  cbzPickFolderBtn: string;
   cbzImporting: string;
   cbzImportedToast: (title: string, chapters: number) => string;
   cbzAddChaptersBtn: string;
   cbzLocalBadge: string;
+  cbzNoSupportedFilesToast: string;
+  errEncryptedArchiveTitle: string;
+  errUnsupportedFormatTitle: string;
 
   // Per-Website Multi-Tag & Dynamic Filter Engine
   webFilterTitle: string;
@@ -3895,13 +3899,18 @@ const V7_EN: V7Dictionary = {
   sourcesResultsHeading: (query: string, count: number) => `Search "${query}" · ${count} results`,
   sourcesClearSearchBtn: "Back to sources",
 
-  cbzDropTitle: "Import local .cbz comic file(s)",
-  cbzDropSubtitle: "Drop .cbz files here or pick manually — stored offline inside RtMaga (no folder scanning).",
-  cbzPickBtn: "Choose .cbz",
-  cbzImporting: "Importing .cbz...",
+  cbzDropTitle: "Import local comics, ebooks, or image folders",
+  cbzDropSubtitle:
+    "Drop archives (.cbz/.cbr/.cb7/.cbt/.epub/.pdf), folders, or images here — stored offline inside RtMaga.",
+  cbzPickBtn: "Choose files",
+  cbzPickFolderBtn: "Folder",
+  cbzImporting: "Importing...",
   cbzImportedToast: (title: string, chapters: number) => `Imported "${title}" (${chapters} chapter(s)).`,
-  cbzAddChaptersBtn: "Add .cbz chapters",
-  cbzLocalBadge: "Local CBZ",
+  cbzAddChaptersBtn: "Add local chapters",
+  cbzLocalBadge: "Local",
+  cbzNoSupportedFilesToast: "No supported comic archives, documents, or images were found.",
+  errEncryptedArchiveTitle: "Encrypted or password-protected file",
+  errUnsupportedFormatTitle: "Unsupported file format",
 
   webFilterTitle: "Site Filters",
   webFilterTagsLabel: "Tags / Genres",
@@ -4005,13 +4014,18 @@ const V7_VI: V7Dictionary = {
   sourcesResultsHeading: (query: string, count: number) => `Kết quả "${query}" · ${count} truyện`,
   sourcesClearSearchBtn: "Quay lại danh sách nguồn",
 
-  cbzDropTitle: "Nhập file truyện .cbz cục bộ",
-  cbzDropSubtitle: "Kéo thả file .cbz vào đây hoặc chọn thủ công — lưu offline trong RtMaga (không tự quét máy).",
-  cbzPickBtn: "Chọn file .cbz",
-  cbzImporting: "Đang nhập .cbz...",
+  cbzDropTitle: "Nhập truyện cục bộ (nén, ebook, PDF, ảnh/thư mục)",
+  cbzDropSubtitle:
+    "Kéo thả file (.cbz/.cbr/.cb7/.cbt/.epub/.pdf), thư mục hoặc ảnh vào đây — lưu offline trong RtMaga.",
+  cbzPickBtn: "Chọn file",
+  cbzPickFolderBtn: "Thư mục",
+  cbzImporting: "Đang nhập...",
   cbzImportedToast: (title: string, chapters: number) => `Đã nhập "${title}" (${chapters} chương).`,
-  cbzAddChaptersBtn: "Thêm chương .cbz",
-  cbzLocalBadge: "CBZ nội bộ",
+  cbzAddChaptersBtn: "Thêm chương cục bộ",
+  cbzLocalBadge: "Truyện nội bộ",
+  cbzNoSupportedFilesToast: "Không tìm thấy file truyện, PDF/EPUB hoặc ảnh hợp lệ nào.",
+  errEncryptedArchiveTitle: "File được mã hóa hoặc đặt mật khẩu",
+  errUnsupportedFormatTitle: "Định dạng file không được hỗ trợ",
 
   webFilterTitle: "Bộ lọc theo web",
   webFilterTagsLabel: "Thể loại / Tag",

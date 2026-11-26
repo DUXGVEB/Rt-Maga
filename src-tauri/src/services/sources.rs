@@ -514,7 +514,9 @@ struct AutoSourceRecord {
 
 /// Spawns non-blocking background source recording when a manga is resolved.
 pub(crate) fn spawn_auto_record_from_manga(deps: AutoRecordDeps, url: Url, manga: &Manga) {
-    if crate::services::cbz::is_cbz_url(url.as_str()) {
+    if crate::services::comics::is_local_comic_url(url.as_str())
+        || crate::services::comics::is_local_site(&manga.site.as_storage_key())
+    {
         return;
     }
     let record = AutoSourceRecord {

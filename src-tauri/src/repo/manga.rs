@@ -1,4 +1,4 @@
-//! Database operations for `manga`, `chapter`, and `cbz_chapter_archive` tables.
+//! Database operations for `manga`, `chapter`, and `local_comic_chapter` tables.
 
 use std::collections::{HashMap, HashSet};
 
@@ -577,7 +577,7 @@ impl Database {
 
     /// Lists manga eligible for background update checks: **bookmarked manga first**,
     /// followed by remaining reading-history manga, deduplicated by manga ID.
-    /// Local `.cbz` archives (`site = 'local:cbz'`) are excluded from remote polling.
+    /// Local comic imports (`site LIKE 'local:%'`) are excluded from remote polling.
     ///
     /// # Errors
     ///
@@ -589,7 +589,7 @@ impl Database {
              LEFT JOIN bookmark b ON b.manga_id = m.id
              LEFT JOIN history h ON h.manga_id = m.id
              WHERE m.hidden = 0
-               AND m.site != 'local:cbz'
+               AND m.site NOT LIKE 'local:%'
                AND (b.manga_id IS NOT NULL OR h.manga_id IS NOT NULL)
              ORDER BY
                 CASE WHEN b.manga_id IS NOT NULL THEN 0 ELSE 1 END ASC,
@@ -600,7 +600,7 @@ impl Database {
         Ok(rows)
     }
 
-    /// Finds a manga ID by its `source_id` (used for grouping imported `.cbz` chapters).
+    /// Finds a manga ID by its `source_id` (used for grouping imported local comic chapters).
     ///
     /// # Errors
     ///
@@ -617,33 +617,37 @@ impl Database {
         Ok(row.map(|(id,)| id))
     }
 
-    /// Inserts or updates a `.cbz` chapter archive index row in `cbz_chapter_archive`.
+    /// Inserts or updates a local comic chapter index row in `local_comic_chapter`.
     ///
     /// # Errors
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
-    pub(crate) async fn upsert_cbz_chapter_archive(
+    pub(crate) async fn upsert_local_comic_chapter(
         &self,
         manga_id: i64,
         chapter_url: &str,
+        source_format: &str,
         rel_path: &str,
-        pages_json: &str,
+        page_entries_json: &str,
         file_size: i64,
     ) -> Result<(), AppError> {
         let now = now_unix_secs();
         sqlx::query(
-            "INSERT INTO cbz_chapter_archive (manga_id, chapter_url, rel_path, pages_json, file_size, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)
+            "INSERT INTO local_comic_chapter
+                (manga_id, chapter_url, source_format, rel_path, page_entries_json, file_size, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(chapter_url) DO UPDATE SET
                 manga_id = excluded.manga_id,
+                source_format = excluded.source_format,
                 rel_path = excluded.rel_path,
-                pages_json = excluded.pages_json,
+                page_entries_json = excluded.page_entries_json,
                 file_size = excluded.file_size",
         )
         .bind(manga_id)
         .bind(chapter_url)
+        .bind(source_format)
         .bind(rel_path)
-        .bind(pages_json)
+        .bind(page_entries_json)
         .bind(file_size)
         .bind(now)
         .execute(self.pool())
@@ -651,17 +655,21 @@ impl Database {
         Ok(())
     }
 
-    /// Looks up the stored `.cbz` archive `(manga_id, rel_path, pages_json)` by `chapter_url`.
+    /// Looks up the stored local comic chapter `(manga_id, source_format, rel_path, page_entries_json)`
+    /// by `chapter_url`.
     ///
     /// # Errors
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
-    pub(crate) async fn get_cbz_archive_by_chapter_url(
+    pub(crate) async fn get_local_comic_chapter_by_url(
         &self,
         chapter_url: &str,
-    ) -> Result<Option<(i64, String, String)>, AppError> {
-        let row: Option<(i64, String, String)> = sqlx::query_as(
-            "SELECT manga_id, rel_path, pages_json FROM cbz_chapter_archive WHERE chapter_url = ? LIMIT 1",
+    ) -> Result<Option<(i64, String, String, String)>, AppError> {
+        let row: Option<(i64, String, String, String)> = sqlx::query_as(
+            "SELECT manga_id, source_format, rel_path, page_entries_json
+             FROM local_comic_chapter
+             WHERE chapter_url = ?
+             LIMIT 1",
         )
         .bind(chapter_url)
         .fetch_optional(self.pool())
@@ -669,17 +677,17 @@ impl Database {
         Ok(row)
     }
 
-    /// Lists all relative `.cbz` archive file paths owned by `manga_id` for disk cleanup on permanent delete.
+    /// Lists all relative local comic storage paths owned by `manga_id` for disk cleanup on permanent delete.
     ///
     /// # Errors
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
-    pub(crate) async fn list_cbz_rel_paths_for_manga(
+    pub(crate) async fn list_local_comic_rel_paths_for_manga(
         &self,
         manga_id: i64,
     ) -> Result<Vec<String>, AppError> {
         let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT rel_path FROM cbz_chapter_archive WHERE manga_id = ?")
+            sqlx::query_as("SELECT rel_path FROM local_comic_chapter WHERE manga_id = ?")
                 .bind(manga_id)
                 .fetch_all(self.pool())
                 .await?;

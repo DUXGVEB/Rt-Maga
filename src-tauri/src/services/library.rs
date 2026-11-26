@@ -717,7 +717,7 @@ async fn record_and_return_resolve_error<T>(
 
 fn prefetch_manga_cover(state: &AppState, manga_id: i64, manga: &mangacore::Manga, max_mb: u32) {
     if let Some(ref cover) = manga.cover
-        && !crate::services::cbz::is_cbz_url(cover.as_str())
+        && !crate::services::comics::is_local_comic_url(cover.as_str())
     {
         state.images.spawn_cover_prefetch(
             state.registry.http().clone(),
@@ -828,7 +828,7 @@ pub(crate) async fn get_manga(
             message: format!("manga {manga_id} not found"),
         })?;
 
-    if mode == FetchMode::RefreshFromWeb && row.site != "local:cbz" {
+    if mode == FetchMode::RefreshFromWeb && !crate::services::comics::is_local_site(&row.site) {
         let policy = state.current_settings().await.headless_policy();
         let (resolved, _diag) = match state
             .registry
@@ -1056,7 +1056,7 @@ pub(crate) async fn delete_manga_permanently(
     state: &AppState,
     manga_id: i64,
 ) -> Result<(), AppError> {
-    crate::services::cbz::delete_cbz_files_for_manga(&state.data_dir, state, manga_id).await;
+    crate::services::comics::delete_local_files_for_manga(&state.data_dir, state, manga_id).await;
     let _ = state.images.clear_by_manga(manga_id).await;
     state.db.delete_manga_permanently(manga_id).await?;
     state.chapters.invalidate_all();

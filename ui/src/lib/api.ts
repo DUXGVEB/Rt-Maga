@@ -239,6 +239,20 @@ export function formatAppError(
           failureGroup: "image_extraction",
           retryable: true,
         };
+      case "encrypted_archive":
+        return {
+          title: t.errEncryptedArchiveTitle,
+          detail: e.message,
+          code: "DRM_PROTECTED_CONTENT",
+          failureGroup: "access_permission",
+        };
+      case "unsupported_format":
+        return {
+          title: t.errUnsupportedFormatTitle,
+          detail: e.message,
+          code: "UNSUPPORTED_IMAGE_FORMAT",
+          failureGroup: "unsupported_format",
+        };
       case "network":
         return {
           title: t.errNetworkTitle,
@@ -479,7 +493,11 @@ export const api = {
     const CHUNK_BYTES = 512 * 1024;
     const uploadIds: string[] = [];
     for (const file of files) {
-      const uploadId = await invoke<string>("begin_cbz_upload", { filename: file.name });
+      const uploadName =
+        file.webkitRelativePath && file.webkitRelativePath.trim().length > 0
+          ? file.webkitRelativePath
+          : file.name;
+      const uploadId = await invoke<string>("begin_cbz_upload", { filename: uploadName });
       uploadIds.push(uploadId);
       let offset = 0;
       while (offset < file.size) {

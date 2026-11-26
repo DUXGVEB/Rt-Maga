@@ -102,7 +102,7 @@ fn decode_hex_32(hex: &str) -> Option<[u8; 32]> {
     }
     let mut out = [0_u8; 32];
     let bytes = hex.as_bytes();
-    for (idx, chunk) in bytes.chunks_exact(2).enumerate() {
+    for (idx, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
         let hi = hex_nibble(chunk[0])?;
         let lo = hex_nibble(chunk[1])?;
         out[idx] = (hi << 4) | lo;
