@@ -13,10 +13,14 @@ pub(crate) mod sync;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use sha2::{Digest, Sha384};
 use sqlx::SqlitePool;
+use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
 use crate::error::AppError;
+
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// Shared SQLite database handle.
 #[derive(Debug, Clone)]
@@ -80,13 +84,58 @@ impl Database {
         pool: SqlitePool,
         db_path: Option<PathBuf>,
     ) -> Result<Self, AppError> {
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .map_err(|e| AppError::Db {
-                message: format!("migration failed: {e}"),
-            })?;
+        Self::reconcile_line_ending_checksums(&pool).await?;
+        MIGRATOR.run(&pool).await.map_err(|e| AppError::Db {
+            message: format!("migration failed: {e}"),
+        })?;
         Ok(Self { pool, db_path })
+    }
+
+    /// Normalizes `_sqlx_migrations` SHA-384 checksums when a previously applied migration differs
+    /// strictly by `CRLF` (`\r\n`) vs `LF` (`\n`) line endings across OS/CI checkouts, while
+    /// preserving `VersionMismatch` rejection for any genuine SQL content modification.
+    async fn reconcile_line_ending_checksums(pool: &SqlitePool) -> Result<(), AppError> {
+        let has_table: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations' LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if has_table.is_none() {
+            return Ok(());
+        }
+
+        let applied: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+            "SELECT version, checksum FROM _sqlx_migrations WHERE success = 1 ORDER BY version",
+        )
+        .fetch_all(pool)
+        .await?;
+
+        for (version, stored_checksum) in applied {
+            let Some(migration) = MIGRATOR.iter().find(|m| m.version == version) else {
+                continue;
+            };
+            let expected = migration.checksum.as_ref();
+            if stored_checksum.as_slice() == expected {
+                continue;
+            }
+
+            let lf_sql = migration.sql.replace("\r\n", "\n");
+            let crlf_sql = lf_sql.replace('\n', "\r\n");
+            let lf_digest = Sha384::digest(lf_sql.as_bytes());
+            let crlf_digest = Sha384::digest(crlf_sql.as_bytes());
+
+            if stored_checksum.as_slice() == lf_digest.as_slice()
+                || stored_checksum.as_slice() == crlf_digest.as_slice()
+            {
+                sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                    .bind(expected)
+                    .bind(version)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns a reference to the underlying [`SqlitePool`].
@@ -423,6 +472,7 @@ mod tests {
         assert_eq!(hist[0].title, "Backup Demo");
         assert!((hist[0].scroll_ratio - 0.75).abs() < 1e-6);
 
+        reopened.close().await;
         drop(reopened);
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
@@ -1334,5 +1384,101 @@ mod tests {
             "manual visibility pin must hold"
         );
         assert_eq!(re_upserted.display_name, "Pinned Gallery");
+    }
+
+    #[tokio::test]
+    async fn reconciles_crlf_and_lf_migration_checksums_without_data_loss() {
+        let dir =
+            std::env::temp_dir().join(format!("rtmaga_db_eol_test_{}", rand::random::<u64>()));
+        let db_path = dir.join("rtmaga.db");
+
+        let db = Database::open(&db_path).await.unwrap();
+        let manga = Manga::minimal(
+            Url::parse("https://example.com/series/eol-demo").unwrap(),
+            SiteId::generic("example.com"),
+            "EOL Upgrade Demo".to_owned(),
+            None,
+            vec![ch(
+                "https://example.com/series/eol-demo-chap-1",
+                "Chapter 1",
+                Some(1.0),
+            )],
+        );
+        let id = db.upsert_manga(&manga).await.unwrap();
+        db.save_history(
+            id,
+            "https://example.com/series/eol-demo-chap-1",
+            "Chapter 1",
+            0.88,
+            5,
+        )
+        .await
+        .unwrap();
+
+        // Rewrite all applied migration checksums to their CRLF SHA-384 equivalents (simulating
+        // a database touched by a Windows `core.autocrlf=true` build).
+        for migration in MIGRATOR.iter() {
+            let crlf_sql = migration.sql.replace("\r\n", "\n").replace('\n', "\r\n");
+            let crlf_digest = Sha384::digest(crlf_sql.as_bytes());
+            sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                .bind(crlf_digest.as_slice())
+                .bind(migration.version)
+                .execute(db.pool())
+                .await
+                .unwrap();
+        }
+        db.close().await;
+
+        // Re-opening must succeed transparently and preserve all user reading history.
+        let reopened_from_crlf = Database::open(&db_path).await.unwrap();
+        let hist = reopened_from_crlf.list_history().await.unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].title, "EOL Upgrade Demo");
+        assert_eq!(hist[0].page_index, 5);
+
+        // Now rewrite checksums to LF SHA-384 equivalents and verify reopening also succeeds.
+        for migration in MIGRATOR.iter() {
+            let lf_sql = migration.sql.replace("\r\n", "\n");
+            let lf_digest = Sha384::digest(lf_sql.as_bytes());
+            sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                .bind(lf_digest.as_slice())
+                .bind(migration.version)
+                .execute(reopened_from_crlf.pool())
+                .await
+                .unwrap();
+        }
+        reopened_from_crlf.close().await;
+
+        let reopened_from_lf = Database::open(&db_path).await.unwrap();
+        assert_eq!(reopened_from_lf.list_history().await.unwrap().len(), 1);
+        reopened_from_lf.close().await;
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_genuinely_tampered_migration_checksum() {
+        let dir =
+            std::env::temp_dir().join(format!("rtmaga_db_tamper_test_{}", rand::random::<u64>()));
+        let db_path = dir.join("rtmaga.db");
+
+        let db = Database::open(&db_path).await.unwrap();
+        let bogus_digest = Sha384::digest(b"DROP TABLE manga; -- tampered migration");
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 1")
+            .bind(bogus_digest.as_slice())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        db.close().await;
+
+        let err = Database::open(&db_path)
+            .await
+            .expect_err("genuinely modified migration checksum must still be rejected");
+        assert!(
+            err.to_string().contains("migration failed"),
+            "unexpected error: {err}"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 }

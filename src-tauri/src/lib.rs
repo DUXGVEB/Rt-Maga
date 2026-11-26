@@ -149,11 +149,14 @@ pub fn run() {
             commands::save_feedback_report_file,
         ]);
 
-    let app = builder
-        .build(tauri::generate_context!())
-        .expect("error while building RtMaga application");
-
-    app.run(|handle, event| handle_run_event(handle, &event));
+    match builder.build(tauri::generate_context!()) {
+        Ok(app) => app.run(|handle, event| handle_run_event(handle, &event)),
+        Err(err) => {
+            tracing::error!(%err, "error while building RtMaga application");
+            #[cfg(all(target_os = "windows", not(test)))]
+            show_windows_startup_error(&err.to_string());
+        }
+    }
 }
 
 fn handle_run_event(handle: &tauri::AppHandle, event: &tauri::RunEvent) {
@@ -166,7 +169,10 @@ fn handle_run_event(handle: &tauri::AppHandle, event: &tauri::RunEvent) {
                 ..
             }
     );
-    if should_purge && let Some(state) = handle.try_state::<Arc<AppState>>() {
+    if should_purge
+        && let Some(state) = handle.try_state::<Arc<AppState>>()
+        && !state.db.pool().is_closed()
+    {
         let images = state.images.clone();
         let chapters = state.chapters.clone();
         let _ = tauri::async_runtime::block_on(async move {
@@ -176,61 +182,25 @@ fn handle_run_event(handle: &tauri::AppHandle, event: &tauri::RunEvent) {
     }
 }
 
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "tauri::Builder::setup callback signature requires Result"
-)]
 fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = app
-        .path()
-        .app_local_data_dir()
-        .expect("app local data directory must resolve");
+    let data_dir = app.path().app_local_data_dir()?;
     let db_path = data_dir.join("rtmaga.db");
     let cache_dir = data_dir.join("cache").join("img");
     let crash_file = data_dir.join("crash_last.txt");
     install_panic_hook(crash_file.clone());
 
-    let app_state = tauri::async_runtime::block_on(async {
-        let db = Database::open(&db_path).await?;
-        import_pending_crash_file(&db, &crash_file).await;
-        let proxy_key = db.load_or_init_proxy_secret().await?;
-        let settings = db.load_settings().await?;
-        let policy = HttpPolicy {
-            max_conn_per_host: usize::from(settings.sources.max_conn_per_host),
-            doh: settings.doh.clone(),
-            proxy: settings.proxy.clone(),
-            speed_limit_kbps: settings.sources.speed_limit_kbps,
-            ..HttpPolicy::default()
-        };
-        let http = HttpClient::with_policy(policy).map_err(error::AppError::from)?;
-        let registry = Registry::with_http(http);
-        let images = ImageCache::new(cache_dir, db.clone()).await?;
-
-        // Reclaim any transient chapter pages left behind by prior sessions or OS force-kills,
-        // while keeping small cover thumbnails and all per-manga settings intact.
-        if let Err(err) = images.clear_all_chapter_pages().await {
-            warn!(%err, "failed to sweep transient chapter page cache on startup");
-        }
-
-        match db.prune_stale_manga(STALE_MANGA_RETENTION_DAYS).await {
-            Ok(pruned_ids) if !pruned_ids.is_empty() => {
-                for pid in &pruned_ids {
-                    let _ = images.clear_by_manga(*pid).await;
+    let app_state =
+        match tauri::async_runtime::block_on(init_app_state(&db_path, cache_dir, &crash_file)) {
+            Ok(state) => state,
+            Err(err) => {
+                let report = format!("startup initialization failed: {err}");
+                if let Some(parent) = crash_file.parent() {
+                    let _ = std::fs::create_dir_all(parent);
                 }
-                info!(
-                    removed = pruned_ids.len(),
-                    "pruned stale manga entries and cached images"
-                );
+                let _ = std::fs::write(&crash_file, repo::diagnostics::redact_sensitive(&report));
+                return Err(Box::new(err));
             }
-            Err(err) => warn!(%err, "failed to prune stale manga entries"),
-            _ => {}
-        }
-
-        Ok::<Arc<AppState>, error::AppError>(AppState::new(
-            db, registry, images, settings, proxy_key,
-        ))
-    })
-    .expect("failed to initialize RtMaga application state");
+        };
 
     let handle = app.handle().clone();
     let handle_for_release = app.handle().clone();
@@ -251,13 +221,98 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app_release::spawn_startup_check(handle_for_release, state_for_release);
 
     #[cfg(desktop)]
-    if let Some(window) = app.get_webview_window("main") {
-        if let Err(err) = window.set_fullscreen(true) {
-            warn!(%err, "failed to enter default desktop fullscreen mode on startup");
-        }
+    if let Some(window) = app.get_webview_window("main")
+        && let Err(err) = window.set_fullscreen(true)
+    {
+        warn!(%err, "failed to enter default desktop fullscreen mode on startup");
     }
 
     Ok(())
+}
+
+async fn init_app_state(
+    db_path: &std::path::Path,
+    cache_dir: std::path::PathBuf,
+    crash_file: &std::path::Path,
+) -> Result<Arc<AppState>, error::AppError> {
+    let db = Database::open(db_path).await?;
+    import_pending_crash_file(&db, crash_file).await;
+    let proxy_key = db.load_or_init_proxy_secret().await?;
+    let settings = db.load_settings().await?;
+    let policy = HttpPolicy {
+        max_conn_per_host: usize::from(settings.sources.max_conn_per_host),
+        doh: settings.doh.clone(),
+        proxy: settings.proxy.clone(),
+        speed_limit_kbps: settings.sources.speed_limit_kbps,
+        ..HttpPolicy::default()
+    };
+    let http = match HttpClient::with_policy(policy) {
+        Ok(client) => client,
+        Err(err) => {
+            warn!(
+                %err,
+                "failed to initialize HTTP client with saved policy; falling back to defaults"
+            );
+            HttpClient::new().map_err(error::AppError::from)?
+        }
+    };
+    let registry = Registry::with_http(http);
+    let images = ImageCache::new(cache_dir, db.clone()).await?;
+
+    // Reclaim any transient chapter pages left behind by prior sessions or OS force-kills,
+    // while keeping small cover thumbnails and all per-manga settings intact.
+    if let Err(err) = images.clear_all_chapter_pages().await {
+        warn!(%err, "failed to sweep transient chapter page cache on startup");
+    }
+
+    match db.prune_stale_manga(STALE_MANGA_RETENTION_DAYS).await {
+        Ok(pruned_ids) if !pruned_ids.is_empty() => {
+            for pid in &pruned_ids {
+                let _ = images.clear_by_manga(*pid).await;
+            }
+            info!(
+                removed = pruned_ids.len(),
+                "pruned stale manga entries and cached images"
+            );
+        }
+        Err(err) => warn!(%err, "failed to prune stale manga entries"),
+        _ => {}
+    }
+
+    Ok(AppState::new(db, registry, images, settings, proxy_key))
+}
+
+#[cfg(all(target_os = "windows", not(test)))]
+fn show_windows_startup_error(detail: &str) {
+    use std::ffi::c_void;
+
+    const MB_ICONERROR: u32 = 0x0000_0010;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(hwnd: *mut c_void, text: *const u16, caption: *const u16, utype: u32)
+        -> i32;
+    }
+
+    let safe_detail =
+        repo::diagnostics::scrub_personal_paths(&repo::diagnostics::redact_sensitive(detail));
+    let body: Vec<u16> = format!(
+        "RtMaga could not open its local data store and cannot start.\n\nDetails: {safe_detail}\n"
+    )
+    .encode_utf16()
+    .chain(std::iter::once(0))
+    .collect();
+    let caption: Vec<u16> = "RtMaga — Startup Error\0".encode_utf16().collect();
+
+    // SAFETY: Both UTF-16 slices are NUL-terminated and outlive the synchronous modal call; a null HWND creates a top-level dialog.
+    unsafe {
+        let _ = MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            caption.as_ptr(),
+            MB_ICONERROR,
+        );
+    }
 }
 
 fn install_panic_hook(crash_file: std::path::PathBuf) {
