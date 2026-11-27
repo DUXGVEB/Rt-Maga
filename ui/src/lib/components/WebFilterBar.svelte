@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Check, ChevronDown, ChevronUp, Filter, RotateCcw, Search, X } from "lucide-svelte";
+  import { Check, ChevronDown, Filter, RotateCcw, Search, X } from "lucide-svelte";
+  import { badgePop, collapseReveal } from "../motion";
   import { settingsStore } from "../stores/settings.svelte";
   import {
     cloneFilterQuery,
@@ -134,7 +135,8 @@
       onclick={() => {
         expanded = !expanded;
       }}
-      class="inline-flex items-center gap-2 text-left text-xs font-semibold sm:text-sm"
+      aria-expanded={expanded}
+      class="gpu-press inline-flex items-center gap-2 text-left text-xs font-semibold sm:text-sm"
       style="color: var(--text);"
     >
       <Filter size={15} style="color: var(--accent);" />
@@ -146,6 +148,7 @@
       </span>
       {#if activeCount > 0}
         <span
+          transition:badgePop|local
           class="rounded-full px-2 py-0.5 text-[11px] font-semibold"
           style="background-color: var(--accent-soft); color: var(--accent);"
         >
@@ -155,31 +158,29 @@
       {#if loadingSchema}
         <LatticeLoader size="xs" inline />
       {/if}
-      {#if expanded}
-        <ChevronUp size={15} class="opacity-65" />
-      {:else}
-        <ChevronDown size={15} class="opacity-65" />
-      {/if}
+      <ChevronDown size={15} class="chevron-rot opacity-65" data-open={expanded ? "true" : "false"} />
     </button>
 
     <div class="flex items-center gap-1.5">
       {#if activeCount > 0}
-        <button
-          type="button"
-          onclick={handleReset}
-          disabled={applying}
-          class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium disabled:opacity-45"
-          style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
-        >
-          <RotateCcw size={12} />
-          <span>{t.webFilterResetBtn}</span>
-        </button>
+        <span transition:badgePop|local class="inline-flex">
+          <button
+            type="button"
+            onclick={handleReset}
+            disabled={applying}
+            class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium disabled:opacity-45"
+            style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+          >
+            <RotateCcw size={12} />
+            <span>{t.webFilterResetBtn}</span>
+          </button>
+        </span>
       {/if}
       <button
         type="button"
         onclick={handleApply}
         disabled={applying}
-        class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold transition-opacity hover:opacity-90 disabled:opacity-50"
+        class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         {#if applying}
@@ -191,7 +192,7 @@
   </div>
 
   {#if expanded}
-    <div class="flex flex-col gap-3.5 border-t pt-3" style="border-color: var(--border);">
+    <div transition:collapseReveal|local class="flex flex-col gap-3.5 border-t pt-3" style="border-color: var(--border);">
       <!-- Baseline Filters: Min Chapters + Updated Within + Dynamic Site Axes -->
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <!-- Minimum Chapters -->
@@ -205,7 +206,7 @@
               <button
                 type="button"
                 onclick={() => setMinChaptersPreset(preset)}
-                class="rounded-md border px-2 py-1 text-[11px] font-medium transition-colors"
+                class="gpu-press rounded-md border px-2 py-1 text-[11px] font-medium"
                 style="border-color: {selected ? 'var(--accent)' : 'var(--border)'}; background-color: {selected
                   ? 'var(--accent-soft)'
                   : 'var(--surface-subtle)'}; color: {selected ? 'var(--accent)' : 'var(--text)'};"
@@ -291,15 +292,17 @@
                 style="color: var(--text);"
               />
               {#if tagSearch}
-                <button
-                  type="button"
-                  onclick={() => {
-                    tagSearch = "";
-                  }}
-                  class="opacity-70 hover:opacity-100"
-                >
-                  <X size={11} />
-                </button>
+                <span transition:badgePop|local class="inline-flex">
+                  <button
+                    type="button"
+                    onclick={() => {
+                      tagSearch = "";
+                    }}
+                    class="gpu-press opacity-70 hover:opacity-100"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
               {/if}
             </div>
           {/if}
@@ -316,7 +319,7 @@
               <button
                 type="button"
                 onclick={() => cycleTag(tag.id)}
-                class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors"
+                class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium"
                 style="border-color: {st === 'include'
                   ? 'var(--accent)'
                   : st === 'exclude'
@@ -332,9 +335,13 @@
                     : 'var(--text)'};"
               >
                 {#if st === "include"}
-                  <Check size={12} />
+                  <span in:badgePop|local={{ duration: 120, start: 0.6 }} class="inline-flex">
+                    <Check size={12} />
+                  </span>
                 {:else if st === "exclude"}
-                  <X size={12} />
+                  <span in:badgePop|local={{ duration: 120, start: 0.6 }} class="inline-flex">
+                    <X size={12} />
+                  </span>
                 {/if}
                 <span>{tag.label}</span>
               </button>
@@ -346,7 +353,7 @@
                 onclick={() => {
                   showAllTags = !showAllTags;
                 }}
-                class="rounded-lg border px-2.5 py-1 text-xs font-semibold"
+                class="gpu-press rounded-lg border px-2.5 py-1 text-xs font-semibold"
                 style="border-color: var(--border); background-color: var(--surface); color: var(--accent);"
               >
                 {showAllTags

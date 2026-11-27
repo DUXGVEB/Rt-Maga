@@ -27,7 +27,15 @@
   import CbzDropZone from "../lib/components/CbzDropZone.svelte";
   import LatticeLoader from "../lib/components/LatticeLoader.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
-  import { adaptiveOverlay, backdropFade, createOverlayGuard, popoverPop } from "../lib/motion";
+  import {
+    adaptiveOverlay,
+    backdropFade,
+    badgePop,
+    collapseReveal,
+    createOverlayGuard,
+    popoverPop,
+    viewReveal,
+  } from "../lib/motion";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { router } from "../lib/stores/router.svelte";
@@ -416,7 +424,7 @@
       onclick={() => {
         if (!router.goBack()) router.goHome();
       }}
-      class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:opacity-80"
+      class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm hover:opacity-80"
       style="color: var(--text-muted);"
     >
       <ArrowLeft size={16} />
@@ -424,7 +432,7 @@
     </button>
 
     {#if manga}
-      <div class="flex flex-wrap items-center gap-2">
+      <div in:viewReveal|local={{ duration: 150, y: 0 }} class="flex flex-wrap items-center gap-2">
         {#if isLocalComicSite(manga.site)}
           <CbzDropZone
             compact
@@ -439,7 +447,7 @@
             type="button"
             onclick={refresh}
             disabled={refreshing}
-            class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
+            class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium"
             style="background-color: var(--surface); border-color: var(--border);"
           >
             <RefreshCw size={14} class={refreshing ? "animate-spin" : ""} />
@@ -450,7 +458,7 @@
           type="button"
           onclick={hideManga}
           disabled={hiding}
-          class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:opacity-85 disabled:opacity-50"
+          class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:opacity-85 disabled:opacity-50"
           style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
           title={t.hideMangaDesc}
         >
@@ -494,20 +502,23 @@
       onOpenNetworkSettings={() => router.goSettings("network")}
     />
   {:else if manga}
-    {#if refreshErrorState}
-      <SourceDiagnosticCard
-        compact
-        error={refreshErrorState}
-        fallbackUrl={manga.url}
-        {verifying}
-        {loggingIn}
-        onRetry={() => void refresh()}
-        onVerify={(u) => void handleManualVerify(u)}
-        onLogin={(u) => void handleBrowserLogin(u)}
-        onOpenExternal={(u) => void handleOpenExternal(u)}
-        onOpenNetworkSettings={() => router.goSettings("network")}
-      />
-    {/if}
+    <div in:viewReveal|local={{ duration: 170, y: 6 }} class="flex flex-col gap-6">
+      {#if refreshErrorState}
+        <div transition:collapseReveal|local>
+          <SourceDiagnosticCard
+            compact
+            error={refreshErrorState}
+            fallbackUrl={manga.url}
+            {verifying}
+            {loggingIn}
+            onRetry={() => void refresh()}
+            onVerify={(u) => void handleManualVerify(u)}
+            onLogin={(u) => void handleBrowserLogin(u)}
+            onOpenExternal={(u) => void handleOpenExternal(u)}
+            onOpenNetworkSettings={() => router.goSettings("network")}
+          />
+        </div>
+      {/if}
     <!-- Editorial Mobile-First & Desktop Series Hero -->
     <section
       class="surface-card relative flex flex-col gap-5 overflow-hidden rounded-2xl p-4 sm:flex-row sm:gap-6 sm:p-6"
@@ -782,7 +793,7 @@
                   onclick={() => {
                     descExpanded = !descExpanded;
                   }}
-                  class="text-[11px] font-semibold hover:underline"
+                  class="gpu-press text-[11px] font-semibold hover:underline"
                   style="color: var(--accent);"
                 >
                   {descExpanded ? t.showLessDesc : t.readMoreDesc}
@@ -813,7 +824,7 @@
                   onclick={() => {
                     tagsExpanded = !tagsExpanded;
                   }}
-                  class="rounded-md border px-2 py-0.5 text-[11px] font-semibold"
+                  class="gpu-press rounded-md border px-2 py-0.5 text-[11px] font-semibold"
                   style="border-color: var(--border); background-color: var(--surface); color: var(--accent);"
                 >
                   {tagsExpanded ? t.showLessTags : t.showMoreTags(allTags.length - 24)}
@@ -828,7 +839,7 @@
               type="button"
               onclick={() => void handleOpenExternal(extUrl)}
               title={t.mangaOpenExternalSourceTooltip}
-              class="inline-flex max-w-full items-center gap-1.5 self-start rounded-lg px-1.5 py-1 text-left text-[11px] font-medium transition-opacity hover:underline hover:opacity-100"
+              class="gpu-press inline-flex max-w-full items-center gap-1.5 self-start rounded-lg px-1.5 py-1 text-left text-[11px] font-medium hover:underline hover:opacity-100"
               style="color: var(--accent);"
             >
               <ExternalLink size={12} class="shrink-0" />
@@ -882,7 +893,11 @@
                 ? 'var(--accent)'
                 : 'var(--text)'};"
             >
-              <Bookmark size={15} fill={manga.bookmarked ? "currentColor" : "none"} />
+              {#key manga.bookmarked}
+                <span in:badgePop|local={{ duration: 160, start: 0.65 }} class="inline-flex">
+                  <Bookmark size={15} fill={manga.bookmarked ? "currentColor" : "none"} />
+                </span>
+              {/key}
               <span>{manga.bookmarked ? t.bookmarkedLabel : t.bookmarkAdd}</span>
             </button>
 
@@ -963,7 +978,7 @@
             class="gpu-press inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
             style="background-color: var(--surface); border-color: var(--border);"
           >
-            <ArrowDownUp size={14} />
+            <ArrowDownUp size={14} class="chevron-rot" data-open={newestFirst ? "false" : "true"} />
             <span>{newestFirst ? t.newestFirst : t.oldestFirst}</span>
           </button>
         </div>
@@ -979,7 +994,7 @@
             onclick={() => {
               selectedChapterLang = "all";
             }}
-            class="rounded-lg border px-2.5 py-1 text-xs font-medium"
+            class="gpu-press rounded-lg border px-2.5 py-1 text-xs font-medium"
             style="border-color: {activeChapterLang() === 'all'
               ? 'var(--accent)'
               : 'var(--border)'}; background-color: {activeChapterLang() === 'all'
@@ -997,7 +1012,7 @@
               onclick={() => {
                 selectedChapterLang = lang;
               }}
-              class="rounded-lg border px-2.5 py-1 text-xs font-medium uppercase"
+              class="gpu-press rounded-lg border px-2.5 py-1 text-xs font-medium uppercase"
               style="border-color: {activeChapterLang() === lang
                 ? 'var(--accent)'
                 : 'var(--border)'}; background-color: {activeChapterLang() === lang
@@ -1013,73 +1028,81 @@
       {/if}
 
       <div
-        class="grid max-h-[55dvh] grid-cols-1 gap-1.5 overflow-y-auto rounded-2xl border p-3 sm:grid-cols-2 lg:grid-cols-3"
+        class="max-h-[55dvh] overflow-y-auto rounded-2xl border p-3"
         style="background-color: var(--surface); border-color: var(--border);"
       >
-        {#each filteredChapters() as chapter (chapter.url)}
-          {@const isCurrent =
-            manga.progress !== null &&
-            normUrl(manga.progress.chapterUrl) === normUrl(chapter.url)}
-          {@const isMetaStub = isMetadataOnlyChapterUrl(chapter.url)}
-          <button
-            type="button"
-            onclick={() => {
-              if (!manga) return;
-              if (isMetaStub) {
-                toasts.push(t.tachibkCatalogChapterNoFilesToast, "info", 3200);
-                return;
-              }
-              router.goReader(
-                manga.id,
-                chapter.url,
-                isCurrent ? manga.progress?.scrollRatio : 0,
-                isCurrent ? manga.progress?.pageIndex : 0
-              );
-            }}
-            class="gpu-press flex min-h-[42px] items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-sm hover:opacity-95"
-            style="background-color: {isCurrent
-              ? 'var(--accent-soft)'
-              : 'var(--surface-subtle)'}; color: {isCurrent
-              ? 'var(--accent)'
-              : chapter.read
-                ? 'var(--text-muted)'
-                : 'var(--text)'}; opacity: {chapter.read && !isCurrent ? 0.56 : 1};"
+        {#key `${newestFirst}:${activeChapterLang()}`}
+          <div
+            in:viewReveal|local={{ duration: 130, y: 3 }}
+            class="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3"
           >
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-1.5">
-                {#if chapter.volume}
-                  <span
-                    class="shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold"
-                    style="background-color: var(--surface-hover); color: var(--text-muted);"
-                  >
-                    V.{chapter.volume}
-                  </span>
-                {/if}
-                <span class="truncate font-medium">{chapter.name}</span>
-              </div>
-              {#if chapter.publishedAt || (chapter.language && chapterLanguages().length > 1)}
-                <div class="mt-0.5 flex items-center gap-1.5 text-[10px]" style="color: var(--text-muted);">
-                  {#if chapter.language && chapterLanguages().length > 1}
-                    <span class="uppercase font-semibold">[{chapter.language}]</span>
-                  {/if}
-                  {#if chapter.publishedAt}
-                    <span>{chapter.publishedAt}</span>
+            {#each filteredChapters() as chapter (chapter.url)}
+              {@const isCurrent =
+                manga.progress !== null &&
+                normUrl(manga.progress.chapterUrl) === normUrl(chapter.url)}
+              {@const isMetaStub = isMetadataOnlyChapterUrl(chapter.url)}
+              <button
+                type="button"
+                onclick={() => {
+                  if (!manga) return;
+                  if (isMetaStub) {
+                    toasts.push(t.tachibkCatalogChapterNoFilesToast, "info", 3200);
+                    return;
+                  }
+                  router.goReader(
+                    manga.id,
+                    chapter.url,
+                    isCurrent ? manga.progress?.scrollRatio : 0,
+                    isCurrent ? manga.progress?.pageIndex : 0
+                  );
+                }}
+                class="gpu-press flex min-h-[42px] items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-sm hover:opacity-95"
+                style="background-color: {isCurrent
+                  ? 'var(--accent-soft)'
+                  : 'var(--surface-subtle)'}; color: {isCurrent
+                  ? 'var(--accent)'
+                  : chapter.read
+                    ? 'var(--text-muted)'
+                    : 'var(--text)'}; opacity: {chapter.read && !isCurrent ? 0.56 : 1};"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-1.5">
+                    {#if chapter.volume}
+                      <span
+                        class="shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold"
+                        style="background-color: var(--surface-hover); color: var(--text-muted);"
+                      >
+                        V.{chapter.volume}
+                      </span>
+                    {/if}
+                    <span class="truncate font-medium">{chapter.name}</span>
+                  </div>
+                  {#if chapter.publishedAt || (chapter.language && chapterLanguages().length > 1)}
+                    <div class="mt-0.5 flex items-center gap-1.5 text-[10px]" style="color: var(--text-muted);">
+                      {#if chapter.language && chapterLanguages().length > 1}
+                        <span class="uppercase font-semibold">[{chapter.language}]</span>
+                      {/if}
+                      {#if chapter.publishedAt}
+                        <span>{chapter.publishedAt}</span>
+                      {/if}
+                    </div>
                   {/if}
                 </div>
-              {/if}
-            </div>
-            <div class="flex shrink-0 items-center gap-1">
-              {#if chapter.sourceId === "tachibk:bookmarked"}
-                <Bookmark size={12} fill="currentColor" style="color: var(--accent);" />
-              {/if}
-              {#if chapter.read}
-                <Check size={14} class="opacity-75" />
-              {/if}
-            </div>
-          </button>
-        {/each}
+                <div class="flex shrink-0 items-center gap-1">
+                  {#if chapter.sourceId === "tachibk:bookmarked"}
+                    <Bookmark size={12} fill="currentColor" style="color: var(--accent);" />
+                  {/if}
+                  {#if chapter.read}
+                    <Check size={14} class="opacity-75" />
+                  {/if}
+                </div>
+              </button>
+            {/each}
+          </div>
+        {/key}
       </div>
     </section>
+    </div>
   {/if}
 </div>
 

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { ArrowLeft, ArrowRight, Eye } from "lucide-svelte";
+  import { flip } from "svelte/animate";
   import type { FullDictionary } from "../i18n";
+  import { badgePop, flipDuration, viewReveal } from "../motion";
   import type { Settings } from "../types";
 
   let { settings, t }: { settings: Settings; t: FullDictionary } = $props();
@@ -119,6 +121,7 @@
     {#if !isHorizontal}
       <!-- Vertical Strip Preview -->
       <div
+        in:viewReveal|local={{ duration: 165, y: 4 }}
         class="mx-auto flex h-full w-44 flex-col justify-center overflow-hidden transition-all"
         style="padding-left: {scaledVerticalMargin}px; padding-right: {scaledVerticalMargin}px; gap: {scaledVerticalGap}px;"
       >
@@ -144,6 +147,7 @@
     {:else}
       <!-- Horizontal Spread Preview -->
       <div
+        in:viewReveal|local={{ duration: 165, y: 4 }}
         class="flex h-full w-full items-center overflow-hidden px-3 transition-all"
         style="justify-content: {settings.reader.horizontal.centerGroups
           ? 'center'
@@ -157,7 +161,9 @@
         <div class="flex shrink-0 items-center" style="gap: {scaledHorizPageGap}px;">
           {#each activeGroupPages() as num (num)}
             <div
-              class="flex h-24 w-12 items-center justify-center rounded-sm border-2 text-xs font-bold shadow-sm transition-all"
+              animate:flip={{ duration: flipDuration(160) }}
+              in:badgePop|local={{ duration: 140, start: 0.82 }}
+              class="flex h-24 w-12 items-center justify-center rounded-sm border-2 text-xs font-bold shadow-sm transition-colors"
               style="background-color: color-mix(in srgb, var(--accent) 25%, var(--surface)); border-color: var(--accent);"
             >
               {num}
@@ -172,6 +178,8 @@
         >
           {#each sideGroupPages() as num (num)}
             <div
+              animate:flip={{ duration: flipDuration(160) }}
+              in:badgePop|local={{ duration: 140, start: 0.82 }}
               class="flex h-24 w-12 items-center justify-center rounded-sm border text-[11px] font-medium"
               style="background-color: color-mix(in srgb, var(--accent) 14%, var(--surface)); border-color: var(--border);"
             >

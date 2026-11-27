@@ -16,7 +16,13 @@
   import { onMount } from "svelte";
   import { api, formatAppError } from "../api";
   import { getLocale } from "../i18n";
-  import { backdropFade, createOverlayGuard, modalScale } from "../motion";
+  import {
+    adaptiveOverlay,
+    backdropFade,
+    collapseReveal,
+    createOverlayGuard,
+  } from "../motion";
+  import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { libraryCache } from "../stores/libraryCache.svelte";
   import { notificationsStore } from "../stores/notifications.svelte";
   import { router } from "../stores/router.svelte";
@@ -286,6 +292,7 @@
   <!-- Non-blocking Tauri Channel Progress Bar -->
   {#if progress}
     <div
+      transition:collapseReveal|local
       class="flex flex-col gap-1.5 rounded-xl border px-3 py-2.5 text-xs"
       style="border-color: var(--border); background-color: var(--surface-subtle);"
     >
@@ -356,11 +363,11 @@
     <div
       transition:backdropFade|local
       onclick={() => void closePreview()}
-      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+      class="modal-backdrop fixed inset-0"
     ></div>
 
     <div
-      transition:modalScale|local
+      transition:adaptiveOverlay|local={{ isMobile: deviceEnv.layoutTier === "compact" }}
       class="modal-cq relative z-10 flex max-h-[calc(var(--app-height,100dvh)-1.5rem-var(--safe-top)-var(--ime-bottom))] w-full max-w-lg flex-col gap-4 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 sm:max-h-[calc(var(--app-height,100dvh)-2rem-var(--safe-top)-var(--safe-bottom)-var(--ime-bottom))] sm:rounded-2xl sm:border"
       style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >
@@ -392,7 +399,7 @@
           type="button"
           disabled={importing}
           onclick={() => void closePreview()}
-          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl opacity-75 hover:opacity-100 disabled:opacity-40"
+          class="gpu-press flex h-8 w-8 shrink-0 items-center justify-center rounded-xl opacity-75 hover:opacity-100 disabled:opacity-40"
           aria-label={t.cancel}
         >
           <X size={16} />
@@ -468,7 +475,7 @@
             type="button"
             disabled={importing}
             onclick={() => (importMode = "smart_merge")}
-            class="flex flex-col items-start gap-1 rounded-xl border p-3 text-left transition-colors"
+            class="gpu-press flex flex-col items-start gap-1 rounded-xl border p-3 text-left"
             style="border-color: {importMode === 'smart_merge'
               ? 'var(--accent)'
               : 'var(--border)'}; background-color: {importMode === 'smart_merge'
@@ -492,7 +499,7 @@
             type="button"
             disabled={importing}
             onclick={() => (importMode = "overwrite")}
-            class="flex flex-col items-start gap-1 rounded-xl border p-3 text-left transition-colors"
+            class="gpu-press flex flex-col items-start gap-1 rounded-xl border p-3 text-left"
             style="border-color: {importMode === 'overwrite'
               ? 'var(--danger)'
               : 'var(--border)'}; background-color: {importMode === 'overwrite'
@@ -515,6 +522,7 @@
 
         {#if importMode === "overwrite"}
           <div
+            transition:collapseReveal|local
             class="flex items-start gap-2 rounded-xl border px-3 py-2 text-[11px]"
             style="border-color: rgba(239, 68, 68, 0.45); background-color: rgba(239, 68, 68, 0.08); color: var(--danger);"
           >
@@ -526,6 +534,7 @@
 
       {#if importing && progress}
         <div
+          transition:collapseReveal|local
           class="flex flex-col gap-1.5 rounded-xl border px-3 py-2 text-xs"
           style="border-color: var(--border); background-color: var(--surface-subtle);"
         >

@@ -10,7 +10,9 @@
     Trash2,
     XCircle,
   } from "lucide-svelte";
+  import { flip } from "svelte/animate";
   import { api, formatAppError } from "../api";
+  import { collapseReveal, flipDuration, itemExit, popoverPop } from "../motion";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
   import ToggleSwitch from "./ToggleSwitch.svelte";
@@ -159,7 +161,7 @@
           testResult = null;
           patch((d) => (d.proxy.enabled = false));
         }}
-        class="pill"
+        class="pill gpu-press"
         class:pill-active={!proxy.enabled}
       >
         {t.proxyDirect}
@@ -170,7 +172,7 @@
           testResult = null;
           patch((d) => (d.proxy.enabled = true));
         }}
-        class="pill"
+        class="pill gpu-press"
         class:pill-active={proxy.enabled}
       >
         {t.proxyEnabled}
@@ -180,6 +182,7 @@
 
   {#if proxy.enabled || hasForceProxyRule}
     <div
+      transition:collapseReveal|local
       class="flex flex-col gap-3 rounded-xl border p-3.5"
       style="border-color: var(--border); background-color: var(--surface-subtle);"
     >
@@ -269,7 +272,7 @@
             <button
               type="button"
               onclick={() => (showPassword = !showPassword)}
-              class="absolute right-2 opacity-70 hover:opacity-100"
+              class="gpu-press absolute right-2 opacity-70 hover:opacity-100"
               aria-label="Toggle password visibility"
             >
               {#if showPassword}
@@ -312,7 +315,7 @@
             type="button"
             onclick={runConnectionTest}
             disabled={testing || !proxy.defaultProxy.host.trim()}
-            class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-45"
+            class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-45"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
             <Activity size={13} class={testing ? "animate-pulse" : ""} />
@@ -322,6 +325,7 @@
 
         {#if testResult}
           <div
+            transition:collapseReveal|local
             class="flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
             style="border-color: {testResult.ok
               ? 'var(--success, #10b981)'
@@ -352,6 +356,9 @@
       <div class="flex flex-col gap-1.5">
         {#each proxy.domainRules as rule (rule.domain)}
           <div
+            animate:flip={{ duration: flipDuration(170, proxy.domainRules.length) }}
+            in:popoverPop|local={{ duration: 150, y: 4 }}
+            out:itemExit|local
             class="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs"
             style="border-color: var(--border); background-color: var(--surface-subtle);"
           >
@@ -373,7 +380,7 @@
             <button
               type="button"
               onclick={() => removeDomainRule(rule.domain)}
-              class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] hover:opacity-80"
+              class="gpu-press inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] hover:opacity-80"
               style="color: var(--danger);"
               title={t.proxyRemoveRule}
             >
@@ -403,7 +410,7 @@
           type="button"
           onclick={addDomainRule}
           disabled={!newDomain.trim()}
-          class="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-45"
+          class="gpu-press inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-45"
           style="border-color: var(--border); background-color: var(--surface-subtle);"
         >
           <Plus size={13} />
@@ -413,6 +420,7 @@
 
       {#if newAction === "custom_proxy"}
         <div
+          transition:collapseReveal|local
           class="grid grid-cols-1 gap-2 rounded-lg border p-2.5 sm:grid-cols-12"
           style="border-color: var(--border); background-color: var(--surface-subtle);"
         >
@@ -484,6 +492,11 @@
     font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .pill-active {

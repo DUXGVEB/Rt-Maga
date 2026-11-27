@@ -16,7 +16,7 @@
     type SpinPlan,
     type TiltDirection,
   } from "../depthCarouselMath";
-  import { prefersReducedMotion, pulseHighlight } from "../motion";
+  import { badgePop, prefersReducedMotion, pulseHighlight } from "../motion";
   import { settingsStore } from "../stores/settings.svelte";
 
   let {
@@ -859,29 +859,39 @@
 
     <!-- Left / Right Desktop & Touch Step Controls -->
     {#if items.length > 1}
-      <button
-        type="button"
-        data-carousel-nav
-        disabled={isSpinning}
-        onclick={() => step(-1)}
-        class="gpu-press absolute top-1/2 left-2.5 z-20 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border shadow-md disabled:pointer-events-none disabled:opacity-35 sm:left-3.5"
-        style="background-color: var(--surface-glass-solid); border-color: var(--border); color: var(--text);"
-        aria-label={t.browsePrevPage}
+      <div
+        transition:badgePop|local={{ duration: 150, start: 0.78 }}
+        class="absolute top-1/2 left-2.5 z-20 -translate-y-1/2 sm:left-3.5"
       >
-        <ChevronLeft size={18} />
-      </button>
+        <button
+          type="button"
+          data-carousel-nav
+          disabled={isSpinning}
+          onclick={() => step(-1)}
+          class="gpu-press flex h-10 w-10 items-center justify-center rounded-full border shadow-md disabled:pointer-events-none disabled:opacity-35"
+          style="background-color: var(--surface-glass-solid); border-color: var(--border); color: var(--text);"
+          aria-label={t.browsePrevPage}
+        >
+          <ChevronLeft size={18} />
+        </button>
+      </div>
 
-      <button
-        type="button"
-        data-carousel-nav
-        disabled={isSpinning}
-        onclick={() => step(1)}
-        class="gpu-press absolute top-1/2 right-2.5 z-20 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border shadow-md disabled:pointer-events-none disabled:opacity-35 sm:right-3.5"
-        style="background-color: var(--surface-glass-solid); border-color: var(--border); color: var(--text);"
-        aria-label={t.browseNextPage}
+      <div
+        transition:badgePop|local={{ duration: 150, start: 0.78 }}
+        class="absolute top-1/2 right-2.5 z-20 -translate-y-1/2 sm:right-3.5"
       >
-        <ChevronRight size={18} />
-      </button>
+        <button
+          type="button"
+          data-carousel-nav
+          disabled={isSpinning}
+          onclick={() => step(1)}
+          class="gpu-press flex h-10 w-10 items-center justify-center rounded-full border shadow-md disabled:pointer-events-none disabled:opacity-35"
+          style="background-color: var(--surface-glass-solid); border-color: var(--border); color: var(--text);"
+          aria-label={t.browseNextPage}
+        >
+          <ChevronRight size={18} />
+        </button>
+      </div>
     {/if}
   </div>
 

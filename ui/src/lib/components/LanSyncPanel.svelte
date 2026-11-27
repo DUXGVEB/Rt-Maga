@@ -15,6 +15,7 @@
   } from "lucide-svelte";
   import { onMount } from "svelte";
   import { api, formatAppError } from "../api";
+  import { collapseReveal, popoverPop, viewReveal } from "../motion";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
   import { updatesStore } from "../stores/updates.svelte";
@@ -372,6 +373,7 @@
   <!-- Terminal / Completed / Active Session Cards -->
   {#if status?.phase === "host_confirm_peer"}
     <div
+      in:viewReveal|local={{ duration: 175, y: 6 }}
       class="flex flex-col gap-3 rounded-xl border p-4"
       style="border-color: var(--accent); background-color: var(--accent-soft);"
     >
@@ -394,7 +396,7 @@
           type="button"
           disabled={busy}
           onclick={() => respondHost("approve")}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+          class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
           style="background-color: var(--accent); color: var(--accent-fg);"
         >
           <CheckCircle2 size={14} />
@@ -404,7 +406,7 @@
           type="button"
           disabled={busy}
           onclick={() => respondHost("reject")}
-          class="inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-1.5 text-xs font-medium disabled:opacity-50"
+          class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-1.5 text-xs font-medium disabled:opacity-50"
           style="border-color: var(--border); background-color: var(--surface);"
         >
           <XCircle size={14} />
@@ -414,6 +416,7 @@
     </div>
   {:else if status?.phase === "receiver_confirm_peer"}
     <div
+      in:viewReveal|local={{ duration: 175, y: 6 }}
       class="flex flex-col gap-3 rounded-xl border p-4"
       style="border-color: var(--accent); background-color: var(--accent-soft);"
     >
@@ -436,7 +439,7 @@
           type="button"
           disabled={busy}
           onclick={() => respondReceiver("approve")}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+          class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
           style="background-color: var(--accent); color: var(--accent-fg);"
         >
           <CheckCircle2 size={14} />
@@ -446,7 +449,7 @@
           type="button"
           disabled={busy}
           onclick={() => respondReceiver("reject")}
-          class="inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-1.5 text-xs font-medium disabled:opacity-50"
+          class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-1.5 text-xs font-medium disabled:opacity-50"
           style="border-color: var(--border); background-color: var(--surface);"
         >
           <XCircle size={14} />
@@ -456,6 +459,7 @@
     </div>
   {:else if status?.phase === "host_waiting_pull" || status?.phase === "receiver_waiting_host" || status?.phase === "transferring"}
     <div
+      in:viewReveal|local={{ duration: 175, y: 6 }}
       class="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4"
       style="border-color: var(--border); background-color: var(--surface-subtle);"
     >
@@ -471,7 +475,7 @@
         type="button"
         disabled={busy}
         onclick={cancelOrReset}
-        class="rounded-lg border px-3 py-1.5 text-xs font-medium"
+        class="gpu-press rounded-lg border px-3 py-1.5 text-xs font-medium"
         style="border-color: var(--border); background-color: var(--surface);"
       >
         {t.syncCancelBtn}
@@ -479,6 +483,7 @@
     </div>
   {:else if status?.phase === "completed"}
     <div
+      in:viewReveal|local={{ duration: 175, y: 6 }}
       class="flex flex-col gap-2.5 rounded-xl border p-4"
       style="border-color: var(--success, #10b981); background-color: var(--surface-subtle);"
     >
@@ -493,7 +498,7 @@
         <button
           type="button"
           onclick={cancelOrReset}
-          class="rounded-lg border px-3 py-1 text-xs font-medium"
+          class="gpu-press rounded-lg border px-3 py-1 text-xs font-medium"
           style="border-color: var(--border); background-color: var(--surface);"
         >
           {t.syncResetBtn}
@@ -515,6 +520,7 @@
   {:else if status?.phase === "hosting_waiting"}
     <!-- Active Sender Waiting Card (PC shows QR; Phone shows 6-digit Pairing Code) -->
     <div
+      in:viewReveal|local={{ duration: 175, y: 6 }}
       class="flex flex-col items-center gap-3.5 rounded-xl border p-4 text-center"
       style="border-color: var(--border); background-color: var(--surface-subtle);"
     >
@@ -529,14 +535,14 @@
       </div>
 
       {#if status.mode === "pc_qr" && qrDataUrl}
-        <div class="rounded-2xl bg-white p-3 shadow-sm">
+        <div in:popoverPop|local={{ duration: 180, y: 6 }} class="rounded-2xl bg-white p-3 shadow-sm">
           <img src={qrDataUrl} alt="RtMaga LAN Sync QR" class="h-52 w-52" />
         </div>
         {#if status.compactCode}
           <button
             type="button"
             onclick={copyFallbackCode}
-            class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium"
+            class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium"
             style="border-color: var(--border); background-color: var(--surface);"
           >
             <Copy size={12} />
@@ -545,6 +551,7 @@
         {/if}
       {:else if status.pairingCode}
         <div
+          in:popoverPop|local={{ duration: 180, y: 6 }}
           class="rounded-2xl border px-7 py-4 font-mono text-3xl font-bold tracking-[0.25em]"
           style="border-color: var(--accent); background-color: var(--surface); color: var(--accent);"
         >
@@ -562,7 +569,7 @@
         type="button"
         disabled={busy}
         onclick={cancelOrReset}
-        class="rounded-lg border px-3.5 py-1.5 text-xs font-medium"
+        class="gpu-press rounded-lg border px-3.5 py-1.5 text-xs font-medium"
         style="border-color: var(--border); background-color: var(--surface); color: var(--danger);"
       >
         {t.syncCancelBtn}
@@ -572,6 +579,7 @@
     <!-- Terminal notice banner if expired / locked / cancelled / error -->
     {#if status && status.phase !== "idle" && status.message}
       <div
+        transition:collapseReveal|local
         class="flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs"
         style="border-color: var(--danger); color: var(--danger);"
       >
@@ -579,7 +587,7 @@
         <button
           type="button"
           onclick={cancelOrReset}
-          class="rounded border px-2 py-0.5 text-[11px]"
+          class="gpu-press rounded border px-2 py-0.5 text-[11px]"
           style="border-color: var(--border); color: var(--text);"
         >
           {t.syncResetBtn}
@@ -596,7 +604,7 @@
           errorMsg = null;
           activeTab = "primary";
         }}
-        class="pill text-center"
+        class="pill gpu-press text-center"
         class:pill-active={activeTab === "primary"}
       >
         {isPhone ? t.syncPhoneReceiveTab : t.syncPcSendTab}
@@ -608,194 +616,213 @@
           errorMsg = null;
           activeTab = "secondary";
         }}
-        class="pill text-center"
+        class="pill gpu-press text-center"
         class:pill-active={activeTab === "secondary"}
       >
         {isPhone ? t.syncPhoneSendTab : t.syncPcReceiveTab}
       </button>
     </div>
 
-    {#if !isPhone}
-      <!-- PC INTERFACE -->
-      {#if activeTab === "primary"}
-        <!-- PC -> Phone via QR -->
-        <div
-          class="flex flex-col items-start gap-3 rounded-xl border p-4"
-          style="border-color: var(--border); background-color: var(--surface-subtle);"
-        >
-          <button
-            type="button"
-            disabled={busy || isActiveFlow}
-            onclick={startSender}
-            class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
-            style="background-color: var(--accent); color: var(--accent-fg);"
-          >
-            <QrCode size={15} />
-            <span>{t.syncStartQrBtn}</span>
-          </button>
-        </div>
-      {:else}
-        <!-- Phone -> PC via 6-digit Pairing Code + LAN -->
-        <div
-          class="flex flex-col gap-3 rounded-xl border p-4"
-          style="border-color: var(--border); background-color: var(--surface-subtle);"
-        >
-          <label class="flex flex-col gap-1">
-            <span class="text-xs font-medium">{t.syncEnterPinLabel}</span>
-            <div class="flex flex-wrap items-center gap-2">
-              <input
-                type="text"
-                inputmode="numeric"
-                maxlength="7"
-                bind:value={pinInput}
-                placeholder={t.syncEnterPinPlaceholder}
-                class="field w-44 font-mono text-sm tracking-widest"
-              />
+    {#key `${isPhone}:${activeTab}`}
+      <div in:viewReveal|local={{ duration: 150, y: 4 }}>
+        {#if !isPhone}
+          <!-- PC INTERFACE -->
+          {#if activeTab === "primary"}
+            <!-- PC -> Phone via QR -->
+            <div
+              class="flex flex-col items-start gap-3 rounded-xl border p-4"
+              style="border-color: var(--border); background-color: var(--surface-subtle);"
+            >
               <button
                 type="button"
-                disabled={busy || pinInput.replace(/\D/g, "").length !== 6}
-                onclick={connectWithPin}
-                class="inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-semibold disabled:opacity-45"
+                disabled={busy || isActiveFlow}
+                onclick={startSender}
+                class="gpu-press inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
                 style="background-color: var(--accent); color: var(--accent-fg);"
               >
-                {#if busy}
-                  <Loader2 size={13} class="animate-spin" />
-                  <span>{t.syncConnecting}</span>
+                <QrCode size={15} />
+                <span>{t.syncStartQrBtn}</span>
+              </button>
+            </div>
+          {:else}
+            <!-- Phone -> PC via 6-digit Pairing Code + LAN -->
+            <div
+              class="flex flex-col gap-3 rounded-xl border p-4"
+              style="border-color: var(--border); background-color: var(--surface-subtle);"
+            >
+              <label class="flex flex-col gap-1">
+                <span class="text-xs font-medium">{t.syncEnterPinLabel}</span>
+                <div class="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    inputmode="numeric"
+                    maxlength="7"
+                    bind:value={pinInput}
+                    placeholder={t.syncEnterPinPlaceholder}
+                    class="field w-44 font-mono text-sm tracking-widest"
+                  />
+                  <button
+                    type="button"
+                    disabled={busy || pinInput.replace(/\D/g, "").length !== 6}
+                    onclick={connectWithPin}
+                    class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-semibold disabled:opacity-45"
+                    style="background-color: var(--accent); color: var(--accent-fg);"
+                  >
+                    {#if busy}
+                      <Loader2 size={13} class="animate-spin" />
+                      <span>{t.syncConnecting}</span>
+                    {:else}
+                      <span>{t.syncConnectBtn}</span>
+                    {/if}
+                  </button>
+                </div>
+              </label>
+
+              <button
+                type="button"
+                onclick={() => (showManualAddr = !showManualAddr)}
+                class="gpu-press self-start text-[11px] underline opacity-80 hover:opacity-100"
+              >
+                {t.syncManualAddrToggle}
+              </button>
+
+              {#if showManualAddr}
+                <div transition:collapseReveal|local>
+                  <input
+                    type="text"
+                    bind:value={manualAddr}
+                    placeholder={t.syncManualAddrPlaceholder}
+                    class="field w-64 font-mono"
+                  />
+                </div>
+              {/if}
+            </div>
+          {/if}
+        {:else}
+          <!-- ANDROID PHONE INTERFACE -->
+          {#if activeTab === "primary"}
+            <!-- PC -> Phone: Scan QR via Camera / Image / Paste -->
+            <div
+              class="flex flex-col gap-3 rounded-xl border p-4"
+              style="border-color: var(--border); background-color: var(--surface-subtle);"
+            >
+              <div class="flex flex-wrap gap-2">
+                {#if !cameraActive}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onclick={startCameraScanner}
+                    class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold disabled:opacity-45"
+                    style="background-color: var(--accent); color: var(--accent-fg);"
+                  >
+                    <Camera size={14} />
+                    <span>{t.syncStartCamera}</span>
+                  </button>
                 {:else}
-                  <span>{t.syncConnectBtn}</span>
+                  <button
+                    type="button"
+                    onclick={stopCamera}
+                    class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-semibold"
+                    style="border-color: var(--danger); color: var(--danger); background-color: var(--surface);"
+                  >
+                    <XCircle size={14} />
+                    <span>{t.syncStopCamera}</span>
+                  </button>
                 {/if}
-              </button>
+
+                <button
+                  type="button"
+                  disabled={busy}
+                  onclick={() => fileInputEl?.click()}
+                  class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-medium"
+                  style="border-color: var(--border); background-color: var(--surface);"
+                >
+                  <ImageUp size={14} />
+                  <span>{t.syncScanImageBtn}</span>
+                </button>
+
+                <input
+                  bind:this={fileInputEl}
+                  type="file"
+                  accept="image/*"
+                  onchange={handleQrImageUpload}
+                  class="hidden"
+                />
+              </div>
+
+              {#if cameraActive}
+                <div
+                  transition:collapseReveal|local
+                  class="relative overflow-hidden rounded-xl border bg-black"
+                  style="border-color: var(--accent);"
+                >
+                  <!-- svelte-ignore a11y_media_has_caption -->
+                  <video
+                    bind:this={videoEl}
+                    playsinline
+                    muted
+                    class="aspect-square w-full max-w-xs mx-auto object-cover"
+                  ></video>
+                  <div class="pointer-events-none absolute inset-4 overflow-hidden" aria-hidden="true">
+                    <div
+                      class="qr-scan-beam h-0.5 w-full rounded-full"
+                      style="background-color: var(--accent); box-shadow: 0 0 8px var(--accent);"
+                    ></div>
+                  </div>
+                  <canvas bind:this={canvasEl} class="hidden"></canvas>
+                </div>
+              {/if}
+
+              {#if cameraError}
+                <div transition:collapseReveal|local class="text-xs" style="color: var(--danger);">
+                  {cameraError}
+                </div>
+              {/if}
+
+              <div class="flex flex-wrap items-center gap-2 border-t pt-3" style="border-color: var(--border);">
+                <input
+                  type="text"
+                  bind:value={qrPasteInput}
+                  placeholder={t.syncPasteCodePlaceholder}
+                  class="field min-w-44 flex-1 font-mono"
+                />
+                <button
+                  type="button"
+                  disabled={busy || !qrPasteInput.trim()}
+                  onclick={() => connectWithQr(qrPasteInput)}
+                  class="gpu-press rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-45"
+                  style="border-color: var(--border); background-color: var(--surface);"
+                >
+                  {busy ? t.syncConnecting : t.syncConnectBtn}
+                </button>
+              </div>
             </div>
-          </label>
-
-          <button
-            type="button"
-            onclick={() => (showManualAddr = !showManualAddr)}
-            class="self-start text-[11px] underline opacity-80 hover:opacity-100"
-          >
-            {t.syncManualAddrToggle}
-          </button>
-
-          {#if showManualAddr}
-            <input
-              type="text"
-              bind:value={manualAddr}
-              placeholder={t.syncManualAddrPlaceholder}
-              class="field w-64 font-mono"
-            />
-          {/if}
-        </div>
-      {/if}
-    {:else}
-      <!-- ANDROID PHONE INTERFACE -->
-      {#if activeTab === "primary"}
-        <!-- PC -> Phone: Scan QR via Camera / Image / Paste -->
-        <div
-          class="flex flex-col gap-3 rounded-xl border p-4"
-          style="border-color: var(--border); background-color: var(--surface-subtle);"
-        >
-          <div class="flex flex-wrap gap-2">
-            {#if !cameraActive}
+          {:else}
+            <!-- Phone -> PC: Display 6-digit Pairing Code -->
+            <div
+              class="flex flex-col items-start gap-3 rounded-xl border p-4"
+              style="border-color: var(--border); background-color: var(--surface-subtle);"
+            >
               <button
                 type="button"
-                disabled={busy}
-                onclick={startCameraScanner}
-                class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold disabled:opacity-45"
+                disabled={busy || isActiveFlow}
+                onclick={startSender}
+                class="gpu-press inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
                 style="background-color: var(--accent); color: var(--accent-fg);"
               >
-                <Camera size={14} />
-                <span>{t.syncStartCamera}</span>
+                <Wifi size={15} />
+                <span>{t.syncStartPinBtn}</span>
               </button>
-            {:else}
-              <button
-                type="button"
-                onclick={stopCamera}
-                class="inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-semibold"
-                style="border-color: var(--danger); color: var(--danger); background-color: var(--surface);"
-              >
-                <XCircle size={14} />
-                <span>{t.syncStopCamera}</span>
-              </button>
-            {/if}
-
-            <button
-              type="button"
-              disabled={busy}
-              onclick={() => fileInputEl?.click()}
-              class="inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-medium"
-              style="border-color: var(--border); background-color: var(--surface);"
-            >
-              <ImageUp size={14} />
-              <span>{t.syncScanImageBtn}</span>
-            </button>
-
-            <input
-              bind:this={fileInputEl}
-              type="file"
-              accept="image/*"
-              onchange={handleQrImageUpload}
-              class="hidden"
-            />
-          </div>
-
-          {#if cameraActive}
-            <div class="relative overflow-hidden rounded-xl border bg-black" style="border-color: var(--accent);">
-              <!-- svelte-ignore a11y_media_has_caption -->
-              <video
-                bind:this={videoEl}
-                playsinline
-                muted
-                class="aspect-square w-full max-w-xs mx-auto object-cover"
-              ></video>
-              <canvas bind:this={canvasEl} class="hidden"></canvas>
             </div>
           {/if}
-
-          {#if cameraError}
-            <div class="text-xs" style="color: var(--danger);">{cameraError}</div>
-          {/if}
-
-          <div class="flex flex-wrap items-center gap-2 border-t pt-3" style="border-color: var(--border);">
-            <input
-              type="text"
-              bind:value={qrPasteInput}
-              placeholder={t.syncPasteCodePlaceholder}
-              class="field min-w-44 flex-1 font-mono"
-            />
-            <button
-              type="button"
-              disabled={busy || !qrPasteInput.trim()}
-              onclick={() => connectWithQr(qrPasteInput)}
-              class="rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-45"
-              style="border-color: var(--border); background-color: var(--surface);"
-            >
-              {busy ? t.syncConnecting : t.syncConnectBtn}
-            </button>
-          </div>
-        </div>
-      {:else}
-        <!-- Phone -> PC: Display 6-digit Pairing Code -->
-        <div
-          class="flex flex-col items-start gap-3 rounded-xl border p-4"
-          style="border-color: var(--border); background-color: var(--surface-subtle);"
-        >
-          <button
-            type="button"
-            disabled={busy || isActiveFlow}
-            onclick={startSender}
-            class="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
-            style="background-color: var(--accent); color: var(--accent-fg);"
-          >
-            <Wifi size={15} />
-            <span>{t.syncStartPinBtn}</span>
-          </button>
-        </div>
-      {/if}
-    {/if}
+        {/if}
+      </div>
+    {/key}
   {/if}
 
   {#if errorMsg}
     <div
+      transition:collapseReveal|local
       class="rounded-lg border px-3 py-2 text-xs"
       style="border-color: var(--danger); color: var(--danger);"
     >
@@ -830,6 +857,11 @@
     font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .pill-active {

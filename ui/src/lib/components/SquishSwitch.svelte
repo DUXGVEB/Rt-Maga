@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+
   let {
     checked = false,
     disabled = false,
@@ -15,6 +17,13 @@
 
   let squishDir = $state<"none" | "on" | "off">("none");
   let squishTimer: number | null = null;
+
+  onDestroy(() => {
+    if (squishTimer !== null) {
+      window.clearTimeout(squishTimer);
+      squishTimer = null;
+    }
+  });
 
   function triggerToggle() {
     if (disabled) return;

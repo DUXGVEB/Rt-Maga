@@ -1,7 +1,18 @@
 <script lang="ts">
   import { Bell, BookOpen, CheckCheck, Sparkles, Trash2, X } from "lucide-svelte";
+  import { flip } from "svelte/animate";
   import { imgProxyUrl } from "../api";
-  import { backdropFade, createOverlayGuard, drawerSlide } from "../motion";
+  import {
+    backdropFade,
+    badgePop,
+    createOverlayGuard,
+    drawerSlide,
+    flipDuration,
+    itemExit,
+    shouldStaggerItem,
+    staggerDelay,
+    viewReveal,
+  } from "../motion";
   import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { notificationsStore } from "../stores/notifications.svelte";
   import { router } from "../stores/router.svelte";
@@ -83,6 +94,7 @@
         <h2 class="text-base font-bold tracking-tight">{t.notifCenterTitle}</h2>
         {#if notificationsStore.unreadCount > 0}
           <span
+            transition:badgePop|local
             class="rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
@@ -93,28 +105,32 @@
 
       <div class="flex items-center gap-1">
         {#if notificationsStore.unreadCount > 0}
-          <button
-            type="button"
-            onclick={() => notificationsStore.markAllRead()}
-            class="gpu-press inline-flex min-h-[40px] items-center gap-1 rounded-xl px-2.5 py-1 text-xs font-semibold hover:opacity-80"
-            style="color: var(--accent);"
-            title={t.notifMarkAllRead}
-          >
-            <CheckCheck size={15} />
-            <span class="hidden sm:inline">{t.notifMarkAllRead}</span>
-          </button>
+          <span transition:badgePop|local class="inline-flex">
+            <button
+              type="button"
+              onclick={() => notificationsStore.markAllRead()}
+              class="gpu-press inline-flex min-h-[40px] items-center gap-1 rounded-xl px-2.5 py-1 text-xs font-semibold hover:opacity-80"
+              style="color: var(--accent);"
+              title={t.notifMarkAllRead}
+            >
+              <CheckCheck size={15} />
+              <span class="hidden sm:inline">{t.notifMarkAllRead}</span>
+            </button>
+          </span>
         {/if}
         {#if notificationsStore.items.length > 0}
-          <button
-            type="button"
-            onclick={() => notificationsStore.clearAll()}
-            class="gpu-press flex h-10 w-10 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
-            style="color: var(--danger);"
-            title={t.clearAll}
-            aria-label={t.clearAll}
-          >
-            <Trash2 size={16} />
-          </button>
+          <span transition:badgePop|local class="inline-flex">
+            <button
+              type="button"
+              onclick={() => notificationsStore.clearAll()}
+              class="gpu-press flex h-10 w-10 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
+              style="color: var(--danger);"
+              title={t.clearAll}
+              aria-label={t.clearAll}
+            >
+              <Trash2 size={16} />
+            </button>
+          </span>
         {/if}
         <button
           type="button"
@@ -130,6 +146,7 @@
     <div class="flex-1 overflow-y-auto overscroll-contain p-3">
       {#if notificationsStore.items.length === 0}
         <div
+          in:viewReveal|local={{ duration: 160, y: 6 }}
           class="flex h-full min-h-44 flex-col items-center justify-center gap-3 px-6 text-center"
           style="color: var(--text-muted);"
         >
@@ -138,83 +155,94 @@
         </div>
       {:else}
         <div class="list-contain flex flex-col gap-2">
-          {#each notificationsStore.items as item (item.id)}
+          {#each notificationsStore.items as item, idx (item.id)}
+            {@const animateStagger = shouldStaggerItem(idx, notificationsStore.items.length)}
             <div
-              role="button"
-              tabindex="0"
-              onclick={() => openItem(item)}
-              onkeydown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  openItem(item);
-                }
-              }}
-              class="card-contain gpu-press flex min-h-[64px] cursor-pointer items-center gap-3 rounded-2xl border p-3 hover:opacity-95"
-              style="background-color: {item.read
-                ? 'var(--surface-subtle)'
-                : 'color-mix(in srgb, var(--surface) 92%, var(--accent-soft))'}; border-color: {item.read
-                ? 'var(--border)'
-                : 'color-mix(in srgb, var(--accent) 35%, var(--border))'};"
+              animate:flip={{ duration: flipDuration(175, notificationsStore.items.length) }}
+              out:itemExit|local
+              class:stagger-item={animateStagger}
+              style={animateStagger
+                ? `--stagger-delay: ${staggerDelay(idx, 16, 160, notificationsStore.items.length)}ms;`
+                : undefined}
             >
               <div
-                class="h-14 w-10 shrink-0 overflow-hidden rounded-xl"
-                style="background-color: var(--surface-hover);"
-              >
-                {#if item.coverToken}
-                  <img
-                    src={imgProxyUrl(item.coverToken)}
-                    alt={item.mangaTitle}
-                    loading="lazy"
-                    decoding="async"
-                    class="h-full w-full object-cover"
-                  />
-                {:else}
-                  <div
-                    class="flex h-full w-full items-center justify-center"
-                    style="color: var(--text-muted);"
-                  >
-                    <BookOpen size={15} />
-                  </div>
-                {/if}
-              </div>
-
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-1.5">
-                  {#if !item.read}
-                    <span
-                      class="h-2 w-2 shrink-0 rounded-full"
-                      style="background-color: var(--accent);"
-                    ></span>
-                  {/if}
-                  <span class="truncate text-sm font-semibold">{item.mangaTitle}</span>
-                </div>
-                <div class="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
-                  <span
-                    class="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-medium"
-                    style="background-color: var(--accent-soft); color: var(--accent);"
-                  >
-                    <Sparkles size={11} />
-                    {t.notifChaptersLabel(item.chapterRange, item.chapterCount)}
-                  </span>
-                </div>
-                <div class="mt-1 text-[11px]" style="color: var(--text-muted);">
-                  {formatTime(item.createdAt)}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  void notificationsStore.remove(item.id);
+                role="button"
+                tabindex="0"
+                onclick={() => openItem(item)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    openItem(item);
+                  }
                 }}
-                class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl opacity-60 hover:opacity-100"
-                style="color: var(--text-muted);"
-                title={t.dismissNotification}
-                aria-label={t.dismissNotification}
+                class="card-contain gpu-press flex min-h-[64px] cursor-pointer items-center gap-3 rounded-2xl border p-3 hover:opacity-95"
+                style="background-color: {item.read
+                  ? 'var(--surface-subtle)'
+                  : 'color-mix(in srgb, var(--surface) 92%, var(--accent-soft))'}; border-color: {item.read
+                  ? 'var(--border)'
+                  : 'color-mix(in srgb, var(--accent) 35%, var(--border))'};"
               >
-                <X size={15} />
-              </button>
+                <div
+                  class="h-14 w-10 shrink-0 overflow-hidden rounded-xl"
+                  style="background-color: var(--surface-hover);"
+                >
+                  {#if item.coverToken}
+                    <img
+                      src={imgProxyUrl(item.coverToken)}
+                      alt={item.mangaTitle}
+                      loading="lazy"
+                      decoding="async"
+                      class="h-full w-full object-cover"
+                    />
+                  {:else}
+                    <div
+                      class="flex h-full w-full items-center justify-center"
+                      style="color: var(--text-muted);"
+                    >
+                      <BookOpen size={15} />
+                    </div>
+                  {/if}
+                </div>
+
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-1.5">
+                    {#if !item.read}
+                      <span
+                        transition:badgePop|local
+                        class="h-2 w-2 shrink-0 rounded-full"
+                        style="background-color: var(--accent);"
+                      ></span>
+                    {/if}
+                    <span class="truncate text-sm font-semibold">{item.mangaTitle}</span>
+                  </div>
+                  <div class="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+                    <span
+                      class="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-medium"
+                      style="background-color: var(--accent-soft); color: var(--accent);"
+                    >
+                      <Sparkles size={11} />
+                      {t.notifChaptersLabel(item.chapterRange, item.chapterCount)}
+                    </span>
+                  </div>
+                  <div class="mt-1 text-[11px]" style="color: var(--text-muted);">
+                    {formatTime(item.createdAt)}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    void notificationsStore.remove(item.id);
+                  }}
+                  class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl opacity-60 hover:opacity-100"
+                  style="color: var(--text-muted);"
+                  title={t.dismissNotification}
+                  aria-label={t.dismissNotification}
+                >
+                  <X size={15} />
+                </button>
+              </div>
             </div>
           {/each}
         </div>

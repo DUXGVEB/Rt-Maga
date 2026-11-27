@@ -12,6 +12,7 @@
   } from "lucide-svelte";
   import { onMount } from "svelte";
   import { api, formatAppError } from "../api";
+  import { collapseReveal } from "../motion";
   import { feedbackDraft } from "../stores/feedbackDraft.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -165,7 +166,7 @@
       <button
         type="button"
         onclick={() => (kind = "bug")}
-        class="inline-flex items-center justify-center gap-1.5 rounded-xl border py-2 font-semibold transition-colors"
+        class="gpu-press inline-flex items-center justify-center gap-1.5 rounded-xl border py-2 font-semibold"
         style="border-color: {kind === 'bug'
           ? 'var(--accent)'
           : 'var(--border)'}; background-color: {kind === 'bug'
@@ -179,7 +180,7 @@
       <button
         type="button"
         onclick={() => (kind = "suggestion")}
-        class="inline-flex items-center justify-center gap-1.5 rounded-xl border py-2 font-semibold transition-colors"
+        class="gpu-press inline-flex items-center justify-center gap-1.5 rounded-xl border py-2 font-semibold"
         style="border-color: {kind === 'suggestion'
           ? 'var(--accent)'
           : 'var(--border)'}; background-color: {kind === 'suggestion'
@@ -236,91 +237,93 @@
     </div>
 
     {#if attachLogs}
-      <div class="flex flex-wrap items-center justify-between gap-2 border-t pt-2" style="border-color: var(--border);">
-        <span class="text-[11px] font-medium" style="color: var(--text-muted);">
-          {t.feedbackSelectedCount(selectedLogIds.size)}
-        </span>
-        <div class="flex items-center gap-1.5">
-          <button
-            type="button"
-            onclick={() => void refreshLogs(false)}
-            disabled={loadingLogs}
-            class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px]"
-            style="border-color: var(--border); background-color: var(--surface);"
-            title={t.retry}
-          >
-            <RefreshCw size={11} class={loadingLogs ? "animate-spin" : ""} />
-          </button>
-          <button
-            type="button"
-            onclick={selectAllLogs}
-            class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium"
-            style="border-color: var(--border); background-color: var(--surface);"
-          >
-            <CheckSquare size={11} />
-            <span>{t.feedbackSelectAllLogs}</span>
-          </button>
-          <button
-            type="button"
-            onclick={clearSelectedLogs}
-            class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium"
-            style="border-color: var(--border); background-color: var(--surface);"
-          >
-            <Square size={11} />
-            <span>{t.feedbackClearSelectedLogs}</span>
-          </button>
-        </div>
-      </div>
-
-      {#if loadingLogs}
-        <div class="py-4 text-center text-[11px]" style="color: var(--text-muted);">
-          {t.calculating}
-        </div>
-      {:else if logs.length === 0}
-        <div class="py-3 text-center text-[11px]" style="color: var(--text-muted);">
-          {t.feedbackNoLogsAvailable}
-        </div>
-      {:else}
-        <div class="flex max-h-60 flex-col gap-1.5 overflow-y-auto overscroll-contain touch-pan-y pr-1">
-          {#each logs as log (log.id)}
-            {@const checked = selectedLogIds.has(log.id)}
-            <label
-              class="flex cursor-pointer items-start gap-2.5 rounded-lg border px-2.5 py-2 transition-colors"
-              style="border-color: {checked ? 'var(--accent)' : 'var(--border)'}; background-color: var(--surface);"
+      <div transition:collapseReveal|local class="flex flex-col gap-2.5">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-t pt-2" style="border-color: var(--border);">
+          <span class="text-[11px] font-medium" style="color: var(--text-muted);">
+            {t.feedbackSelectedCount(selectedLogIds.size)}
+          </span>
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              onclick={() => void refreshLogs(false)}
+              disabled={loadingLogs}
+              class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px]"
+              style="border-color: var(--border); background-color: var(--surface);"
+              title={t.retry}
             >
-              <input
-                type="checkbox"
-                {checked}
-                onchange={() => toggleLogId(log.id)}
-                class="mt-0.5 h-3.5 w-3.5 shrink-0"
-              />
-              <div class="min-w-0 flex-1">
-                <div class="flex flex-wrap items-center gap-1.5 text-[10px]">
-                  <span
-                    class="rounded px-1.5 py-0.5 font-bold uppercase"
-                    style="background-color: {log.level === 'crash' || log.level === 'error'
-                      ? 'rgba(239, 68, 68, 0.14)'
-                      : 'var(--surface-hover)'}; color: {log.level === 'crash' ||
-                    log.level === 'error'
-                      ? 'var(--danger)'
-                      : 'var(--text-muted)'};"
-                  >
-                    {log.level}
-                  </span>
-                  <span class="font-mono font-semibold">{log.category}</span>
-                  {#if log.source}
-                    <span class="truncate opacity-75">· {log.source}</span>
-                  {/if}
-                  <span class="ml-auto opacity-65">{formatTs(log.createdAt)}</span>
-                </div>
-                <div class="mt-0.5 line-clamp-2 text-[11px]" style="color: var(--text);">
-                  {log.message}
-                </div>
-              </div>
-            </label>
-          {/each}
+              <RefreshCw size={11} class={loadingLogs ? "animate-spin" : ""} />
+            </button>
+            <button
+              type="button"
+              onclick={selectAllLogs}
+              class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium"
+              style="border-color: var(--border); background-color: var(--surface);"
+            >
+              <CheckSquare size={11} />
+              <span>{t.feedbackSelectAllLogs}</span>
+            </button>
+            <button
+              type="button"
+              onclick={clearSelectedLogs}
+              class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium"
+              style="border-color: var(--border); background-color: var(--surface);"
+            >
+              <Square size={11} />
+              <span>{t.feedbackClearSelectedLogs}</span>
+            </button>
+          </div>
         </div>
-      {/if}
+
+        {#if loadingLogs}
+          <div class="py-4 text-center text-[11px]" style="color: var(--text-muted);">
+            {t.calculating}
+          </div>
+        {:else if logs.length === 0}
+          <div class="py-3 text-center text-[11px]" style="color: var(--text-muted);">
+            {t.feedbackNoLogsAvailable}
+          </div>
+        {:else}
+          <div class="flex max-h-60 flex-col gap-1.5 overflow-y-auto overscroll-contain touch-pan-y pr-1">
+            {#each logs as log (log.id)}
+              {@const checked = selectedLogIds.has(log.id)}
+              <label
+                class="flex cursor-pointer items-start gap-2.5 rounded-lg border px-2.5 py-2 transition-colors"
+                style="border-color: {checked ? 'var(--accent)' : 'var(--border)'}; background-color: var(--surface);"
+              >
+                <input
+                  type="checkbox"
+                  {checked}
+                  onchange={() => toggleLogId(log.id)}
+                  class="mt-0.5 h-3.5 w-3.5 shrink-0"
+                />
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-1.5 text-[10px]">
+                    <span
+                      class="rounded px-1.5 py-0.5 font-bold uppercase"
+                      style="background-color: {log.level === 'crash' || log.level === 'error'
+                        ? 'rgba(239, 68, 68, 0.14)'
+                        : 'var(--surface-hover)'}; color: {log.level === 'crash' ||
+                      log.level === 'error'
+                        ? 'var(--danger)'
+                        : 'var(--text-muted)'};"
+                    >
+                      {log.level}
+                    </span>
+                    <span class="font-mono font-semibold">{log.category}</span>
+                    {#if log.source}
+                      <span class="truncate opacity-75">· {log.source}</span>
+                    {/if}
+                    <span class="ml-auto opacity-65">{formatTs(log.createdAt)}</span>
+                  </div>
+                  <div class="mt-0.5 line-clamp-2 text-[11px]" style="color: var(--text);">
+                    {log.message}
+                  </div>
+                </div>
+              </label>
+            {/each}
+          </div>
+        {/if}
+      </div>
     {/if}
   </div>
 
@@ -330,7 +333,7 @@
       type="button"
       disabled={busyAction !== null}
       onclick={() => void submitGithub()}
-      class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
+      class="gpu-press inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
       style="background-color: var(--accent); color: var(--accent-fg);"
     >
       {#if busyAction === "github"}
@@ -345,7 +348,7 @@
       type="button"
       disabled={busyAction !== null}
       onclick={() => void copyMarkdown()}
-      class="inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-medium disabled:opacity-50"
+      class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-medium disabled:opacity-50"
       style="border-color: var(--border); background-color: var(--surface-subtle);"
     >
       <Copy size={13} />
@@ -356,7 +359,7 @@
       type="button"
       disabled={busyAction !== null}
       onclick={() => void saveMarkdownFile()}
-      class="inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-medium disabled:opacity-50"
+      class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-medium disabled:opacity-50"
       style="border-color: var(--border); background-color: var(--surface-subtle);"
     >
       <Download size={13} />

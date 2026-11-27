@@ -61,6 +61,7 @@
     ZoomIn,
   } from "lucide-svelte";
   import { onMount, tick } from "svelte";
+  import { flip } from "svelte/animate";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
   import DiagnosticsPanel from "../lib/components/DiagnosticsPanel.svelte";
   import FeedbackComposer from "../lib/components/FeedbackComposer.svelte";
@@ -71,7 +72,16 @@
   import SourceManagerPanel from "../lib/components/SourceManagerPanel.svelte";
   import ToggleSwitch from "../lib/components/ToggleSwitch.svelte";
   import { LANGUAGE_OPTIONS } from "../lib/i18n";
-  import { backdropFade, modalScale } from "../lib/motion";
+  import {
+    adaptiveOverlay,
+    backdropFade,
+    badgePop,
+    collapseReveal,
+    flipDuration,
+    itemExit,
+    popoverPop,
+    viewReveal,
+  } from "../lib/motion";
   import { appReleaseStore } from "../lib/stores/appRelease.svelte";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
@@ -800,15 +810,17 @@
     <!-- Left: Desktop title OR Mobile Hub/Back title -->
     <div class="flex min-w-0 items-center gap-2.5">
       {#if mobileScreen !== "hub" && !isSearching}
-        <button
-          type="button"
-          onclick={backToMobileHub}
-          class="inline-flex min-h-10 items-center gap-1 rounded-xl border px-2.5 py-1.5 text-sm font-semibold md:hidden"
-          style="border-color: var(--border); background-color: var(--surface);"
-        >
-          <ChevronLeft size={17} />
-          <span>{tabLabel(mobileScreen)}</span>
-        </button>
+        <span in:popoverPop|local={{ duration: 150, y: 0 }} class="inline-flex md:hidden">
+          <button
+            type="button"
+            onclick={backToMobileHub}
+            class="gpu-press inline-flex min-h-10 items-center gap-1 rounded-xl border px-2.5 py-1.5 text-sm font-semibold"
+            style="border-color: var(--border); background-color: var(--surface);"
+          >
+            <ChevronLeft size={17} />
+            <span>{tabLabel(mobileScreen)}</span>
+          </button>
+        </span>
       {/if}
 
       <div class="{mobileScreen !== 'hub' && !isSearching ? 'hidden md:flex' : 'flex'} items-center gap-2.5">
@@ -836,17 +848,19 @@
           class="w-full bg-transparent text-xs outline-none sm:text-sm"
         />
         {#if searchQuery}
-          <button
-            type="button"
-            onclick={() => {
-              searchQuery = "";
-            }}
-            class="rounded-md p-0.5 opacity-75 hover:opacity-100"
-            style="color: var(--text-muted);"
-            aria-label={t.settingsSearchClear}
-          >
-            <X size={14} />
-          </button>
+          <span transition:badgePop|local class="inline-flex">
+            <button
+              type="button"
+              onclick={() => {
+                searchQuery = "";
+              }}
+              class="gpu-press rounded-md p-0.5 opacity-75 hover:opacity-100"
+              style="color: var(--text-muted);"
+              aria-label={t.settingsSearchClear}
+            >
+              <X size={14} />
+            </button>
+          </span>
         {/if}
       </div>
 
@@ -902,6 +916,7 @@
   {#if isSearching}
     {#if searchHits.length === 0}
       <div
+        in:viewReveal|local={{ duration: 150, y: 4 }}
         class="flex flex-col items-center gap-3 rounded-2xl border border-dashed py-10 text-center"
         style="border-color: var(--border); color: var(--text-muted);"
       >
@@ -914,19 +929,19 @@
           onclick={() => {
             searchQuery = "";
           }}
-          class="rounded-lg border px-3 py-1.5 text-xs font-medium"
+          class="gpu-press rounded-lg border px-3 py-1.5 text-xs font-medium"
           style="border-color: var(--border); background-color: var(--surface);"
         >
           {t.settingsSearchClear}
         </button>
       </div>
     {:else}
-      <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <div in:viewReveal|local={{ duration: 150, y: 4 }} class="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {#each searchHits as hit (hit.id)}
           <button
             type="button"
             onclick={() => selectTab(hit.tab)}
-            class="flex items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left transition-colors"
+            class="gpu-press flex items-center justify-between gap-3 rounded-xl border px-3.5 py-3 text-left"
             style="border-color: var(--border); background-color: var(--surface);"
           >
             <div class="min-w-0">
@@ -957,7 +972,7 @@
   {:else}
     <!-- ==================== MOBILE (<768px): 1-SCREEN HUB ==================== -->
     {#if mobileScreen === "hub"}
-      <div class="flex flex-col gap-3.5 md:hidden">
+      <div in:viewReveal|local={{ duration: 165, y: 6 }} class="flex flex-col gap-3.5 md:hidden">
         <!-- 3 Quick Visual Toggle Tiles -->
         <div class="grid grid-cols-3 gap-2">
           <button
@@ -1123,7 +1138,7 @@
     <div class={mobileScreen === "hub" ? "hidden md:block" : "block"}>
       <!-- ==================== TAB 1: GENERAL (2x2 Bento Grid) ==================== -->
       {#if activeTab === "general"}
-        <div class="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-2">
+        <div in:viewReveal|local={{ duration: 165, y: 6 }} class="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-2">
           <!-- Bento Card 1: Appearance (Visual Theme Mini-Windows + Language) -->
           <section id="settings-appearance" class="bento-card">
             <div class="card-head">
@@ -1218,7 +1233,7 @@
                   <button
                     type="button"
                     onclick={() => (editingAccentMode = "light")}
-                    class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors"
+                    class="gpu-press inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors"
                     style={editingAccentMode === "light"
                       ? "background-color: var(--surface); color: var(--text); box-shadow: var(--shadow-sm);"
                       : "color: var(--text-muted);"}
@@ -1229,7 +1244,7 @@
                   <button
                     type="button"
                     onclick={() => (editingAccentMode = "dark")}
-                    class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors"
+                    class="gpu-press inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors"
                     style={editingAccentMode === "dark"
                       ? "background-color: var(--surface); color: var(--text); box-shadow: var(--shadow-sm);"
                       : "color: var(--text-muted);"}
@@ -1250,7 +1265,7 @@
                     title={preset.label}
                     aria-label={preset.label}
                     aria-pressed={selected}
-                    class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-transform hover:scale-105"
+                    class="gpu-press flex h-7 w-7 shrink-0 items-center justify-center rounded-full border hover:scale-105"
                     style="background-color: {preset.hex}; color: {swatchFg}; border-color: {selected
                       ? 'var(--text)'
                       : 'transparent'}; box-shadow: {selected
@@ -1258,7 +1273,9 @@
                       : 'inset 0 0 0 1px rgba(128,128,128,0.28)'};"
                   >
                     {#if selected}
-                      <Check size={13} strokeWidth={2.7} />
+                      <span in:badgePop|local={{ duration: 130, start: 0.55 }} class="inline-flex">
+                        <Check size={13} strokeWidth={2.7} />
+                      </span>
                     {/if}
                   </button>
                 {/each}
@@ -1293,6 +1310,7 @@
 
               {#if editedAccentContrast < 3.0}
                 <div
+                  transition:collapseReveal|local
                   class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px]"
                   style="border-color: rgba(245, 158, 11, 0.45); background-color: rgba(245, 158, 11, 0.1); color: #d97706;"
                 >
@@ -1397,7 +1415,7 @@
                   <button
                     type="button"
                     onclick={requestAndroidNotifPermission}
-                    class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-semibold"
+                    class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-semibold"
                     style="border-color: var(--accent); color: var(--accent); background-color: var(--accent-soft);"
                   >
                     <Bell size={12} />
@@ -1465,15 +1483,17 @@
                 class="field-input flex-1"
               />
               {#if s.device.customName}
-                <button
-                  type="button"
-                  onclick={() => patch((d) => (d.device.customName = null))}
-                  class="icon-btn"
-                  title={t.deviceResetName}
-                  aria-label={t.deviceResetName}
-                >
-                  <X size={14} />
-                </button>
+                <span transition:badgePop|local class="inline-flex">
+                  <button
+                    type="button"
+                    onclick={() => patch((d) => (d.device.customName = null))}
+                    class="icon-btn"
+                    title={t.deviceResetName}
+                    aria-label={t.deviceResetName}
+                  >
+                    <X size={14} />
+                  </button>
+                </span>
               {/if}
             </div>
           </section>
@@ -1504,7 +1524,7 @@
                   <button
                     type="button"
                     onclick={() => appReleaseStore.openPrompt()}
-                    class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold"
+                    class="gpu-press inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold"
                     style="background-color: var(--accent); color: var(--accent-fg);"
                   >
                     <Download size={12} />
@@ -1525,6 +1545,7 @@
 
             {#if appReleaseStore.checkStatus === "checking"}
               <div
+                transition:collapseReveal|local
                 class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium"
                 style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
               >
@@ -1533,6 +1554,7 @@
               </div>
             {:else if appReleaseStore.release?.updateAvailable}
               <div
+                transition:collapseReveal|local
                 class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium"
                 style="background-color: var(--accent-soft); border-color: var(--accent); color: var(--accent);"
               >
@@ -1541,6 +1563,7 @@
               </div>
             {:else if appReleaseStore.checkStatus === "up_to_date" && appReleaseStore.statusMessage}
               <div
+                transition:collapseReveal|local
                 class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium"
                 style="background-color: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.45); color: #10b981;"
               >
@@ -1549,6 +1572,7 @@
               </div>
             {:else if appReleaseStore.statusMessage && (appReleaseStore.checkStatus === "server_unavailable" || appReleaseStore.checkStatus === "invalid_metadata" || appReleaseStore.checkStatus === "rate_limited" || appReleaseStore.checkStatus === "network_error")}
               <div
+                transition:collapseReveal|local
                 class="flex items-start gap-2 rounded-xl border px-3 py-2 text-xs font-medium"
                 style="background-color: rgba(239, 68, 68, 0.08); border-color: var(--danger); color: var(--danger);"
               >
@@ -1593,7 +1617,7 @@
 
             <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {#each navOrder as dest, idx (dest)}
-                <div class="list-row">
+                <div animate:flip={{ duration: flipDuration(180) }} class="list-row">
                   <div class="flex min-w-0 items-center gap-2.5">
                     <span
                       class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] font-bold"
@@ -1648,7 +1672,7 @@
 
       <!-- ==================== TAB 2: READER (2-Column Bento, No Deep Accordions!) ==================== -->
       {#if activeTab === "reader"}
-        <div id="settings-reader" class="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-2">
+        <div in:viewReveal|local={{ duration: 165, y: 6 }} id="settings-reader" class="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-2">
           <!-- Left Bento Card: Layout Mode + Live Preview + Display -->
           <section class="bento-card">
             <div class="card-head">
@@ -1709,174 +1733,180 @@
               style="background-color: var(--surface-subtle); border-color: var(--border);"
             >
               {#if !isHorizontal}
-                <div class="compact-row">
-                  <span class="text-xs font-medium">{t.noGapModeLabel}</span>
-                  <ToggleSwitch
-                    size="sm"
-                    checked={s.reader.vertical.noGapMode}
-                    ariaLabel={t.noGapModeLabel}
-                    onchange={(checked) => {
-                      patch((d) => {
-                        d.reader.vertical.noGapMode = checked;
-                        if (!checked && d.reader.vertical.pageGapPx === 0) {
-                          d.reader.vertical.pageGapPx = 12;
-                          d.reader.gapPx = 12;
-                        }
-                      });
-                    }}
-                  />
-                </div>
+                <div in:viewReveal|local={{ duration: 150, y: 4 }} class="flex flex-col gap-2.5">
+                  <div class="compact-row">
+                    <span class="text-xs font-medium">{t.noGapModeLabel}</span>
+                    <ToggleSwitch
+                      size="sm"
+                      checked={s.reader.vertical.noGapMode}
+                      ariaLabel={t.noGapModeLabel}
+                      onchange={(checked) => {
+                        patch((d) => {
+                          d.reader.vertical.noGapMode = checked;
+                          if (!checked && d.reader.vertical.pageGapPx === 0) {
+                            d.reader.vertical.pageGapPx = 12;
+                            d.reader.gapPx = 12;
+                          }
+                        });
+                      }}
+                    />
+                  </div>
 
-                {#if !s.reader.vertical.noGapMode}
+                  {#if !s.reader.vertical.noGapMode}
+                    <div transition:collapseReveal|local class="slider-row">
+                      <span class="text-xs" style="color: var(--text-muted);">{t.previewGapChip}</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="48"
+                        step="2"
+                        value={s.reader.vertical.pageGapPx}
+                        aria-label={t.gapLabel(s.reader.vertical.pageGapPx)}
+                        oninput={(e) => {
+                          const v = Number(e.currentTarget.value);
+                          patch((d) => {
+                            d.reader.vertical.pageGapPx = v;
+                            d.reader.gapPx = v;
+                          }, 150);
+                        }}
+                        class="flex-1"
+                      />
+                      <span class="slider-val">{s.reader.vertical.pageGapPx}px</span>
+                    </div>
+                  {/if}
+
                   <div class="slider-row">
-                    <span class="text-xs" style="color: var(--text-muted);">{t.previewGapChip}</span>
+                    <span class="text-xs" style="color: var(--text-muted);">{t.previewMarginChip}</span>
                     <input
                       type="range"
                       min="0"
-                      max="48"
+                      max="64"
                       step="2"
-                      value={s.reader.vertical.pageGapPx}
-                      aria-label={t.gapLabel(s.reader.vertical.pageGapPx)}
+                      value={s.reader.behavior.verticalMarginPx}
+                      aria-label={t.verticalMarginLabel(s.reader.behavior.verticalMarginPx)}
                       oninput={(e) => {
                         const v = Number(e.currentTarget.value);
-                        patch((d) => {
-                          d.reader.vertical.pageGapPx = v;
-                          d.reader.gapPx = v;
-                        }, 150);
+                        patch((d) => (d.reader.behavior.verticalMarginPx = v), 150);
                       }}
                       class="flex-1"
                     />
-                    <span class="slider-val">{s.reader.vertical.pageGapPx}px</span>
+                    <span class="slider-val">{s.reader.behavior.verticalMarginPx}px</span>
                   </div>
-                {/if}
-
-                <div class="slider-row">
-                  <span class="text-xs" style="color: var(--text-muted);">{t.previewMarginChip}</span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="64"
-                    step="2"
-                    value={s.reader.behavior.verticalMarginPx}
-                    aria-label={t.verticalMarginLabel(s.reader.behavior.verticalMarginPx)}
-                    oninput={(e) => {
-                      const v = Number(e.currentTarget.value);
-                      patch((d) => (d.reader.behavior.verticalMarginPx = v), 150);
-                    }}
-                    class="flex-1"
-                  />
-                  <span class="slider-val">{s.reader.behavior.verticalMarginPx}px</span>
                 </div>
               {:else}
-                <div class="compact-row">
-                  <span class="text-xs font-medium">{t.horizontalDirLabel}</span>
-                  <div class="flex gap-1.5">
-                    <button
-                      type="button"
-                      onclick={() => patch((d) => (d.reader.horizontal.direction = "ltr" as HorizontalDirection))}
-                      class="chip inline-flex items-center gap-1"
-                      class:chip-active={s.reader.horizontal.direction === "ltr"}
-                    >
-                      <span>LTR</span>
-                      <ArrowRight size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      onclick={() => patch((d) => (d.reader.horizontal.direction = "rtl" as HorizontalDirection))}
-                      class="chip inline-flex items-center gap-1"
-                      class:chip-active={s.reader.horizontal.direction === "rtl"}
-                    >
-                      <ArrowLeft size={12} />
-                      <span>RTL</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div class="compact-row">
-                  <span class="text-xs font-medium">{t.pagesPerGroupLabel}</span>
-                  <div class="flex items-center gap-1">
-                    {#each [1, 2, 3] as n (n)}
+                <div in:viewReveal|local={{ duration: 150, y: 4 }} class="flex flex-col gap-2.5">
+                  <div class="compact-row">
+                    <span class="text-xs font-medium">{t.horizontalDirLabel}</span>
+                    <div class="flex gap-1.5">
                       <button
                         type="button"
-                        onclick={() => patch((d) => (d.reader.horizontal.pagesPerGroup = n))}
-                        class="chip"
-                        class:chip-active={s.reader.horizontal.pagesPerGroup === n}
+                        onclick={() => patch((d) => (d.reader.horizontal.direction = "ltr" as HorizontalDirection))}
+                        class="chip inline-flex items-center gap-1"
+                        class:chip-active={s.reader.horizontal.direction === "ltr"}
                       >
-                        {n}
+                        <span>LTR</span>
+                        <ArrowRight size={12} />
                       </button>
-                    {/each}
-                    <input
-                      type="number"
-                      min="1"
-                      max="8"
-                      value={s.reader.horizontal.pagesPerGroup}
-                      aria-label={t.pagesPerGroupLabel}
-                      onchange={(e) => {
-                        const v = Math.max(1, Math.min(8, Math.round(Number(e.currentTarget.value) || 1)));
-                        patch((d) => (d.reader.horizontal.pagesPerGroup = v));
-                      }}
-                      class="w-12 rounded-lg border px-1.5 py-1 text-center text-xs"
-                      style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
-                    />
-                  </div>
-                </div>
-
-                <div class="compact-row">
-                  <span class="text-xs font-medium">{t.horizontalNoGapLabel}</span>
-                  <ToggleSwitch
-                    size="sm"
-                    checked={s.reader.horizontal.noGapMode}
-                    ariaLabel={t.horizontalNoGapLabel}
-                    onchange={(checked) => patch((d) => (d.reader.horizontal.noGapMode = checked))}
-                  />
-                </div>
-
-                {#if !s.reader.horizontal.noGapMode}
-                  <div class="slider-row">
-                    <span class="text-xs" style="color: var(--text-muted);">{t.previewGapChip}</span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="48"
-                      step="2"
-                      value={s.reader.horizontal.pageGapPx}
-                      aria-label={t.pageGapLabel(s.reader.horizontal.pageGapPx)}
-                      oninput={(e) => {
-                        const v = Number(e.currentTarget.value);
-                        patch((d) => (d.reader.horizontal.pageGapPx = v), 150);
-                      }}
-                      class="flex-1"
-                    />
-                    <span class="slider-val">{s.reader.horizontal.pageGapPx}px</span>
+                      <button
+                        type="button"
+                        onclick={() => patch((d) => (d.reader.horizontal.direction = "rtl" as HorizontalDirection))}
+                        class="chip inline-flex items-center gap-1"
+                        class:chip-active={s.reader.horizontal.direction === "rtl"}
+                      >
+                        <ArrowLeft size={12} />
+                        <span>RTL</span>
+                      </button>
+                    </div>
                   </div>
 
-                  <div class="slider-row">
-                    <span class="text-xs" style="color: var(--text-muted);">{t.groupGapLabel(s.reader.horizontal.groupGapPx)}</span>
-                    <input
-                      type="range"
-                      min="8"
-                      max="96"
-                      step="4"
-                      value={s.reader.horizontal.groupGapPx}
-                      aria-label={t.groupGapLabel(s.reader.horizontal.groupGapPx)}
-                      oninput={(e) => {
-                        const v = Number(e.currentTarget.value);
-                        patch((d) => (d.reader.horizontal.groupGapPx = v), 150);
-                      }}
-                      class="flex-1"
-                    />
-                    <span class="slider-val">{s.reader.horizontal.groupGapPx}px</span>
+                  <div class="compact-row">
+                    <span class="text-xs font-medium">{t.pagesPerGroupLabel}</span>
+                    <div class="flex items-center gap-1">
+                      {#each [1, 2, 3] as n (n)}
+                        <button
+                          type="button"
+                          onclick={() => patch((d) => (d.reader.horizontal.pagesPerGroup = n))}
+                          class="chip"
+                          class:chip-active={s.reader.horizontal.pagesPerGroup === n}
+                        >
+                          {n}
+                        </button>
+                      {/each}
+                      <input
+                        type="number"
+                        min="1"
+                        max="8"
+                        value={s.reader.horizontal.pagesPerGroup}
+                        aria-label={t.pagesPerGroupLabel}
+                        onchange={(e) => {
+                          const v = Math.max(1, Math.min(8, Math.round(Number(e.currentTarget.value) || 1)));
+                          patch((d) => (d.reader.horizontal.pagesPerGroup = v));
+                        }}
+                        class="w-12 rounded-lg border px-1.5 py-1 text-center text-xs"
+                        style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+                      />
+                    </div>
                   </div>
-                {/if}
 
-                <div class="compact-row">
-                  <span class="text-xs font-medium">{t.centerGroupsLabel}</span>
-                  <ToggleSwitch
-                    size="sm"
-                    checked={s.reader.horizontal.centerGroups}
-                    ariaLabel={t.centerGroupsLabel}
-                    onchange={(checked) => patch((d) => (d.reader.horizontal.centerGroups = checked))}
-                  />
+                  <div class="compact-row">
+                    <span class="text-xs font-medium">{t.horizontalNoGapLabel}</span>
+                    <ToggleSwitch
+                      size="sm"
+                      checked={s.reader.horizontal.noGapMode}
+                      ariaLabel={t.horizontalNoGapLabel}
+                      onchange={(checked) => patch((d) => (d.reader.horizontal.noGapMode = checked))}
+                    />
+                  </div>
+
+                  {#if !s.reader.horizontal.noGapMode}
+                    <div transition:collapseReveal|local class="flex flex-col gap-2.5">
+                      <div class="slider-row">
+                        <span class="text-xs" style="color: var(--text-muted);">{t.previewGapChip}</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="48"
+                          step="2"
+                          value={s.reader.horizontal.pageGapPx}
+                          aria-label={t.pageGapLabel(s.reader.horizontal.pageGapPx)}
+                          oninput={(e) => {
+                            const v = Number(e.currentTarget.value);
+                            patch((d) => (d.reader.horizontal.pageGapPx = v), 150);
+                          }}
+                          class="flex-1"
+                        />
+                        <span class="slider-val">{s.reader.horizontal.pageGapPx}px</span>
+                      </div>
+
+                      <div class="slider-row">
+                        <span class="text-xs" style="color: var(--text-muted);">{t.groupGapLabel(s.reader.horizontal.groupGapPx)}</span>
+                        <input
+                          type="range"
+                          min="8"
+                          max="96"
+                          step="4"
+                          value={s.reader.horizontal.groupGapPx}
+                          aria-label={t.groupGapLabel(s.reader.horizontal.groupGapPx)}
+                          oninput={(e) => {
+                            const v = Number(e.currentTarget.value);
+                            patch((d) => (d.reader.horizontal.groupGapPx = v), 150);
+                          }}
+                          class="flex-1"
+                        />
+                        <span class="slider-val">{s.reader.horizontal.groupGapPx}px</span>
+                      </div>
+                    </div>
+                  {/if}
+
+                  <div class="compact-row">
+                    <span class="text-xs font-medium">{t.centerGroupsLabel}</span>
+                    <ToggleSwitch
+                      size="sm"
+                      checked={s.reader.horizontal.centerGroups}
+                      ariaLabel={t.centerGroupsLabel}
+                      onchange={(checked) => patch((d) => (d.reader.horizontal.centerGroups = checked))}
+                    />
+                  </div>
                 </div>
               {/if}
             </div>
@@ -1927,7 +1957,7 @@
                   />
                 </div>
                 {#if s.reader.vertical.dimUnfocused}
-                  <div class="slider-row">
+                  <div transition:collapseReveal|local class="slider-row">
                     <span class="text-xs" style="color: var(--text-muted);">{t.dimLevelLabel(s.reader.vertical.dimLevel)}</span>
                     <input
                       type="range"
@@ -1955,7 +1985,7 @@
                   />
                 </div>
                 {#if s.reader.horizontal.dimUnfocused}
-                  <div class="slider-row">
+                  <div transition:collapseReveal|local class="slider-row">
                     <span class="text-xs" style="color: var(--text-muted);">{t.dimLevelLabel(s.reader.horizontal.dimLevel)}</span>
                     <input
                       type="range"
@@ -2188,7 +2218,7 @@
 
       <!-- ==================== TAB 3: FLOATING CONTROLS (Compact + Live Edge Mini-Map) ==================== -->
       {#if activeTab === "floating"}
-        <section id="settings-floating" class="bento-card">
+        <section in:viewReveal|local={{ duration: 165, y: 6 }} id="settings-floating" class="bento-card">
           <div class="card-head">
             <div class="flex items-center gap-2.5">
               <span class="card-icon" style="background-color: var(--accent-soft); color: var(--accent);">
@@ -2321,7 +2351,7 @@
                     onchange={(checked) => patch((d) => (d.floating.showReaderSettings = checked))}
                   />
                   <span
-                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white"
+                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white transition-opacity duration-150"
                     style="background-color: #3b82f6; opacity: {s.floating.showReaderSettings ? 1 : 0.35};"
                   >
                     <SettingsIcon size={12} />
@@ -2329,7 +2359,7 @@
                   <span class="truncate text-xs font-semibold">{t.floatingReaderSettingsLabel}</span>
                 </div>
                 {#if s.floating.showReaderSettings}
-                  <div class="flex flex-wrap items-center gap-1.5">
+                  <div transition:collapseReveal|local class="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
                       onclick={() => patch((d) => (d.floating.readerSettings.edge = "left" as FloatingEdge))}
@@ -2378,7 +2408,7 @@
                     onchange={(checked) => patch((d) => (d.floating.showOrientationLock = checked))}
                   />
                   <span
-                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white"
+                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white transition-opacity duration-150"
                     style="background-color: #8b5cf6; opacity: {s.floating.showOrientationLock ? 1 : 0.35};"
                   >
                     <Lock size={12} />
@@ -2386,7 +2416,7 @@
                   <span class="truncate text-xs font-semibold">{t.floatingOrientationLockLabel}</span>
                 </div>
                 {#if s.floating.showOrientationLock}
-                  <div class="flex flex-wrap items-center gap-1.5">
+                  <div transition:collapseReveal|local class="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
                       onclick={() => patch((d) => (d.floating.orientationLock.edge = "left" as FloatingEdge))}
@@ -2447,39 +2477,57 @@
               </span>
 
               {#if s.floating.scrollToTopScreens.length > 0}
-                <span
-                  title={t.floatingScrollTopPos}
-                  class="absolute flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full shadow-sm transition-transform duration-200"
-                  style="top: {s.floating.scrollToTop.verticalPercent}%; {s.floating.scrollToTop.edge === 'left'
-                    ? 'left: 8px;'
-                    : 'right: 8px;'} background-color: var(--accent); color: var(--accent-fg);"
+                <div
+                  class="float-preview-slot absolute -translate-y-1/2"
+                  style="top: {s.floating.scrollToTop.verticalPercent}%; left: {s.floating.scrollToTop.edge === 'left'
+                    ? '8px'
+                    : 'calc(100% - 32px)'};"
                 >
-                  <ArrowUp size={12} />
-                </span>
+                  <span
+                    transition:badgePop|local={{ duration: 150, start: 0.65 }}
+                    title={t.floatingScrollTopPos}
+                    class="flex h-6 w-6 items-center justify-center rounded-full shadow-sm"
+                    style="background-color: var(--accent); color: var(--accent-fg);"
+                  >
+                    <ArrowUp size={12} />
+                  </span>
+                </div>
               {/if}
 
               {#if s.floating.showReaderSettings}
-                <span
-                  title={t.floatingReaderSettingsLabel}
-                  class="absolute flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-white shadow-sm transition-transform duration-200"
-                  style="top: {s.floating.readerSettings.verticalPercent}%; {s.floating.readerSettings.edge === 'left'
-                    ? 'left: 8px;'
-                    : 'right: 8px;'} background-color: #3b82f6;"
+                <div
+                  class="float-preview-slot absolute -translate-y-1/2"
+                  style="top: {s.floating.readerSettings.verticalPercent}%; left: {s.floating.readerSettings.edge === 'left'
+                    ? '8px'
+                    : 'calc(100% - 32px)'};"
                 >
-                  <SettingsIcon size={12} />
-                </span>
+                  <span
+                    transition:badgePop|local={{ duration: 150, start: 0.65 }}
+                    title={t.floatingReaderSettingsLabel}
+                    class="flex h-6 w-6 items-center justify-center rounded-full text-white shadow-sm"
+                    style="background-color: #3b82f6;"
+                  >
+                    <SettingsIcon size={12} />
+                  </span>
+                </div>
               {/if}
 
               {#if s.floating.showOrientationLock}
-                <span
-                  title={t.floatingOrientationLockLabel}
-                  class="absolute flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-white shadow-sm transition-transform duration-200"
-                  style="top: {s.floating.orientationLock.verticalPercent}%; {s.floating.orientationLock.edge === 'left'
-                    ? 'left: 8px;'
-                    : 'right: 8px;'} background-color: #8b5cf6;"
+                <div
+                  class="float-preview-slot absolute -translate-y-1/2"
+                  style="top: {s.floating.orientationLock.verticalPercent}%; left: {s.floating.orientationLock.edge === 'left'
+                    ? '8px'
+                    : 'calc(100% - 32px)'};"
                 >
-                  <Lock size={12} />
-                </span>
+                  <span
+                    transition:badgePop|local={{ duration: 150, start: 0.65 }}
+                    title={t.floatingOrientationLockLabel}
+                    class="flex h-6 w-6 items-center justify-center rounded-full text-white shadow-sm"
+                    style="background-color: #8b5cf6;"
+                  >
+                    <Lock size={12} />
+                  </span>
+                </div>
               {/if}
             </div>
           </div>
@@ -2488,7 +2536,7 @@
 
       <!-- ==================== TAB 4: NETWORK & LAN SYNC (2-Col Bento) ==================== -->
       {#if activeTab === "network"}
-        <div id="settings-network" class="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-12">
+        <div in:viewReveal|local={{ duration: 165, y: 6 }} id="settings-network" class="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-12">
           <div class="flex flex-col gap-3.5 lg:col-span-7">
             <NetworkProtectionPanel />
           </div>
@@ -2589,7 +2637,7 @@
 
       <!-- ==================== TAB 5: STORAGE & HIDDEN MANGA (Tabbed Scoped View) ==================== -->
       {#if activeTab === "storage"}
-        <div class="flex flex-col gap-3.5">
+        <div in:viewReveal|local={{ duration: 165, y: 6 }} class="flex flex-col gap-3.5">
           <RtmagaBackupPanel
             onImported={() => {
               void loadHiddenManga();
@@ -2610,24 +2658,26 @@
 
             <div class="flex items-center gap-1.5">
               {#if confirmingClearAllCache}
-                <button
-                  type="button"
-                  onclick={clearAllCache}
-                  disabled={clearingCache}
-                  class="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white"
-                  style="background-color: var(--danger);"
-                >
-                  {clearingCache ? t.clearing : t.confirmClear}
-                </button>
-                <button
-                  type="button"
-                  onclick={() => {
-                    confirmingClearAllCache = false;
-                  }}
-                  class="compact-btn"
-                >
-                  {t.cancel}
-                </button>
+                <div in:popoverPop|local={{ duration: 140, y: 0 }} class="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onclick={clearAllCache}
+                    disabled={clearingCache}
+                    class="gpu-press rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white"
+                    style="background-color: var(--danger);"
+                  >
+                    {clearingCache ? t.clearing : t.confirmClear}
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => {
+                      confirmingClearAllCache = false;
+                    }}
+                    class="compact-btn"
+                  >
+                    {t.cancel}
+                  </button>
+                </div>
               {:else}
                 <button
                   type="button"
@@ -2635,7 +2685,7 @@
                     confirmingClearAllCache = true;
                   }}
                   disabled={clearingCache}
-                  class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+                  class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
                   style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--danger);"
                 >
                   <Trash2 size={13} />
@@ -2728,155 +2778,173 @@
           </div>
 
           {#if storageSubTab === "source"}
-            {#if cacheBySource.length === 0}
-              <div class="empty-box">{t.cacheUsageDesc("0 B", 0)}</div>
-            {:else}
-              <div class="settings-list-box">
-                {#each cacheBySource as item (item.site)}
-                  {@const scopeKey = `site:${item.site}`}
-                  <div class="list-row">
-                    <div class="min-w-0">
-                      <div class="truncate text-xs font-semibold">{item.site}</div>
-                      <div class="text-[11px]" style="color: var(--text-muted);">
-                        {t.cacheUsageDesc(formatBytes(item.bytes), item.files)}
-                      </div>
-                    </div>
-                    {#if confirmingScopeKey === scopeKey}
-                      <div class="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
-                          disabled={clearingScopeKey === scopeKey}
-                          onclick={() => clearSourceCache(item.site)}
-                          class="rounded-md px-2 py-1 text-[11px] font-semibold text-white"
-                          style="background-color: var(--danger);"
-                        >
-                          {t.confirmClear}
-                        </button>
-                        <button
-                          type="button"
-                          onclick={() => (confirmingScopeKey = null)}
-                          class="rounded-md border px-2 py-1 text-[11px]"
-                          style="border-color: var(--border);"
-                        >
-                          {t.cancel}
-                        </button>
-                      </div>
-                    {:else}
-                      <button
-                        type="button"
-                        onclick={() => (confirmingScopeKey = scopeKey)}
-                        class="rounded-md border px-2.5 py-1 text-[11px] font-medium"
-                        style="border-color: var(--border); color: var(--danger);"
-                      >
-                        {t.clearCache}
-                      </button>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          {:else if storageSubTab === "manga"}
-            {#if cacheByManga.length === 0}
-              <div class="empty-box">{t.cacheUsageDesc("0 B", 0)}</div>
-            {:else}
-              <div class="settings-list-box">
-                {#each cacheByManga as item (item.mangaId)}
-                  {@const scopeKey = `manga:${item.mangaId}`}
-                  <div class="list-row">
-                    <div class="min-w-0">
-                      <div class="truncate text-xs font-semibold">{item.title}</div>
-                      <div class="text-[11px]" style="color: var(--text-muted);">
-                        {item.site} · {t.cacheUsageDesc(formatBytes(item.bytes), item.files)}
-                      </div>
-                    </div>
-                    {#if confirmingScopeKey === scopeKey}
-                      <div class="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
-                          disabled={clearingScopeKey === scopeKey}
-                          onclick={() => clearMangaCache(item)}
-                          class="rounded-md px-2 py-1 text-[11px] font-semibold text-white"
-                          style="background-color: var(--danger);"
-                        >
-                          {t.confirmClear}
-                        </button>
-                        <button
-                          type="button"
-                          onclick={() => (confirmingScopeKey = null)}
-                          class="rounded-md border px-2 py-1 text-[11px]"
-                          style="border-color: var(--border);"
-                        >
-                          {t.cancel}
-                        </button>
-                      </div>
-                    {:else}
-                      <button
-                        type="button"
-                        onclick={() => (confirmingScopeKey = scopeKey)}
-                        class="rounded-md border px-2.5 py-1 text-[11px] font-medium"
-                        style="border-color: var(--border); color: var(--danger);"
-                      >
-                        {t.clearCache}
-                      </button>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          {:else}
-            {#if hiddenManga.length === 0}
-              <div class="empty-box">{t.hiddenMangaEmpty}</div>
-            {:else}
-              <div class="settings-list-box">
-                {#each hiddenManga as item (item.id)}
-                  <div class="list-row">
-                    <div class="flex min-w-0 items-center gap-2.5">
-                      <div
-                        class="h-11 w-8 shrink-0 overflow-hidden rounded-md"
-                        style="background-color: var(--surface-hover);"
-                      >
-                        {#if item.coverToken}
-                          <img
-                            src={imgProxyUrl(item.coverToken)}
-                            alt={item.title}
-                            loading="lazy"
-                            class="h-full w-full object-cover"
-                          />
-                        {/if}
-                      </div>
+            <div in:viewReveal|local={{ duration: 150, y: 4 }}>
+              {#if cacheBySource.length === 0}
+                <div class="empty-box">{t.cacheUsageDesc("0 B", 0)}</div>
+              {:else}
+                <div class="settings-list-box">
+                  {#each cacheBySource as item (item.site)}
+                    {@const scopeKey = `site:${item.site}`}
+                    <div
+                      animate:flip={{ duration: flipDuration(170, cacheBySource.length) }}
+                      out:itemExit|local
+                      class="list-row"
+                    >
                       <div class="min-w-0">
-                        <div class="truncate text-xs font-semibold">{item.title}</div>
-                        <div class="truncate text-[11px]" style="color: var(--text-muted);">
-                          {item.site}{item.latestChapterName ? ` · ${item.latestChapterName}` : ""}
+                        <div class="truncate text-xs font-semibold">{item.site}</div>
+                        <div class="text-[11px]" style="color: var(--text-muted);">
+                          {t.cacheUsageDesc(formatBytes(item.bytes), item.files)}
                         </div>
                       </div>
+                      {#if confirmingScopeKey === scopeKey}
+                        <div in:popoverPop|local={{ duration: 140, y: 0 }} class="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={clearingScopeKey === scopeKey}
+                            onclick={() => clearSourceCache(item.site)}
+                            class="gpu-press rounded-md px-2 py-1 text-[11px] font-semibold text-white"
+                            style="background-color: var(--danger);"
+                          >
+                            {t.confirmClear}
+                          </button>
+                          <button
+                            type="button"
+                            onclick={() => (confirmingScopeKey = null)}
+                            class="gpu-press rounded-md border px-2 py-1 text-[11px]"
+                            style="border-color: var(--border);"
+                          >
+                            {t.cancel}
+                          </button>
+                        </div>
+                      {:else}
+                        <button
+                          type="button"
+                          onclick={() => (confirmingScopeKey = scopeKey)}
+                          class="gpu-press rounded-md border px-2.5 py-1 text-[11px] font-medium"
+                          style="border-color: var(--border); color: var(--danger);"
+                        >
+                          {t.clearCache}
+                        </button>
+                      {/if}
                     </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {:else if storageSubTab === "manga"}
+            <div in:viewReveal|local={{ duration: 150, y: 4 }}>
+              {#if cacheByManga.length === 0}
+                <div class="empty-box">{t.cacheUsageDesc("0 B", 0)}</div>
+              {:else}
+                <div class="settings-list-box">
+                  {#each cacheByManga as item (item.mangaId)}
+                    {@const scopeKey = `manga:${item.mangaId}`}
+                    <div
+                      animate:flip={{ duration: flipDuration(170, cacheByManga.length) }}
+                      out:itemExit|local
+                      class="list-row"
+                    >
+                      <div class="min-w-0">
+                        <div class="truncate text-xs font-semibold">{item.title}</div>
+                        <div class="text-[11px]" style="color: var(--text-muted);">
+                          {item.site} · {t.cacheUsageDesc(formatBytes(item.bytes), item.files)}
+                        </div>
+                      </div>
+                      {#if confirmingScopeKey === scopeKey}
+                        <div in:popoverPop|local={{ duration: 140, y: 0 }} class="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={clearingScopeKey === scopeKey}
+                            onclick={() => clearMangaCache(item)}
+                            class="gpu-press rounded-md px-2 py-1 text-[11px] font-semibold text-white"
+                            style="background-color: var(--danger);"
+                          >
+                            {t.confirmClear}
+                          </button>
+                          <button
+                            type="button"
+                            onclick={() => (confirmingScopeKey = null)}
+                            class="gpu-press rounded-md border px-2 py-1 text-[11px]"
+                            style="border-color: var(--border);"
+                          >
+                            {t.cancel}
+                          </button>
+                        </div>
+                      {:else}
+                        <button
+                          type="button"
+                          onclick={() => (confirmingScopeKey = scopeKey)}
+                          class="gpu-press rounded-md border px-2.5 py-1 text-[11px] font-medium"
+                          style="border-color: var(--border); color: var(--danger);"
+                        >
+                          {t.clearCache}
+                        </button>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {:else}
+            <div in:viewReveal|local={{ duration: 150, y: 4 }}>
+              {#if hiddenManga.length === 0}
+                <div class="empty-box">{t.hiddenMangaEmpty}</div>
+              {:else}
+                <div class="settings-list-box">
+                  {#each hiddenManga as item (item.id)}
+                    <div
+                      animate:flip={{ duration: flipDuration(170, hiddenManga.length) }}
+                      out:itemExit|local
+                      class="list-row"
+                    >
+                      <div class="flex min-w-0 items-center gap-2.5">
+                        <div
+                          class="h-11 w-8 shrink-0 overflow-hidden rounded-md"
+                          style="background-color: var(--surface-hover);"
+                        >
+                          {#if item.coverToken}
+                            <img
+                              src={imgProxyUrl(item.coverToken)}
+                              alt={item.title}
+                              loading="lazy"
+                              class="h-full w-full object-cover"
+                            />
+                          {/if}
+                        </div>
+                        <div class="min-w-0">
+                          <div class="truncate text-xs font-semibold">{item.title}</div>
+                          <div class="truncate text-[11px]" style="color: var(--text-muted);">
+                            {item.site}{item.latestChapterName ? ` · ${item.latestChapterName}` : ""}
+                          </div>
+                        </div>
+                      </div>
 
-                    <div class="flex shrink-0 items-center gap-1.5">
-                      <button
-                        type="button"
-                        onclick={() => unhideManga(item)}
-                        class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
-                        style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
-                      >
-                        <Eye size={13} />
-                        <span>{t.unhideMangaBtn}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onclick={() => (pendingDeleteHidden = item)}
-                        class="icon-btn"
-                        style="color: var(--danger);"
-                        title={t.deleteMangaBtn}
-                        aria-label={t.deleteMangaBtn}
-                      >
-                        <Trash2 size={13} />
-                      </button>
+                      <div class="flex shrink-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          onclick={() => unhideManga(item)}
+                          class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+                          style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
+                        >
+                          <Eye size={13} />
+                          <span>{t.unhideMangaBtn}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onclick={() => (pendingDeleteHidden = item)}
+                          class="icon-btn"
+                          style="color: var(--danger);"
+                          title={t.deleteMangaBtn}
+                          aria-label={t.deleteMangaBtn}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                {/each}
-              </div>
-            {/if}
+                  {/each}
+                </div>
+              {/if}
+            </div>
           {/if}
         </section>
         </div>
@@ -2884,7 +2952,7 @@
 
       <!-- ==================== TAB 6: SYSTEM (Feedback + Diagnostics + Reset All) ==================== -->
       {#if activeTab === "system"}
-        <div class="flex flex-col gap-3.5">
+        <div in:viewReveal|local={{ duration: 165, y: 6 }} class="flex flex-col gap-3.5">
           <section id="settings-feedback" class="bento-card">
             <div class="card-head">
               <div class="flex items-center gap-2.5">
@@ -2921,7 +2989,7 @@
               <button
                 type="button"
                 onclick={() => (showResetAllModal = true)}
-                class="inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold"
+                class="gpu-press inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold"
                 style="border-color: var(--danger); color: var(--danger);"
               >
                 <RotateCcw size={13} />
@@ -2950,11 +3018,11 @@
       onclick={() => {
         if (!resettingAll) showResetAllModal = false;
       }}
-      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+      class="modal-backdrop fixed inset-0"
     ></div>
 
     <div
-      transition:modalScale|local
+      transition:adaptiveOverlay|local={{ isMobile: deviceEnv.layoutTier === "compact" }}
       class="modal-cq relative z-10 flex max-h-[calc(var(--app-height,100dvh)-1.5rem-var(--safe-top)-var(--ime-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 sm:max-h-[calc(var(--app-height,100dvh)-2rem-var(--safe-top)-var(--safe-bottom)-var(--ime-bottom))] sm:rounded-2xl sm:border"
       style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >
@@ -3017,11 +3085,11 @@
       onclick={() => {
         if (!deletingHidden) pendingDeleteHidden = null;
       }}
-      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+      class="modal-backdrop fixed inset-0"
     ></div>
 
     <div
-      transition:modalScale|local
+      transition:adaptiveOverlay|local={{ isMobile: deviceEnv.layoutTier === "compact" }}
       class="modal-cq relative z-10 flex max-h-[calc(var(--app-height,100dvh)-1.5rem-var(--safe-top)-var(--ime-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 sm:max-h-[calc(var(--app-height,100dvh)-2rem-var(--safe-top)-var(--safe-bottom)-var(--ime-bottom))] sm:rounded-2xl sm:border"
       style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >
@@ -3087,7 +3155,12 @@
     font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
-    transition: transform var(--dur-fast, 150ms) var(--ease-out, ease), opacity var(--dur-fast, 150ms) ease;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      opacity var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .top-tab:hover {
@@ -3119,7 +3192,10 @@
     box-shadow: var(--shadow-sm);
     color: var(--text);
     cursor: pointer;
-    transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .quick-tile:active {
@@ -3133,6 +3209,9 @@
     align-items: center;
     justify-content: center;
     border-radius: 0.6rem;
+    transition:
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .hub-row {
@@ -3148,10 +3227,17 @@
     color: var(--text);
     text-align: left;
     cursor: pointer;
+    transition:
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .hub-row:hover {
     background-color: var(--surface-hover);
+  }
+
+  .hub-row:active {
+    transform: scale(0.985);
   }
 
   .hub-row-last {
@@ -3247,7 +3333,10 @@
     background-color: var(--surface-subtle);
     color: var(--text-muted);
     cursor: pointer;
-    transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .icon-btn:active:not(:disabled) {
@@ -3277,6 +3366,18 @@
     font-size: 0.72rem;
     font-weight: 600;
     cursor: pointer;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      opacity var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+  }
+
+  .compact-btn:hover:not(:disabled) {
+    background-color: var(--surface-hover);
+  }
+
+  .compact-btn:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .compact-btn:disabled {
@@ -3295,6 +3396,15 @@
     background-color: var(--surface-subtle);
     color: var(--text);
     cursor: pointer;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+  }
+
+  .theme-card:active {
+    transform: scale(0.97);
   }
 
   .theme-card-active {
@@ -3322,6 +3432,15 @@
     background-color: var(--surface-subtle);
     color: var(--text);
     cursor: pointer;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+  }
+
+  .mode-tile:active {
+    transform: scale(0.97);
   }
 
   .mode-tile-active {
@@ -3345,6 +3464,15 @@
     font-size: 0.68rem;
     font-weight: 600;
     cursor: pointer;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+  }
+
+  .icon-seg:active {
+    transform: scale(0.97);
   }
 
   .icon-seg-active {
@@ -3363,6 +3491,9 @@
     border-radius: 0.8rem;
     border: 1px solid var(--border);
     background-color: var(--surface-subtle);
+    transition:
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .toggle-tile-on {
@@ -3382,6 +3513,12 @@
     background-color: var(--surface-subtle);
   }
 
+  .float-preview-slot {
+    transition:
+      top var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      left var(--dur-base, 175ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+  }
+
   .edge-btn {
     display: inline-flex;
     width: 2.15rem;
@@ -3393,6 +3530,15 @@
     background-color: var(--surface);
     color: var(--text-muted);
     cursor: pointer;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+  }
+
+  .edge-btn:active {
+    transform: scale(0.95);
   }
 
   .edge-btn-active {
@@ -3411,6 +3557,15 @@
     font-size: 0.72rem;
     font-weight: 600;
     cursor: pointer;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+  }
+
+  .chip:active {
+    transform: scale(0.96);
   }
 
   .chip-active {

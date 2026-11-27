@@ -12,7 +12,13 @@
   import LatticeLoader from "../lib/components/LatticeLoader.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import WebFilterBar from "../lib/components/WebFilterBar.svelte";
-  import { pressable, shouldStaggerItem, staggerDelay } from "../lib/motion";
+  import {
+    backdropFade,
+    pressable,
+    shouldStaggerItem,
+    staggerDelay,
+    viewReveal,
+  } from "../lib/motion";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
@@ -363,7 +369,7 @@
       onclick={() => {
         if (!router.goBack()) router.goHome();
       }}
-      class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:opacity-80"
+      class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm hover:opacity-80"
       style="color: var(--text-muted);"
     >
       <ArrowLeft size={16} />
@@ -385,7 +391,7 @@
         type="button"
         disabled={loading}
         onclick={() => void loadCatalogUrl(catalog?.url ?? url, currentPage, activeFilters, true)}
-        class="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+        class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
         style="background-color: var(--surface); border-color: var(--border);"
       >
         <RefreshCw size={13} class={loading ? "animate-spin" : ""} />
@@ -428,7 +434,7 @@
           <button
             type="submit"
             disabled={(effectiveSourceId === undefined && !searchQuery.trim()) || loading}
-            class="shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold disabled:opacity-45"
+            class="gpu-press shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold disabled:opacity-45"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
             {t.browseSearchBtn}
@@ -446,7 +452,7 @@
           <button
             type="button"
             onclick={() => navigateCategory(cat.url)}
-            class="rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors hover:brightness-95"
+            class="gpu-press rounded-lg border px-2.5 py-1 text-xs font-medium hover:brightness-95"
             style="background-color: {cat.url === catalog.url
               ? 'var(--accent-soft)'
               : 'var(--surface-subtle)'}; border-color: {cat.url === catalog.url
@@ -495,6 +501,7 @@
     />
   {:else if !catalog || catalog.entries.length === 0}
     <div
+      in:viewReveal|local={{ duration: 165, y: 6 }}
       class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-16 text-center"
       style="border-color: var(--border-strong); color: var(--text-muted);"
     >
@@ -502,99 +509,102 @@
       <div class="text-sm font-medium" style="color: var(--text);">{t.browseEmptyTitle}</div>
     </div>
   {:else}
-    <div class="fluid-manga-grid">
-      {#each catalog.entries as entry, idx (entry.url)}
-        {@const isOpening = openingEntryUrl === entry.url}
-        {@const animateStagger = shouldStaggerItem(idx, catalog.entries.length)}
-        <button
-          type="button"
-          use:pressable
-          disabled={openingEntryUrl !== null}
-          onclick={() => void openEntry(entry)}
-          class="card-cq card-contain card-press surface-card group flex flex-col overflow-hidden rounded-2xl text-left disabled:opacity-70"
-          class:stagger-item={animateStagger}
-          style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, catalog.entries.length)}ms;` : undefined}
-        >
-          <div
-            class="relative aspect-[3/4] w-full overflow-hidden"
-            style="background-color: var(--surface-subtle);"
+    {#key `${catalog.url}:${currentPage}`}
+      <div class="fluid-manga-grid">
+        {#each catalog.entries as entry, idx (entry.url)}
+          {@const isOpening = openingEntryUrl === entry.url}
+          {@const animateStagger = shouldStaggerItem(idx, catalog.entries.length)}
+          <button
+            type="button"
+            use:pressable
+            disabled={openingEntryUrl !== null}
+            onclick={() => void openEntry(entry)}
+            class="card-cq card-contain card-press surface-card group flex flex-col overflow-hidden rounded-2xl text-left disabled:opacity-70"
+            class:stagger-item={animateStagger}
+            style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, catalog.entries.length)}ms;` : undefined}
           >
-            {#if entry.coverToken && !failedCovers[entry.url]}
-              <img
-                src={imgProxyUrl(entry.coverToken)}
-                alt={entry.title}
-                loading="lazy"
-                decoding="async"
-                onerror={() => {
-                  failedCovers = { ...failedCovers, [entry.url]: true };
-                }}
-                class="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03]"
-              />
-            {:else}
-              <div
-                class="flex h-full w-full items-center justify-center"
-                style="color: var(--text-muted);"
-              >
-                <BookOpen size={30} strokeWidth={1.5} />
-              </div>
-            {/if}
+            <div
+              class="relative aspect-[3/4] w-full overflow-hidden"
+              style="background-color: var(--surface-subtle);"
+            >
+              {#if entry.coverToken && !failedCovers[entry.url]}
+                <img
+                  src={imgProxyUrl(entry.coverToken)}
+                  alt={entry.title}
+                  loading="lazy"
+                  decoding="async"
+                  onerror={() => {
+                    failedCovers = { ...failedCovers, [entry.url]: true };
+                  }}
+                  class="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03]"
+                />
+              {:else}
+                <div
+                  class="flex h-full w-full items-center justify-center"
+                  style="color: var(--text-muted);"
+                >
+                  <BookOpen size={30} strokeWidth={1.5} />
+                </div>
+              {/if}
 
-            {#if entry.updatedAt}
-              <span
-                class="absolute top-2 left-2 max-w-[60%] truncate rounded-lg px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-md"
-                style="background-color: rgba(11, 11, 15, 0.74);"
-              >
-                {entry.updatedAt}
-              </span>
-            {/if}
+              {#if entry.updatedAt}
+                <span
+                  class="absolute top-2 left-2 max-w-[60%] truncate rounded-lg px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-md"
+                  style="background-color: rgba(11, 11, 15, 0.74);"
+                >
+                  {entry.updatedAt}
+                </span>
+              {/if}
 
-            {#if entry.latestChapter}
-              <span
-                class="absolute bottom-2 left-2 max-w-[calc(100%-1rem)] truncate rounded-lg px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-md"
-                style="background-color: rgba(11, 11, 15, 0.8);"
-              >
-                {entry.latestChapter}
-              </span>
-            {/if}
+              {#if entry.latestChapter}
+                <span
+                  class="absolute bottom-2 left-2 max-w-[calc(100%-1rem)] truncate rounded-lg px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-md"
+                  style="background-color: rgba(11, 11, 15, 0.8);"
+                >
+                  {entry.latestChapter}
+                </span>
+              {/if}
 
-            {#if entry.status}
-              <span
-                class="absolute top-2 right-2 rounded-lg px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white backdrop-blur-md"
-                style="background-color: rgba(11, 11, 15, 0.72);"
-              >
-                {entry.status}
-              </span>
-            {/if}
+              {#if entry.status}
+                <span
+                  class="absolute top-2 right-2 rounded-lg px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white backdrop-blur-md"
+                  style="background-color: rgba(11, 11, 15, 0.72);"
+                >
+                  {entry.status}
+                </span>
+              {/if}
 
-            {#if isOpening}
-              <div
-                class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/55 text-xs font-semibold text-white"
-              >
-                <LatticeLoader size="md" tone="inherit" label={t.browseOpeningManga} showTimer />
-              </div>
-            {/if}
-          </div>
-
-          <div class="card-body flex flex-1 flex-col gap-1 p-2.5">
-            <div class="card-title line-clamp-2 font-semibold">
-              {entry.title}
+              {#if isOpening}
+                <div
+                  transition:backdropFade|local={{ duration: 140 }}
+                  class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/55 text-xs font-semibold text-white"
+                >
+                  <LatticeLoader size="md" tone="inherit" label={t.browseOpeningManga} showTimer />
+                </div>
+              {/if}
             </div>
-            {#if entry.genres.length > 0}
-              <div class="mt-auto flex flex-wrap gap-1 pt-1">
-                {#each entry.genres.slice(0, 2) as genre (genre)}
-                  <span
-                    class="rounded-md px-1.5 py-0.5 text-[10px]"
-                    style="background-color: var(--surface-subtle); color: var(--text-muted);"
-                  >
-                    {genre}
-                  </span>
-                {/each}
+
+            <div class="card-body flex flex-1 flex-col gap-1 p-2.5">
+              <div class="card-title line-clamp-2 font-semibold">
+                {entry.title}
               </div>
-            {/if}
-          </div>
-        </button>
-      {/each}
-    </div>
+              {#if entry.genres.length > 0}
+                <div class="mt-auto flex flex-wrap gap-1 pt-1">
+                  {#each entry.genres.slice(0, 2) as genre (genre)}
+                    <span
+                      class="rounded-md px-1.5 py-0.5 text-[10px]"
+                      style="background-color: var(--surface-subtle); color: var(--text-muted);"
+                    >
+                      {genre}
+                    </span>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          </button>
+        {/each}
+      </div>
+    {/key}
 
     <!-- Full Multi-Page Pagination + Direct Page Jump -->
     {#if canGoPrev || canGoNext || pageNumbers().length > 0}
@@ -603,7 +613,7 @@
           type="button"
           disabled={!canGoPrev || loading}
           onclick={() => goToPage(currentPage - 1)}
-          class="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-medium disabled:opacity-40"
+          class="gpu-press inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-medium disabled:opacity-40"
           style="background-color: var(--surface); border-color: var(--border);"
         >
           <ChevronLeft size={14} />
@@ -621,7 +631,7 @@
                   type="button"
                   disabled={loading}
                   onclick={() => goToPage(item)}
-                  class="min-w-8 rounded-lg border px-2.5 py-1.5 text-xs font-semibold tabular-nums transition-colors"
+                  class="gpu-press min-w-8 rounded-lg border px-2.5 py-1.5 text-xs font-semibold tabular-nums"
                   style="border-color: {active ? 'var(--accent)' : 'var(--border)'}; background-color: {active
                     ? 'var(--accent)'
                     : 'var(--surface)'}; color: {active ? 'var(--accent-fg)' : 'var(--text)'};"
@@ -641,7 +651,7 @@
           type="button"
           disabled={!canGoNext || loading}
           onclick={() => goToPage(currentPage + 1)}
-          class="inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-medium disabled:opacity-40"
+          class="gpu-press inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-medium disabled:opacity-40"
           style="background-color: var(--surface); border-color: var(--border);"
         >
           <span>{t.browseNextPage}</span>
@@ -669,7 +679,7 @@
             <button
               type="submit"
               disabled={loading || !jumpPageInput.trim()}
-              class="rounded-lg px-2 py-1 text-[11px] font-semibold disabled:opacity-45"
+              class="gpu-press rounded-lg px-2 py-1 text-[11px] font-semibold disabled:opacity-45"
               style="background-color: var(--accent); color: var(--accent-fg);"
             >
               {t.browseJumpGoBtn}

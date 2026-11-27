@@ -3,7 +3,6 @@
     AlertTriangle,
     ArrowDown,
     ArrowLeftRight,
-    ArrowUp,
     BookOpen,
     Check,
     Compass,
@@ -16,8 +15,23 @@
     Trash2,
     X,
   } from "lucide-svelte";
+  import { flip } from "svelte/animate";
   import { api, formatAppError, imgProxyUrl } from "../api";
-  import { backdropFade, modalScale } from "../motion";
+  import {
+    adaptiveOverlay,
+    backdropFade,
+    badgePop,
+    collapseReveal,
+    createOverlayGuard,
+    flipDuration,
+    itemExit,
+    popoverPop,
+    pressable,
+    shouldStaggerItem,
+    staggerDelay,
+    viewReveal,
+  } from "../motion";
+  import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -80,6 +94,7 @@
   let savingEdit = $state(false);
 
   let confirmDeleteId = $state<number | null>(null);
+  const modalGuard = createOverlayGuard(180);
 
   let lastInitQuery = "";
   const t = $derived(settingsStore.t);
@@ -454,23 +469,25 @@
         style="color: var(--text);"
       />
       {#if searchQuery}
-        <button
-          type="button"
-          onclick={() => {
-            searchQuery = "";
-            searchResult = null;
-          }}
-          class="rounded-md p-0.5 opacity-70 hover:opacity-100"
-          style="color: var(--text-muted);"
-          aria-label={t.clearUrlBtn}
-        >
-          <X size={14} />
-        </button>
+        <span transition:badgePop|local class="inline-flex">
+          <button
+            type="button"
+            onclick={() => {
+              searchQuery = "";
+              searchResult = null;
+            }}
+            class="gpu-press rounded-md p-0.5 opacity-70 hover:opacity-100"
+            style="color: var(--text-muted);"
+            aria-label={t.clearUrlBtn}
+          >
+            <X size={14} />
+          </button>
+        </span>
       {/if}
       <button
         type="submit"
         disabled={searching || !searchQuery.trim()}
-        class="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold disabled:opacity-45"
+        class="gpu-press inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold disabled:opacity-45"
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         {#if searching}
@@ -484,9 +501,11 @@
       <button
         type="button"
         onclick={() => {
+          if (!modalGuard.canAct()) return;
+          modalGuard.lock();
           addModalOpen = true;
         }}
-        class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors hover:brightness-95"
+        class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold hover:brightness-95"
         style="background-color: var(--accent-soft); border-color: var(--accent); color: var(--accent);"
       >
         <Plus size={14} />
@@ -497,146 +516,157 @@
 
   <!-- Per-Website Multi-Tag, Min Chapters & Update Recency Filter Bar (ready as soon as a link is entered or a source is selected) -->
   {#if typedLink || selectedSourceForFilter}
-    <WebFilterBar
-      schema={activeFilterSchema}
-      value={activeFilterValue()}
-      loadingSchema={loadingFilterSchema}
-      applying={applyingFilter}
-      defaultExpanded={true}
-      siteLabel={activeFilterLabel()}
-      onApply={(q) => void applySourceFilters(q)}
-      onReset={resetSourceFilters}
-    />
+    <div transition:collapseReveal|local>
+      <WebFilterBar
+        schema={activeFilterSchema}
+        value={activeFilterValue()}
+        loadingSchema={loadingFilterSchema}
+        applying={applyingFilter}
+        defaultExpanded={true}
+        siteLabel={activeFilterLabel()}
+        onApply={(q) => void applySourceFilters(q)}
+        onReset={resetSourceFilters}
+      />
+    </div>
   {/if}
 
   {#if searchResult}
     <!-- Multi-Source Search Results -->
-    <div class="flex flex-wrap items-center justify-between gap-2">
-      <div class="text-sm font-semibold">
-        {t.sourcesResultsHeading(searchResult.query, totalSearchHits)}
+    <div in:viewReveal|local={{ duration: 165, y: 6 }} class="flex flex-col gap-4">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="text-sm font-semibold">
+          {t.sourcesResultsHeading(searchResult.query, totalSearchHits)}
+        </div>
+        <button
+          type="button"
+          onclick={() => {
+            searchResult = null;
+          }}
+          class="gpu-press rounded-lg border px-2.5 py-1 text-xs font-medium"
+          style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
+        >
+          {t.sourcesClearSearchBtn}
+        </button>
       </div>
-      <button
-        type="button"
-        onclick={() => {
-          searchResult = null;
-        }}
-        class="rounded-lg border px-2.5 py-1 text-xs font-medium"
-        style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
-      >
-        {t.sourcesClearSearchBtn}
-      </button>
-    </div>
 
-    {#if searchResult.groups.length === 0}
-      <div
-        class="rounded-2xl border border-dashed py-10 text-center text-xs"
-        style="border-color: var(--border); color: var(--text-muted);"
-      >
-        {t.sourcesSearchEmpty}
-      </div>
-    {:else}
-      <div class="flex flex-col gap-5">
-        {#each searchResult.groups as group (group.source.id)}
-          <section
-            class="flex flex-col gap-3 rounded-2xl border p-4"
-            style="background-color: var(--surface); border-color: var(--border);"
-          >
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="flex items-center gap-2">
-                <Globe size={15} style="color: var(--accent);" />
-                <span class="text-sm font-semibold">{group.source.displayName}</span>
-                <span
-                  class="rounded-full px-2 py-0.5 text-[11px] font-medium"
-                  style="background-color: var(--surface-hover); color: var(--text-muted);"
-                >
-                  {group.entries.length}
-                </span>
-              </div>
-
-              <button
-                type="button"
-                onclick={() =>
-                  router.goBrowse(
-                    group.source.baseUrl,
-                    undefined,
-                    false,
-                    group.source.id
-                  )}
-                class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium hover:opacity-80"
-                style="color: var(--accent);"
-              >
-                <ExternalLink size={12} />
-                <span>{t.sourcesBrowseBtn}</span>
-              </button>
-            </div>
-
-            {#if group.error}
-              <div
-                class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs"
-                style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text-muted);"
-              >
-                <AlertTriangle size={13} style="color: var(--danger);" />
-                <span class="truncate">{group.error}</span>
-              </div>
-            {:else if group.entries.length === 0}
-              <div class="text-xs" style="color: var(--text-muted);">{t.sourcesSearchEmpty}</div>
-            {:else}
-              <div class="fluid-manga-grid">
-                {#each group.entries as entry (entry.url)}
-                  {@const busy = openingEntryUrl === entry.url}
-                  <button
-                    type="button"
-                    disabled={openingEntryUrl !== null}
-                    onclick={() => void openCatalogEntry(entry)}
-                    class="card-cq surface-card group flex flex-col overflow-hidden rounded-2xl text-left transition-transform duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.985] disabled:opacity-70"
+      {#if searchResult.groups.length === 0}
+        <div
+          class="rounded-2xl border border-dashed py-10 text-center text-xs"
+          style="border-color: var(--border); color: var(--text-muted);"
+        >
+          {t.sourcesSearchEmpty}
+        </div>
+      {:else}
+        <div class="flex flex-col gap-5">
+          {#each searchResult.groups as group (group.source.id)}
+            <section
+              class="flex flex-col gap-3 rounded-2xl border p-4"
+              style="background-color: var(--surface); border-color: var(--border);"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <Globe size={15} style="color: var(--accent);" />
+                  <span class="text-sm font-semibold">{group.source.displayName}</span>
+                  <span
+                    class="rounded-full px-2 py-0.5 text-[11px] font-medium"
+                    style="background-color: var(--surface-hover); color: var(--text-muted);"
                   >
-                    <div
-                      class="relative aspect-[3/4] w-full overflow-hidden"
-                      style="background-color: var(--surface-hover);"
-                    >
-                      {#if entry.coverToken && !failedEntryCovers[entry.url]}
-                        <img
-                          src={imgProxyUrl(entry.coverToken)}
-                          alt={entry.title}
-                          loading="lazy"
-                          onerror={() => {
-                            failedEntryCovers = { ...failedEntryCovers, [entry.url]: true };
-                          }}
-                          class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
-                        />
-                      {:else}
-                        <div
-                          class="flex h-full w-full items-center justify-center"
-                          style="color: var(--text-muted);"
-                        >
-                          <BookOpen size={26} strokeWidth={1.5} />
-                        </div>
-                      {/if}
-                      {#if entry.latestChapter}
-                        <span
-                          class="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-lg px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-md"
-                          style="background-color: rgba(11, 11, 15, 0.8);"
-                        >
-                          {entry.latestChapter}
-                        </span>
-                      {/if}
-                      {#if busy}
-                        <div class="absolute inset-0 flex items-center justify-center bg-black/55 text-white">
-                          <LatticeLoader size="md" tone="inherit" />
-                        </div>
-                      {/if}
-                    </div>
-                    <div class="card-body p-2.5">
-                      <div class="card-title line-clamp-2 font-semibold">{entry.title}</div>
-                    </div>
-                  </button>
-                {/each}
+                    {group.entries.length}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onclick={() =>
+                    router.goBrowse(
+                      group.source.baseUrl,
+                      undefined,
+                      false,
+                      group.source.id
+                    )}
+                  class="gpu-press inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium hover:opacity-80"
+                  style="color: var(--accent);"
+                >
+                  <ExternalLink size={12} />
+                  <span>{t.sourcesBrowseBtn}</span>
+                </button>
               </div>
-            {/if}
-          </section>
-        {/each}
-      </div>
-    {/if}
+
+              {#if group.error}
+                <div
+                  class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs"
+                  style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text-muted);"
+                >
+                  <AlertTriangle size={13} style="color: var(--danger);" />
+                  <span class="truncate">{group.error}</span>
+                </div>
+              {:else if group.entries.length === 0}
+                <div class="text-xs" style="color: var(--text-muted);">{t.sourcesSearchEmpty}</div>
+              {:else}
+                <div class="fluid-manga-grid">
+                  {#each group.entries as entry, idx (entry.url)}
+                    {@const busy = openingEntryUrl === entry.url}
+                    {@const animateStagger = shouldStaggerItem(idx, group.entries.length)}
+                    <button
+                      type="button"
+                      use:pressable
+                      disabled={openingEntryUrl !== null}
+                      onclick={() => void openCatalogEntry(entry)}
+                      class="card-cq card-contain card-press surface-card group flex flex-col overflow-hidden rounded-2xl text-left disabled:opacity-70"
+                      class:stagger-item={animateStagger}
+                      style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, group.entries.length)}ms;` : undefined}
+                    >
+                      <div
+                        class="relative aspect-[3/4] w-full overflow-hidden"
+                        style="background-color: var(--surface-hover);"
+                      >
+                        {#if entry.coverToken && !failedEntryCovers[entry.url]}
+                          <img
+                            src={imgProxyUrl(entry.coverToken)}
+                            alt={entry.title}
+                            loading="lazy"
+                            onerror={() => {
+                              failedEntryCovers = { ...failedEntryCovers, [entry.url]: true };
+                            }}
+                            class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
+                          />
+                        {:else}
+                          <div
+                            class="flex h-full w-full items-center justify-center"
+                            style="color: var(--text-muted);"
+                          >
+                            <BookOpen size={26} strokeWidth={1.5} />
+                          </div>
+                        {/if}
+                        {#if entry.latestChapter}
+                          <span
+                            class="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-lg px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-md"
+                            style="background-color: rgba(11, 11, 15, 0.8);"
+                          >
+                            {entry.latestChapter}
+                          </span>
+                        {/if}
+                        {#if busy}
+                          <div
+                            transition:backdropFade|local={{ duration: 140 }}
+                            class="absolute inset-0 flex items-center justify-center bg-black/55 text-white"
+                          >
+                            <LatticeLoader size="md" tone="inherit" />
+                          </div>
+                        {/if}
+                      </div>
+                      <div class="card-body p-2.5">
+                        <div class="card-title line-clamp-2 font-semibold">{entry.title}</div>
+                      </div>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </section>
+          {/each}
+        </div>
+      {/if}
+    </div>
   {:else}
     <!-- Sort & Filter Controls -->
     {#if sources.length > 0}
@@ -669,15 +699,11 @@
             onclick={() => {
               sortDir = sortDir === "desc" ? "asc" : "desc";
             }}
-            class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+            class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
             style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
             title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
           >
-            {#if sortDir === "desc"}
-              <ArrowDown size={13} />
-            {:else}
-              <ArrowUp size={13} />
-            {/if}
+            <ArrowDown size={13} class="chevron-rot" data-open={sortDir === "asc" ? "true" : "false"} />
             <span>{sortDir === "desc" ? t.sortDesc : t.sortAsc}</span>
           </button>
         </div>
@@ -692,6 +718,7 @@
       </div>
     {:else if sortedFilteredSources().length === 0}
       <div
+        in:viewReveal|local={{ duration: 160, y: 6 }}
         class="flex flex-col items-center justify-center gap-2.5 rounded-2xl border border-dashed py-12 text-center"
         style="border-color: var(--border); color: var(--text-muted);"
       >
@@ -699,145 +726,160 @@
         <div class="text-sm font-medium" style="color: var(--text);">{t.sourcesEmptyTitle}</div>
       </div>
     {:else}
+      {@const visibleSources = sortedFilteredSources()}
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {#each sortedFilteredSources() as src (src.id)}
+        {#each visibleSources as src, idx (src.id)}
           {@const isSelectedFilter = selectedSourceForFilter?.id === src.id && !typedLink}
-          <article
-            class="flex flex-col justify-between gap-3 rounded-2xl border p-4 transition-colors"
-            style="background-color: var(--surface); border-color: {isSelectedFilter
-              ? 'var(--accent)'
-              : 'var(--border)'}; opacity: {src.isEnabled ? 1 : 0.62};"
+          {@const animateStagger = shouldStaggerItem(idx, visibleSources.length)}
+          <div
+            animate:flip={{ duration: flipDuration(175, visibleSources.length) }}
+            out:itemExit|local
+            class:stagger-item={animateStagger}
+            style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, visibleSources.length)}ms;` : undefined}
           >
-            <div class="flex items-start gap-3">
-              <div
-                class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border text-sm font-bold"
-                style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--accent);"
-              >
-                {#if src.iconToken && !failedIcons[src.id]}
-                  <img
-                    src={imgProxyUrl(src.iconToken)}
-                    alt={src.displayName}
-                    onerror={() => {
-                      failedIcons = { ...failedIcons, [src.id]: true };
-                    }}
-                    class="h-6 w-6 object-contain"
-                  />
-                {:else}
-                  <span>{src.displayName.slice(0, 1).toUpperCase()}</span>
-                {/if}
-              </div>
-
-              <div class="min-w-0 flex-1">
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <h3 class="truncate text-sm font-semibold">{src.displayName}</h3>
-                  <span
-                    class="rounded px-1.5 py-0.5 text-[10px] font-medium"
-                    style="background-color: var(--surface-hover); color: var(--text-muted);"
-                  >
-                    {friendlyKind(src.sourceKind)}
-                  </span>
-                  {#if !src.isEnabled}
-                    <span
-                      class="rounded px-1.5 py-0.5 text-[10px] font-semibold"
-                      style="background-color: rgba(239, 68, 68, 0.14); color: var(--danger);"
-                    >
-                      {t.sourcesDisabledBadge}
-                    </span>
+            <article
+              class="card-contain flex h-full flex-col justify-between gap-3 rounded-2xl border p-4 transition-colors"
+              style="background-color: var(--surface); border-color: {isSelectedFilter
+                ? 'var(--accent)'
+                : 'var(--border)'}; opacity: {src.isEnabled ? 1 : 0.62};"
+            >
+              <div class="flex items-start gap-3">
+                <div
+                  class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border text-sm font-bold"
+                  style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--accent);"
+                >
+                  {#if src.iconToken && !failedIcons[src.id]}
+                    <img
+                      src={imgProxyUrl(src.iconToken)}
+                      alt={src.displayName}
+                      onerror={() => {
+                        failedIcons = { ...failedIcons, [src.id]: true };
+                      }}
+                      class="h-6 w-6 object-contain"
+                    />
+                  {:else}
+                    <span>{src.displayName.slice(0, 1).toUpperCase()}</span>
                   {/if}
                 </div>
-                <div class="mt-0.5 truncate text-xs" style="color: var(--text-muted);">
-                  {hostFromUrl(src.baseUrl)}
+
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <h3 class="truncate text-sm font-semibold">{src.displayName}</h3>
+                    <span
+                      class="rounded px-1.5 py-0.5 text-[10px] font-medium"
+                      style="background-color: var(--surface-hover); color: var(--text-muted);"
+                    >
+                      {friendlyKind(src.sourceKind)}
+                    </span>
+                    {#if !src.isEnabled}
+                      <span
+                        class="rounded px-1.5 py-0.5 text-[10px] font-semibold"
+                        style="background-color: rgba(239, 68, 68, 0.14); color: var(--danger);"
+                      >
+                        {t.sourcesDisabledBadge}
+                      </span>
+                    {/if}
+                  </div>
+                  <div class="mt-0.5 truncate text-xs" style="color: var(--text-muted);">
+                    {hostFromUrl(src.baseUrl)}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div class="flex flex-wrap items-center justify-between gap-2 border-t pt-2.5" style="border-color: var(--border);">
-              <div class="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onclick={() => router.goBrowse(src.baseUrl, undefined, false, src.id)}
-                  class="gpu-press inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold"
-                  style="background-color: var(--accent-soft); color: var(--accent);"
-                >
-                  <ExternalLink size={12} />
-                  <span>{t.sourcesBrowseBtn}</span>
-                </button>
-                <button
-                  type="button"
-                  onclick={() => void openSourceFilters(src)}
-                  class="gpu-press inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-medium"
-                  style="border-color: {isSelectedFilter
-                    ? 'var(--accent)'
-                    : 'var(--border)'}; background-color: {isSelectedFilter
-                    ? 'var(--accent-soft)'
-                    : 'var(--surface-subtle)'}; color: {isSelectedFilter ? 'var(--accent)' : 'var(--text)'};"
-                >
-                  <Filter size={11} />
-                  <span>{t.sourcesFilterThisSiteBtn}</span>
-                </button>
-              </div>
-
-              <div class="flex items-center gap-1">
-                <button
-                  type="button"
-                  onclick={() => startEditSource(src)}
-                  class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
-                  style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
-                  title={t.sourcesEditBtn}
-                  aria-label={t.sourcesEditBtn}
-                >
-                  <Edit3 size={14} />
-                </button>
-
-                <button
-                  type="button"
-                  onclick={() => void moveVisibility(src)}
-                  class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
-                  style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
-                  title={scope === "main" ? t.sourcesMoveToSuppBtn : t.sourcesMoveToMainBtn}
-                  aria-label={scope === "main" ? t.sourcesMoveToSuppBtn : t.sourcesMoveToMainBtn}
-                >
-                  <ArrowLeftRight size={14} />
-                </button>
-
-                {#if confirmDeleteId === src.id}
+              <div class="flex flex-wrap items-center justify-between gap-2 border-t pt-2.5" style="border-color: var(--border);">
+                <div class="flex items-center gap-1.5">
                   <button
                     type="button"
-                    onclick={() => void removeSource(src.id)}
-                    class="gpu-press inline-flex min-h-[36px] items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white"
-                    style="background-color: var(--danger);"
+                    onclick={() => router.goBrowse(src.baseUrl, undefined, false, src.id)}
+                    class="gpu-press inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold"
+                    style="background-color: var(--accent-soft); color: var(--accent);"
                   >
-                    <Check size={12} />
-                    <span>{t.sourcesDeleteBtn}</span>
+                    <ExternalLink size={12} />
+                    <span>{t.sourcesBrowseBtn}</span>
                   </button>
+                  <button
+                    type="button"
+                    onclick={() => void openSourceFilters(src)}
+                    class="gpu-press inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-medium"
+                    style="border-color: {isSelectedFilter
+                      ? 'var(--accent)'
+                      : 'var(--border)'}; background-color: {isSelectedFilter
+                      ? 'var(--accent-soft)'
+                      : 'var(--surface-subtle)'}; color: {isSelectedFilter ? 'var(--accent)' : 'var(--text)'};"
+                  >
+                    <Filter size={11} />
+                    <span>{t.sourcesFilterThisSiteBtn}</span>
+                  </button>
+                </div>
+
+                <div class="flex items-center gap-1">
                   <button
                     type="button"
                     onclick={() => {
-                      confirmDeleteId = null;
+                      if (!modalGuard.canAct()) return;
+                      modalGuard.lock();
+                      startEditSource(src);
                     }}
                     class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
-                    style="border-color: var(--border); color: var(--text-muted);"
-                    aria-label={t.cancel}
+                    style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+                    title={t.sourcesEditBtn}
+                    aria-label={t.sourcesEditBtn}
                   >
-                    <X size={13} />
+                    <Edit3 size={14} />
                   </button>
-                {:else}
+
                   <button
                     type="button"
-                    onclick={() => {
-                      confirmDeleteId = src.id;
-                    }}
+                    onclick={() => void moveVisibility(src)}
                     class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
-                    style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--danger);"
-                    title={t.sourcesDeleteBtn}
-                    aria-label={t.sourcesDeleteBtn}
+                    style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+                    title={scope === "main" ? t.sourcesMoveToSuppBtn : t.sourcesMoveToMainBtn}
+                    aria-label={scope === "main" ? t.sourcesMoveToSuppBtn : t.sourcesMoveToMainBtn}
                   >
-                    <Trash2 size={14} />
+                    <ArrowLeftRight size={14} />
                   </button>
-                {/if}
+
+                  {#if confirmDeleteId === src.id}
+                    <div in:popoverPop|local={{ duration: 140, y: 0 }} class="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onclick={() => void removeSource(src.id)}
+                        class="gpu-press inline-flex min-h-[36px] items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white"
+                        style="background-color: var(--danger);"
+                      >
+                        <Check size={12} />
+                        <span>{t.sourcesDeleteBtn}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onclick={() => {
+                          confirmDeleteId = null;
+                        }}
+                        class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
+                        style="border-color: var(--border); color: var(--text-muted);"
+                        aria-label={t.cancel}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  {:else}
+                    <button
+                      type="button"
+                      onclick={() => {
+                        confirmDeleteId = src.id;
+                      }}
+                      class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
+                      style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--danger);"
+                      title={t.sourcesDeleteBtn}
+                      aria-label={t.sourcesDeleteBtn}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  {/if}
+                </div>
               </div>
-            </div>
-          </article>
+            </article>
+          </div>
         {/each}
       </div>
     {/if}
@@ -857,13 +899,16 @@
     <div
       transition:backdropFade|local
       onclick={() => {
-        if (!addingSource) addModalOpen = false;
+        if (!addingSource && modalGuard.canAct()) {
+          modalGuard.lock();
+          addModalOpen = false;
+        }
       }}
-      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+      class="modal-backdrop fixed inset-0"
     ></div>
 
     <form
-      transition:modalScale|local
+      transition:adaptiveOverlay|local={{ isMobile: deviceEnv.layoutTier === "compact" }}
       onsubmit={(e) => {
         e.preventDefault();
         void submitAddSource();
@@ -945,13 +990,16 @@
     <div
       transition:backdropFade|local
       onclick={() => {
-        if (!savingEdit) editTarget = null;
+        if (!savingEdit && modalGuard.canAct()) {
+          modalGuard.lock();
+          editTarget = null;
+        }
       }}
-      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+      class="modal-backdrop fixed inset-0"
     ></div>
 
     <form
-      transition:modalScale|local
+      transition:adaptiveOverlay|local={{ isMobile: deviceEnv.layoutTier === "compact" }}
       onsubmit={(e) => {
         e.preventDefault();
         void submitEditSource();

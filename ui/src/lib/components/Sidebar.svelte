@@ -16,6 +16,7 @@
     Sun,
   } from "lucide-svelte";
   import logoUrl from "../../assets/logo.png";
+  import { badgePop, viewReveal } from "../motion";
   import { appReleaseStore } from "../stores/appRelease.svelte";
   import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { notificationsStore } from "../stores/notifications.svelte";
@@ -84,7 +85,7 @@
       >
         <img src={logoUrl} alt="RtMaga" class="h-8 w-8 shrink-0 rounded-xl shadow-sm" />
         {#if !isRailMode}
-          <div class="min-w-0 leading-tight">
+          <div in:viewReveal|local={{ duration: 140, y: 0 }} class="min-w-0 leading-tight">
             <div class="truncate text-sm font-bold tracking-tight">RtMaga</div>
             <div class="truncate text-[10px] font-medium" style="color: var(--text-muted);">
               Offline Reader
@@ -109,6 +110,7 @@
           <Bell size={18} />
           {#if notificationsStore.unreadCount > 0}
             <span
+              transition:badgePop|local
               class="absolute top-1 right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold"
               style="background-color: var(--accent); color: var(--accent-fg);"
             >
@@ -126,11 +128,15 @@
             title={userCollapsed ? "Expand sidebar" : "Collapse sidebar"}
             aria-label={userCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            {#if userCollapsed}
-              <PanelLeftOpen size={17} />
-            {:else}
-              <PanelLeftClose size={17} />
-            {/if}
+            {#key userCollapsed}
+              <span in:badgePop|local={{ duration: 140, start: 0.72 }} class="inline-flex">
+                {#if userCollapsed}
+                  <PanelLeftOpen size={17} />
+                {:else}
+                  <PanelLeftClose size={17} />
+                {/if}
+              </span>
+            {/key}
           </button>
         {/if}
       </div>
@@ -158,6 +164,7 @@
             {/if}
             {#if updatesStore.newCount > 0}
               <span
+                transition:badgePop|local
                 class={isRailMode
                   ? "absolute top-1.5 right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold"
                   : "ml-auto rounded-full px-2 py-0.5 text-[11px] font-semibold"}
@@ -296,16 +303,19 @@
         title={deviceEnv.desktopFullscreen ? t.appFullscreenExit : t.appFullscreenEnter}
         aria-label={deviceEnv.desktopFullscreen ? t.appFullscreenExit : t.appFullscreenEnter}
       >
-        {#if deviceEnv.desktopFullscreen}
-          <Minimize size={16} />
-          {#if !isRailMode}
-            <span class="truncate">{t.appFullscreenExit}</span>
-          {/if}
-        {:else}
-          <Maximize size={16} />
-          {#if !isRailMode}
-            <span class="truncate">{t.appFullscreenEnter}</span>
-          {/if}
+        {#key deviceEnv.desktopFullscreen}
+          <span in:badgePop|local={{ duration: 140, start: 0.72 }} class="inline-flex shrink-0">
+            {#if deviceEnv.desktopFullscreen}
+              <Minimize size={16} />
+            {:else}
+              <Maximize size={16} />
+            {/if}
+          </span>
+        {/key}
+        {#if !isRailMode}
+          <span class="truncate">
+            {deviceEnv.desktopFullscreen ? t.appFullscreenExit : t.appFullscreenEnter}
+          </span>
         {/if}
       </button>
     {/if}
@@ -318,22 +328,27 @@
       title={isDark ? t.lightMode : t.darkMode}
       aria-label={isDark ? t.lightMode : t.darkMode}
     >
-      {#if isDark}
-        <Sun size={16} />
-        {#if !isRailMode}
-          <span class="truncate">{t.lightMode}</span>
-        {/if}
-      {:else}
-        <Moon size={16} />
-        {#if !isRailMode}
-          <span class="truncate">{t.darkMode}</span>
-        {/if}
+      {#key isDark}
+        <span in:badgePop|local={{ duration: 140, start: 0.72 }} class="inline-flex shrink-0">
+          {#if isDark}
+            <Sun size={16} />
+          {:else}
+            <Moon size={16} />
+          {/if}
+        </span>
+      {/key}
+      {#if !isRailMode}
+        <span class="truncate">{isDark ? t.lightMode : t.darkMode}</span>
       {/if}
     </button>
   </div>
 </aside>
 
 <style>
+  .sidebar-shell {
+    transition: width var(--dur-base, 175ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+  }
+
   .sidebar-expanded {
     width: 15rem;
   }
@@ -358,6 +373,11 @@
     border: none;
     cursor: pointer;
     text-align: left;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      opacity var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .nav-item-rail {

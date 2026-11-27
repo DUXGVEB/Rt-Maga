@@ -1,9 +1,16 @@
 <script lang="ts">
-  import { ArrowDown, ArrowUp, Bookmark, BookOpen, CheckCircle2, Dices, Play, Sparkles, Trash2 } from "lucide-svelte";
+  import { ArrowDown, Bookmark, BookOpen, CheckCircle2, Dices, Play, Sparkles, Trash2 } from "lucide-svelte";
   import { flip } from "svelte/animate";
   import { api, imgProxyUrl } from "../lib/api";
   import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../lib/comicFormats";
-  import { flipDuration, pressable, shouldStaggerItem, staggerDelay } from "../lib/motion";
+  import {
+    flipDuration,
+    itemExit,
+    pressable,
+    shouldStaggerItem,
+    staggerDelay,
+    viewReveal,
+  } from "../lib/motion";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { randomMangaStore } from "../lib/stores/randomManga.svelte";
   import { router } from "../lib/stores/router.svelte";
@@ -146,11 +153,7 @@
           style="color: var(--text);"
           title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
         >
-          {#if sortDir === "desc"}
-            <ArrowDown size={13} />
-          {:else}
-            <ArrowUp size={13} />
-          {/if}
+          <ArrowDown size={13} class="chevron-rot" data-open={sortDir === "asc" ? "true" : "false"} />
           <span>{sortDir === "desc" ? t.sortDesc : t.sortAsc}</span>
         </button>
       </div>
@@ -168,6 +171,7 @@
     </div>
   {:else if items().length === 0}
     <div
+      in:viewReveal|local={{ duration: 165, y: 6 }}
       class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-16 text-center"
       style="border-color: var(--border-strong); color: var(--text-muted);"
     >
@@ -182,6 +186,7 @@
         {@const animateStagger = shouldStaggerItem(idx, list.length)}
         <div
           animate:flip={{ duration: flipDuration(180, list.length) }}
+          out:itemExit|local
           class:stagger-item={animateStagger}
           style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, list.length)}ms;` : undefined}
         >

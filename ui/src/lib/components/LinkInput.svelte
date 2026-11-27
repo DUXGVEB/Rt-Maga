@@ -6,6 +6,7 @@
     X,
   } from "lucide-svelte";
   import { api, formatAppError } from "../api";
+  import { collapseReveal, pressable } from "../motion";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -200,7 +201,7 @@
       e.preventDefault();
       void submit();
     }}
-    class="surface-card flex flex-col gap-2 rounded-2xl p-2 focus-within:ring-2 sm:flex-row sm:items-center sm:gap-2"
+    class="surface-card flex flex-col gap-2 rounded-2xl p-2 transition-shadow duration-150 focus-within:ring-2 sm:flex-row sm:items-center sm:gap-2"
     style="--tw-ring-color: var(--accent-soft);"
   >
     <div class="flex min-w-0 flex-1 items-center gap-2.5 px-2 sm:pl-2.5 sm:pr-0">
@@ -259,6 +260,7 @@
       <!-- Primary Open Manga Button -->
       <button
         type="submit"
+        use:pressable
         disabled={loading || !urlInput.trim()}
         class="gpu-press flex min-h-[42px] flex-1 shrink-0 items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-sm font-semibold hover:opacity-92 disabled:opacity-45 sm:min-h-[38px] sm:flex-initial"
         style="background-color: var(--accent); color: var(--accent-fg);"
@@ -274,7 +276,7 @@
   </form>
 
   {#if errorState}
-    <div class="mt-3">
+    <div transition:collapseReveal|local class="mt-3">
       <SourceDiagnosticCard
         error={errorState}
         fallbackUrl={lastSubmittedUrl || urlInput.trim() || undefined}

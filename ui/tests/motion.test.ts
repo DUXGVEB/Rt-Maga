@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  badgePop,
+  collapseReveal,
   easeSnappy,
   flipDuration,
+  itemExit,
   MOTION_DURATION,
   shouldStaggerItem,
   staggerDelay,
@@ -36,4 +39,26 @@ test("flipDuration respects upper cap and skips FLIP on very long lists", () => 
   assert.equal(flipDuration(180, 20), 180);
   assert.equal(flipDuration(500, 20), MOTION_DURATION.flipMax);
   assert.equal(flipDuration(180, MOTION_DURATION.flipSkipThreshold + 10), 0);
+});
+
+test("GPU transition helpers produce bounded durations and compositor-only CSS", () => {
+  const dummyEl = {} as Element;
+
+  const badge = badgePop(dummyEl, { duration: 400, start: 0.7 });
+  assert.equal(badge.duration, 200);
+  const badgeMid = badge.css?.(0.5, 0.5) ?? "";
+  assert.match(badgeMid, /opacity:\s*0\.5/);
+  assert.match(badgeMid, /transform:\s*scale\(/);
+
+  const panel = collapseReveal(dummyEl, { duration: 50, y: 8 });
+  assert.equal(panel.duration, 120);
+  const panelStart = panel.css?.(0, 1) ?? "";
+  assert.match(panelStart, /translate3d\(0,\s*-8\.00px,\s*0\)/);
+  assert.ok(!panelStart.includes("height:"));
+
+  const exit = itemExit(dummyEl, { duration: 300 });
+  assert.equal(exit.duration, 180);
+  const exitMid = exit.css?.(0.5, 0.5) ?? "";
+  assert.match(exitMid, /opacity:\s*0\.5/);
+  assert.match(exitMid, /transform:\s*translate3d\(/);
 });

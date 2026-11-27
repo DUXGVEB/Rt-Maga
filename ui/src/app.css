@@ -307,6 +307,61 @@ input[type="radio"] {
   animation-delay: var(--stagger-delay, 0ms);
 }
 
+/* Smooth GPU-composited image reveal (zero layout shift). */
+@keyframes rtmaga-img-reveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.img-reveal {
+  animation: rtmaga-img-reveal var(--dur-base) var(--ease-out) both;
+}
+
+/* Smooth GPU rotation helpers for expandable chevrons and sort arrows. */
+.chevron-rot {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.chevron-rot[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+.chevron-rot-90 {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.chevron-rot-90[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+/* Subtle GPU-only QR camera scanning indicator. */
+@keyframes rtmaga-scan-beam {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    opacity: 0.72;
+  }
+  50% {
+    transform: translate3d(0, 100%, 0);
+    opacity: 1;
+  }
+}
+
+.qr-scan-beam {
+  animation: rtmaga-scan-beam 2.2s ease-in-out infinite;
+}
+
+/* Mobile bottom nav active pill highlight transition. */
+.nav-pill-bg {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
 /* Natural scroll container accounting for safe areas, virtual keyboard, and mobile bottom nav (<768px).
    On width >= 768px (tablet, phone landscape, desktop), side rail / sidebar handles navigation. */
 .main-scroll-area {
@@ -344,7 +399,9 @@ input[type="radio"] {
     scroll-behavior: auto !important;
   }
 
-  .stagger-item {
+  .stagger-item,
+  .img-reveal,
+  .qr-scan-beam {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;

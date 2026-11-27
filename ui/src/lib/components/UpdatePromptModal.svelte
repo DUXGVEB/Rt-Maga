@@ -8,7 +8,13 @@
     Sparkles,
     X,
   } from "lucide-svelte";
-  import { adaptiveOverlay, backdropFade, createOverlayGuard } from "../motion";
+  import {
+    adaptiveOverlay,
+    backdropFade,
+    collapseReveal,
+    createOverlayGuard,
+    pressable,
+  } from "../motion";
   import { appReleaseStore } from "../stores/appRelease.svelte";
   import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { settingsStore } from "../stores/settings.svelte";
@@ -51,7 +57,7 @@
   });
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape" && !appReleaseStore.installing) {
+    if (appReleaseStore.promptOpen && e.key === "Escape" && !appReleaseStore.installing) {
       e.preventDefault();
       appReleaseStore.dismissPrompt();
     }
@@ -60,7 +66,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-{#if release}
+{#if appReleaseStore.promptOpen && release}
   <div
     class="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
     style="padding-top: max(1rem, var(--safe-top)); padding-left: var(--safe-left); padding-right: var(--safe-right);"
@@ -135,7 +141,7 @@
 
       <!-- Live download / install progress -->
       {#if appReleaseStore.installing && progress}
-        <div class="flex flex-col gap-2">
+        <div transition:collapseReveal|local class="flex flex-col gap-2">
           <div class="flex items-center justify-between text-xs font-medium">
             <span class="flex items-center gap-1.5">
               <LatticeLoader size="xs" label={stageLabel()} showTimer inline />
@@ -166,6 +172,7 @@
       <!-- Outcome / Status messages -->
       {#if appReleaseStore.installStatus === "installing_and_restarting"}
         <div
+          transition:collapseReveal|local
           class="flex items-start gap-2 rounded-xl border px-3 py-2.5 text-xs"
           style="background-color: var(--accent-soft); border-color: var(--accent); color: var(--accent);"
         >
@@ -174,6 +181,7 @@
         </div>
       {:else if appReleaseStore.installStatus === "permission_required"}
         <div
+          transition:collapseReveal|local
           class="flex items-start gap-2 rounded-xl border px-3 py-2.5 text-xs"
           style="background-color: var(--surface-subtle); border-color: var(--accent); color: var(--text);"
         >
@@ -182,6 +190,7 @@
         </div>
       {:else if appReleaseStore.installStatus === "installer_launched"}
         <div
+          transition:collapseReveal|local
           class="flex items-start gap-2 rounded-xl border px-3 py-2.5 text-xs"
           style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
         >
@@ -193,6 +202,7 @@
       <!-- Error box -->
       {#if appReleaseStore.installError}
         <div
+          transition:collapseReveal|local
           class="flex items-start gap-2 rounded-xl border px-3 py-2.5 text-xs"
           style="background-color: var(--surface-subtle); border-color: var(--danger); color: var(--danger);"
         >
@@ -207,7 +217,7 @@
           <button
             type="button"
             onclick={() => appReleaseStore.dismissPrompt()}
-            class="rounded-xl border px-3.5 py-2 text-xs font-medium transition-opacity hover:opacity-85"
+            class="gpu-press rounded-xl border px-3.5 py-2 text-xs font-medium hover:opacity-85"
             style="border-color: var(--border); background-color: var(--surface-subtle);"
           >
             {t.updateLater}
@@ -216,7 +226,7 @@
           <button
             type="button"
             onclick={() => appReleaseStore.openReleasePage()}
-            class="inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-medium transition-opacity hover:opacity-85"
+            class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-medium hover:opacity-85"
             style="border-color: var(--border); background-color: var(--surface);"
           >
             <ExternalLink size={13} />
@@ -225,8 +235,9 @@
 
           <button
             type="button"
+            use:pressable
             onclick={() => appReleaseStore.installNow()}
-            class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition-opacity hover:opacity-90"
+            class="gpu-press inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold hover:opacity-90"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
             <Download size={14} />

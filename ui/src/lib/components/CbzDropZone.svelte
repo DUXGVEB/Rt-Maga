@@ -11,6 +11,7 @@
     shouldUploadBrowserFile,
   } from "../comicFormats";
   import { libraryCache } from "../stores/libraryCache.svelte";
+  import { badgePop, pressable } from "../motion";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -299,7 +300,7 @@
       type="button"
       disabled={importing}
       onclick={() => void handlePickFilesClick()}
-      class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors hover:brightness-95 disabled:opacity-55"
+      class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold hover:brightness-95 disabled:opacity-55"
       style="background-color: var(--accent-soft); border-color: var(--accent); color: var(--accent);"
     >
       {#if importing}
@@ -311,22 +312,25 @@
       {/if}
     </button>
     {#if !importing}
-      <button
-        type="button"
-        onclick={(e) => void handlePickFolderClick(e)}
-        class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors hover:opacity-90"
-        style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
-        title={t.cbzPickFolderBtn}
-      >
-        <FolderOpen size={13} />
-        <span>{t.cbzPickFolderBtn}</span>
-      </button>
+      <span transition:badgePop|local class="inline-flex">
+        <button
+          type="button"
+          onclick={(e) => void handlePickFolderClick(e)}
+          class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium hover:opacity-90"
+          style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
+          title={t.cbzPickFolderBtn}
+        >
+          <FolderOpen size={13} />
+          <span>{t.cbzPickFolderBtn}</span>
+        </button>
+      </span>
     {/if}
   </div>
 {:else}
   <!-- Drag-and-Drop Upload Zone (#032) -->
   <div
     role="button"
+    use:pressable={!importing}
     tabindex={importing ? -1 : 0}
     aria-disabled={importing}
     aria-label={t.cbzDropTitle}
@@ -386,15 +390,17 @@
 
       <div class="flex w-full shrink-0 items-center gap-2 sm:w-auto">
         {#if !importing}
-          <button
-            type="button"
-            onclick={(e) => void handlePickFolderClick(e)}
-            class="dz-cta-secondary gpu-press inline-flex min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold hover:opacity-90 sm:min-h-[38px] sm:flex-initial"
-            title={t.cbzPickFolderBtn}
-          >
-            <FolderOpen size={14} />
-            <span>{t.cbzPickFolderBtn}</span>
-          </button>
+          <span transition:badgePop|local class="inline-flex flex-1 sm:flex-initial">
+            <button
+              type="button"
+              onclick={(e) => void handlePickFolderClick(e)}
+              class="dz-cta-secondary gpu-press inline-flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold hover:opacity-90 sm:min-h-[38px]"
+              title={t.cbzPickFolderBtn}
+            >
+              <FolderOpen size={14} />
+              <span>{t.cbzPickFolderBtn}</span>
+            </button>
+          </span>
         {/if}
 
         <span

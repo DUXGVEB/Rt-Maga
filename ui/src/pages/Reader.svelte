@@ -8,7 +8,6 @@
     ChevronDown,
     ChevronLeft,
     ChevronRight,
-    ChevronUp,
     Download,
     ExternalLink,
     Image as ImageIcon,
@@ -30,7 +29,15 @@
   import PageImage from "../lib/components/PageImage.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import SquishSwitch from "../lib/components/SquishSwitch.svelte";
-  import { backdropFade, createOverlayGuard, drawerSlide, popoverPop } from "../lib/motion";
+  import {
+    backdropFade,
+    badgePop,
+    collapseReveal,
+    createOverlayGuard,
+    drawerSlide,
+    popoverPop,
+    viewReveal,
+  } from "../lib/motion";
   import {
     clampZoomPan,
     computeAnchoredZoom,
@@ -3027,6 +3034,7 @@
           <div class="truncate text-sm font-semibold">{manga?.title ?? t.readingFallback}</div>
           {#if isAutoWebtoonActive}
             <span
+              transition:badgePop|local
               class="hidden shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex"
               style="background-color: var(--accent-soft); color: var(--accent);"
               title={t.autoWebtoonBadge}
@@ -3047,16 +3055,18 @@
 
     <div class="flex shrink-0 items-center gap-1">
       {#if zoomScale > 1.01}
-        <button
-          type="button"
-          onclick={() => resetZoom()}
-          class="gpu-press touch-target inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-semibold"
-          style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
-          title={t.readerResetZoom}
-        >
-          <ZoomOut size={14} />
-          <span>1x</span>
-        </button>
+        <span transition:badgePop|local class="inline-flex">
+          <button
+            type="button"
+            onclick={() => resetZoom()}
+            class="gpu-press touch-target inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-semibold"
+            style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
+            title={t.readerResetZoom}
+          >
+            <ZoomOut size={14} />
+            <span>1x</span>
+          </button>
+        </span>
       {/if}
 
       {#if manga && manga.chapters.length > 0}
@@ -3087,7 +3097,11 @@
           title={manga.bookmarked ? t.bookmarkRemove : t.bookmarkAdd}
           aria-label={manga.bookmarked ? t.bookmarkRemove : t.bookmarkAdd}
         >
-          <Bookmark size={16} fill={manga.bookmarked ? "currentColor" : "none"} />
+          {#key manga.bookmarked}
+            <span in:badgePop|local={{ duration: 150, start: 0.68 }} class="inline-flex">
+              <Bookmark size={16} fill={manga.bookmarked ? "currentColor" : "none"} />
+            </span>
+          {/key}
         </button>
       {/if}
 
@@ -3113,11 +3127,15 @@
           title={t.fullscreenTooltip}
           aria-label={t.fullscreenTooltip}
         >
-          {#if isFullscreen}
-            <Minimize size={16} />
-          {:else}
-            <Maximize size={16} />
-          {/if}
+          {#key isFullscreen}
+            <span in:badgePop|local={{ duration: 140, start: 0.72 }} class="inline-flex">
+              {#if isFullscreen}
+                <Minimize size={16} />
+              {:else}
+                <Maximize size={16} />
+              {/if}
+            </span>
+          {/key}
         </button>
       {/if}
     </div>
@@ -3258,6 +3276,7 @@
 
       {#if hasCustomMangaSettings || isAutoWebtoonActive || effectiveOverride !== null}
         <div
+          transition:collapseReveal|local
           class="flex shrink-0 items-center justify-between gap-2 rounded-xl border px-3 py-2"
           style="background-color: var(--surface-subtle); border-color: var(--border);"
         >
@@ -3270,7 +3289,7 @@
             <button
               type="button"
               onclick={resetToAutoMode}
-              class="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium"
+              class="gpu-press inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium"
               style="background-color: var(--accent-soft); color: var(--accent);"
             >
               <RotateCcw size={11} />
@@ -3286,7 +3305,7 @@
           type="button"
           onclick={() => (openQuickCat = openQuickCat === "layout" ? null : "layout")}
           aria-expanded={openQuickCat === "layout"}
-          class="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-medium"
+          class="gpu-press flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-medium"
         >
           <div class="min-w-0">
             <div class="font-semibold">{t.readerCatLayout}</div>
@@ -3296,15 +3315,16 @@
                 : `${t.modeVertical} · ${effectiveNoGap ? t.noGapModeLabel : `${effectiveVerticalGapPx}px`}`}
             </div>
           </div>
-          {#if openQuickCat === "layout"}
-            <ChevronUp size={15} class="shrink-0 opacity-70" />
-          {:else}
-            <ChevronDown size={15} class="shrink-0 opacity-70" />
-          {/if}
+          <ChevronDown
+            size={15}
+            class="chevron-rot shrink-0 opacity-70"
+            data-open={openQuickCat === "layout" ? "true" : "false"}
+          />
         </button>
 
         {#if openQuickCat === "layout"}
           <div
+            transition:collapseReveal|local
             class="flex flex-col gap-3 border-t p-3"
             style="border-color: var(--border); background-color: var(--surface);"
           >
@@ -3315,7 +3335,7 @@
                   <button
                     type="button"
                     onclick={() => setOrientation(val as ReadingOrientation)}
-                    class="rounded-lg border py-1.5 font-medium"
+                    class="gpu-press rounded-lg border py-1.5 font-medium"
                     style="border-color: {effectiveOrientation === val
                       ? 'var(--accent)'
                       : 'var(--border)'}; background-color: {effectiveOrientation === val
@@ -3338,7 +3358,7 @@
                     <button
                       type="button"
                       onclick={() => setHorizontalDirection(val as HorizontalDirection)}
-                      class="rounded-lg border py-1.5 font-medium"
+                      class="gpu-press rounded-lg border py-1.5 font-medium"
                       style="border-color: {hCfg.direction === val
                         ? 'var(--accent)'
                         : 'var(--border)'}; background-color: {hCfg.direction === val
@@ -3363,7 +3383,7 @@
                     <button
                       type="button"
                       onclick={() => setPagesPerGroup(n)}
-                      class="rounded-lg border py-1 font-medium"
+                      class="gpu-press rounded-lg border py-1 font-medium"
                       style="border-color: {hCfg.pagesPerGroup === n
                         ? 'var(--accent)'
                         : 'var(--border)'}; background-color: {hCfg.pagesPerGroup === n
@@ -3388,7 +3408,7 @@
               </div>
 
               {#if hCfg.pagesPerGroup === 1}
-                <div class="flex items-center justify-between gap-2">
+                <div transition:collapseReveal|local class="flex items-center justify-between gap-2">
                   <span class="font-medium">{t.landscapeAutoSpreadLabel}</span>
                   <SquishSwitch
                     size="sm"
@@ -3434,7 +3454,7 @@
               </div>
 
               {#if !effectiveNoGap}
-                <div class="flex flex-col gap-1">
+                <div transition:collapseReveal|local class="flex flex-col gap-1">
                   <div class="flex items-center justify-between">
                     <span class="font-medium">{t.gapLabel(vCfg.pageGapPx)}</span>
                   </div>
@@ -3470,7 +3490,7 @@
           type="button"
           onclick={() => (openQuickCat = openQuickCat === "display" ? null : "display")}
           aria-expanded={openQuickCat === "display"}
-          class="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-medium"
+          class="gpu-press flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-medium"
         >
           <div class="min-w-0">
             <div class="font-semibold">{t.readerCatDisplay}</div>
@@ -3482,15 +3502,16 @@
                   : t.bgAppTheme}
             </div>
           </div>
-          {#if openQuickCat === "display"}
-            <ChevronUp size={15} class="shrink-0 opacity-70" />
-          {:else}
-            <ChevronDown size={15} class="shrink-0 opacity-70" />
-          {/if}
+          <ChevronDown
+            size={15}
+            class="chevron-rot shrink-0 opacity-70"
+            data-open={openQuickCat === "display" ? "true" : "false"}
+          />
         </button>
 
         {#if openQuickCat === "display"}
           <div
+            transition:collapseReveal|local
             class="flex flex-col gap-3 border-t p-3"
             style="border-color: var(--border); background-color: var(--surface);"
           >
@@ -3501,7 +3522,7 @@
                   <button
                     type="button"
                     onclick={() => setReaderBg(val as ReaderBg)}
-                    class="rounded-lg border py-1.5 font-medium"
+                    class="gpu-press rounded-lg border py-1.5 font-medium"
                     style="border-color: {readerSettings.readerBg === val
                       ? 'var(--accent)'
                       : 'var(--border)'}; background-color: {readerSettings.readerBg === val
@@ -3528,7 +3549,7 @@
               </div>
               {#if isHorizontal ? hCfg.dimUnfocused : vCfg.dimUnfocused}
                 {@const dimPct = isHorizontal ? hCfg.dimLevel : vCfg.dimLevel}
-                <div class="flex items-center gap-2">
+                <div transition:collapseReveal|local class="flex items-center gap-2">
                   <input
                     type="range"
                     min="0"
@@ -3552,7 +3573,7 @@
           type="button"
           onclick={() => (openQuickCat = openQuickCat === "controls" ? null : "controls")}
           aria-expanded={openQuickCat === "controls"}
-          class="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-medium"
+          class="gpu-press flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-medium"
         >
           <div class="min-w-0">
             <div class="font-semibold">{t.readerCatControls}</div>
@@ -3560,15 +3581,16 @@
               {behavior.keepScreenOn ? t.keepScreenOnLabel : t.skipBrokenImagesLabel}
             </div>
           </div>
-          {#if openQuickCat === "controls"}
-            <ChevronUp size={15} class="shrink-0 opacity-70" />
-          {:else}
-            <ChevronDown size={15} class="shrink-0 opacity-70" />
-          {/if}
+          <ChevronDown
+            size={15}
+            class="chevron-rot shrink-0 opacity-70"
+            data-open={openQuickCat === "controls" ? "true" : "false"}
+          />
         </button>
 
         {#if openQuickCat === "controls"}
           <div
+            transition:collapseReveal|local
             class="flex flex-col gap-3 border-t p-3"
             style="border-color: var(--border); background-color: var(--surface);"
           >
@@ -3655,7 +3677,7 @@
         <button
           type="button"
           onclick={() => (quickFloatConfig = null)}
-          class="rounded-lg p-1 opacity-70 hover:opacity-100"
+          class="gpu-press rounded-lg p-1 opacity-70 hover:opacity-100"
           aria-label={t.cancel}
         >
           <X size={14} />
@@ -3670,7 +3692,7 @@
               <button
                 type="button"
                 onclick={() => void setOrientationLockDirect(val as OrientationLockMode)}
-                class="rounded-lg border py-1.5 font-medium"
+                class="gpu-press rounded-lg border py-1.5 font-medium"
                 style="border-color: {readerSettings.orientationLock === val
                   ? 'var(--accent)'
                   : 'var(--border)'}; background-color: {readerSettings.orientationLock === val
@@ -3705,7 +3727,7 @@
                 type="button"
                 onclick={() =>
                   settingsStore.update((d) => (d.floating.orientationLock.edge = edge as FloatingEdge))}
-                class="rounded-lg border px-2.5 py-1 font-medium"
+                class="gpu-press rounded-lg border px-2.5 py-1 font-medium"
                 style="border-color: {settingsStore.value.floating.orientationLock.edge === edge
                   ? 'var(--accent)'
                   : 'var(--border)'}; background-color: {settingsStore.value.floating.orientationLock.edge === edge
@@ -3743,7 +3765,7 @@
               <button
                 type="button"
                 onclick={() => toggleScrollTopScreen(screen)}
-                class="rounded-lg border px-2.5 py-1 font-medium"
+                class="gpu-press rounded-lg border px-2.5 py-1 font-medium"
                 style="border-color: {active
                   ? 'var(--accent)'
                   : 'var(--border)'}; background-color: {active
@@ -3764,7 +3786,7 @@
                 type="button"
                 onclick={() =>
                   settingsStore.update((d) => (d.floating.scrollToTop.edge = edge as FloatingEdge))}
-                class="rounded-lg border px-2.5 py-1 font-medium"
+                class="gpu-press rounded-lg border px-2.5 py-1 font-medium"
                 style="border-color: {settingsStore.value.floating.scrollToTop.edge === edge
                   ? 'var(--accent)'
                   : 'var(--border)'}; background-color: {settingsStore.value.floating.scrollToTop.edge === edge
@@ -3810,7 +3832,7 @@
       <button
         type="button"
         onclick={() => openFullSettings("floating")}
-        class="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl border px-3 py-2 font-medium transition-opacity hover:opacity-85"
+        class="gpu-press inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl border px-3 py-2 font-medium hover:opacity-85"
         style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--accent);"
       >
         <ExternalLink size={12} />
@@ -3875,7 +3897,7 @@
         <button
           type="button"
           onclick={exitReader}
-          class="rounded-xl border px-4 py-2 text-xs font-medium"
+          class="gpu-press rounded-xl border px-4 py-2 text-xs font-medium"
           style="border-color: var(--border); background-color: var(--surface);"
         >
           {t.back}
@@ -3952,7 +3974,7 @@
                   e.stopPropagation();
                   if (activeChapter?.next) jumpToChapter(activeChapter.next);
                 }}
-                class="inline-flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-semibold shadow-sm transition-opacity hover:opacity-90"
+                class="gpu-press inline-flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-semibold shadow-sm hover:opacity-90"
                 style="background-color: var(--accent); color: var(--accent-fg);"
               >
                 <span>{t.nextChapter}</span>
@@ -3975,7 +3997,7 @@
                   e.stopPropagation();
                   if (activeChapter?.prev) jumpToChapter(activeChapter.prev);
                 }}
-                class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition-opacity hover:opacity-85 disabled:opacity-40"
+                class="gpu-press inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold hover:opacity-85 disabled:opacity-40"
                 style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
               >
                 <ChevronLeft size={14} />
@@ -3988,7 +4010,7 @@
                   e.stopPropagation();
                   stepHorizontalGroup(-1, false);
                 }}
-                class="inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
+                class="gpu-press inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium hover:opacity-85"
                 style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
               >
                 <span class="truncate">{t.endCardReturnLastPage}</span>
@@ -4232,25 +4254,32 @@
           style="overflow-anchor: none;"
         >
           {#if appendingNext}
-            <div class="flex items-center gap-2 text-xs" style="color: var(--text-muted);">
+            <div
+              in:viewReveal|local={{ duration: 150, y: 4 }}
+              class="flex items-center gap-2 text-xs"
+              style="color: var(--text-muted);"
+            >
               <LatticeLoader size="sm" label={t.loadingNextChapter} inline />
             </div>
           {:else if lastChapter?.next}
-            <button
-              type="button"
-              onclick={() => {
-                if (lastChapter?.next) {
-                  jumpToChapter(lastChapter.next);
-                }
-              }}
-              class="gpu-press inline-flex min-h-[44px] items-center gap-2 rounded-2xl px-6 py-3 text-sm font-semibold shadow-sm hover:opacity-90"
-              style="background-color: var(--accent); color: var(--accent-fg);"
-            >
-              <span>{t.nextChapter}</span>
-              <ChevronRight size={17} />
-            </button>
+            <div in:viewReveal|local={{ duration: 150, y: 4 }}>
+              <button
+                type="button"
+                onclick={() => {
+                  if (lastChapter?.next) {
+                    jumpToChapter(lastChapter.next);
+                  }
+                }}
+                class="gpu-press inline-flex min-h-[44px] items-center gap-2 rounded-2xl px-6 py-3 text-sm font-semibold shadow-sm hover:opacity-90"
+                style="background-color: var(--accent); color: var(--accent-fg);"
+              >
+                <span>{t.nextChapter}</span>
+                <ChevronRight size={17} />
+              </button>
+            </div>
           {:else}
             <div
+              in:viewReveal|local={{ duration: 150, y: 4 }}
               class="rounded-xl border px-5 py-3 text-xs font-medium"
               style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
             >
@@ -4285,7 +4314,7 @@
         e.preventDefault();
         if (!imageActionBusy) imageMenuTarget = null;
       }}
-      class="fixed inset-0 z-50 {useBottomSheet ? 'bg-black/52 backdrop-blur-[2px]' : 'bg-transparent'}"
+      class="fixed inset-0 z-50 {useBottomSheet ? 'modal-backdrop' : 'bg-transparent'}"
     ></div>
 
     {#if useBottomSheet}
@@ -4304,7 +4333,7 @@
             type="button"
             disabled={imageActionBusy !== null}
             onclick={() => (imageMenuTarget = null)}
-            class="flex h-8 w-8 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
+            class="gpu-press flex h-8 w-8 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
             aria-label={t.cancel}
           >
             <X size={16} />

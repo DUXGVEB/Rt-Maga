@@ -1,6 +1,7 @@
 <script lang="ts">
   import { AlertCircle, RotateCcw } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
+  import { viewReveal } from "../motion";
   import type { PageLoadMode } from "../readerLayout";
   import { settingsStore } from "../stores/settings.svelte";
   import LatticeLoader from "./LatticeLoader.svelte";
@@ -205,6 +206,7 @@
   {#if failed}
     {#if skipBroken}
       <div
+        in:viewReveal|local={{ duration: 150, y: 4 }}
         class="my-1 flex items-center justify-center gap-2 rounded-lg border px-3 py-1.5 text-[11px]"
         style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
       >
@@ -213,7 +215,7 @@
         <button
           type="button"
           onclick={retry}
-          class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium"
+          class="gpu-press inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium"
           style="background-color: var(--accent-soft); color: var(--accent);"
         >
           <RotateCcw size={11} />
@@ -222,6 +224,7 @@
       </div>
     {:else}
       <div
+        in:viewReveal|local={{ duration: 150, y: 4 }}
         class="flex flex-col items-center justify-center gap-3 rounded-lg border px-4 py-8 text-center {horizontal
           ? 'h-[72dvh] w-[62dvw] max-w-[420px]'
           : 'min-h-[240px] w-full'}"
@@ -234,7 +237,7 @@
         <button
           type="button"
           onclick={retry}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium"
+          class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium"
           style="background-color: var(--accent); color: var(--accent-fg);"
         >
           <RotateCcw size={13} />
@@ -271,6 +274,7 @@
         ? "block max-h-full w-auto max-w-full object-contain select-none"
         : "block h-auto w-full select-none"}
       class:hidden={!loaded}
+      class:img-reveal={loaded}
     />
   {:else}
     <div

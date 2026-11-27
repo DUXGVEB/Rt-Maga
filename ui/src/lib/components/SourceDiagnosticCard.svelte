@@ -3,7 +3,6 @@
     AlertCircle,
     Bug,
     Check,
-    ChevronDown,
     ChevronRight,
     Copy,
     ExternalLink,
@@ -13,6 +12,7 @@
     Settings,
     ShieldCheck,
   } from "lucide-svelte";
+  import { badgePop, collapseReveal, viewReveal } from "../motion";
   import { feedbackDraft } from "../stores/feedbackDraft.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
@@ -143,6 +143,7 @@
 </script>
 
 <div
+  in:viewReveal|local={{ duration: 170, y: 6 }}
   class="flex flex-col gap-3 rounded-2xl border text-left {compact ? 'p-3.5 text-xs' : 'p-5 text-sm'}"
   style="background-color: var(--surface); border-color: var(--danger);"
 >
@@ -187,7 +188,7 @@
         type="button"
         disabled={verifying}
         onclick={() => onVerify?.(error.blockedUrl || targetUrl)}
-        class="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+        class="gpu-press inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         {#if verifying}
@@ -205,7 +206,7 @@
         type="button"
         disabled={loggingIn}
         onclick={() => onLogin?.(error.loginUrl || targetUrl)}
-        class="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+        class="gpu-press inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold disabled:opacity-50"
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         {#if loggingIn}
@@ -222,7 +223,7 @@
       <button
         type="button"
         onclick={() => onOpenExternal?.(error.externalUrl || targetUrl)}
-        class="inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-1.5 text-xs font-semibold"
+        class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-1.5 text-xs font-semibold"
         style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
       >
         <ExternalLink size={13} />
@@ -234,7 +235,7 @@
       <button
         type="button"
         onclick={onRetry}
-        class="inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-1.5 text-xs font-medium"
+        class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-1.5 text-xs font-medium"
         style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text);"
       >
         <RefreshCw size={13} />
@@ -246,7 +247,7 @@
       <button
         type="button"
         onclick={() => onOpenNetworkSettings?.()}
-        class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
+        class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
         style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text);"
       >
         <Settings size={13} />
@@ -258,14 +259,18 @@
       <button
         type="button"
         onclick={copyReportJson}
-        class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
+        class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
         style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text-muted);"
       >
-        {#if copied}
-          <Check size={13} style="color: #10b981;" />
-        {:else}
-          <Copy size={13} />
-        {/if}
+        {#key copied}
+          <span in:badgePop|local={{ duration: 140, start: 0.65 }} class="inline-flex">
+            {#if copied}
+              <Check size={13} style="color: #10b981;" />
+            {:else}
+              <Copy size={13} />
+            {/if}
+          </span>
+        {/key}
         <span>{t.errActionCopyDiagnostics}</span>
       </button>
     {/if}
@@ -281,7 +286,7 @@
         });
         router.goSettings("sources", "feedback");
       }}
-      class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
+      class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
       style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text);"
     >
       <Bug size={13} />
@@ -297,19 +302,17 @@
         onclick={() => {
           detailsOpen = !detailsOpen;
         }}
-        class="inline-flex items-center gap-1.5 text-[11px] font-medium hover:opacity-80"
+        aria-expanded={detailsOpen}
+        class="gpu-press inline-flex items-center gap-1.5 text-[11px] font-medium hover:opacity-80"
         style="color: var(--text-muted);"
       >
-        {#if detailsOpen}
-          <ChevronDown size={13} />
-        {:else}
-          <ChevronRight size={13} />
-        {/if}
+        <ChevronRight size={13} class="chevron-rot-90" data-open={detailsOpen ? "true" : "false"} />
         <span>{t.errTechDetailsToggle}</span>
       </button>
 
       {#if detailsOpen}
         <div
+          transition:collapseReveal|local
           class="mt-2 flex flex-col gap-1.5 rounded-xl border p-3 font-mono text-[11px]"
           style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text-muted);"
         >

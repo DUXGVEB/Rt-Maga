@@ -4,7 +4,6 @@
     AlertTriangle,
     CheckCircle2,
     ChevronDown,
-    ChevronUp,
     Loader2,
     RotateCcw,
     Shield,
@@ -13,6 +12,7 @@
   } from "lucide-svelte";
   import { onMount } from "svelte";
   import { api } from "../api";
+  import { collapseReveal, popoverPop } from "../motion";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
   import type { DohTestResult, NetworkProviderInfo, NetworkServiceType } from "../types";
@@ -137,7 +137,7 @@
           testResult = null;
           settingsStore.update((d) => (d.doh.enabled = false));
         }}
-        class="net-pill"
+        class="net-pill gpu-press"
         class:net-pill-active={!doh.enabled}
       >
         {t.netSystemDns}
@@ -148,7 +148,7 @@
           testResult = null;
           settingsStore.update((d) => (d.doh.enabled = true));
         }}
-        class="net-pill"
+        class="net-pill gpu-press"
         class:net-pill-active={doh.enabled}
       >
         {t.netEncryptedDnsOn}
@@ -157,7 +157,7 @@
         type="button"
         onclick={resetNetworkSection}
         disabled={resetting}
-        class="net-reset-btn"
+        class="net-reset-btn gpu-press"
         title={t.resetSectionBtn}
         aria-label={t.resetSectionBtn}
       >
@@ -167,139 +167,143 @@
   </div>
 
   {#if doh.enabled}
-    <!-- Zero-Config Provider Catalog -->
-    <div class="flex flex-col gap-2">
-      <div class="text-xs font-medium">{t.netSelectProvider}</div>
-      <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {#each providers as provider (provider.id)}
-          {@const active = doh.providerId === provider.id}
-          <button
-            type="button"
-            onclick={() => selectProvider(provider)}
-            class="flex flex-col gap-1 rounded-xl border p-3 text-left transition-all"
-            style="border-color: {active
-              ? 'var(--accent)'
-              : 'var(--border)'}; background-color: {active
-              ? 'color-mix(in srgb, var(--surface) 88%, var(--accent-soft))'
-              : 'var(--surface-subtle)'};"
-          >
-            <div class="flex items-center justify-between gap-2">
-              <span class="text-xs font-semibold">{provider.name}</span>
-              <span
-                class="rounded-full px-2 py-0.5 text-[10px] font-medium"
-                style="background-color: {active
-                  ? 'var(--accent-soft)'
-                  : 'var(--surface-hover)'}; color: {active ? 'var(--accent)' : 'var(--text-muted)'};"
-              >
-                {serviceTypeLabel(provider.serviceType)}
-              </span>
-            </div>
-          </button>
-        {/each}
-      </div>
-    </div>
-
-    <!-- Active Provider Profile & Account ID -->
-    {#if selectedProvider}
-      <div
-        class="flex flex-col gap-3 rounded-xl border p-3.5"
-        style="background-color: var(--surface-subtle); border-color: var(--border);"
-      >
-        <div class="flex flex-col gap-1.5">
-          <div class="text-xs font-medium">{t.netProfileLabel}</div>
-          <div class="flex flex-wrap gap-1.5">
-            {#each selectedProvider.profiles as profile (profile.id)}
-              <button
-                type="button"
-                onclick={() => selectProfile(profile.id)}
-                class="net-pill"
-                class:net-pill-active={doh.profileId === profile.id}
-                title={profile.description}
-              >
-                {profile.label}
-              </button>
-            {/each}
-          </div>
-        </div>
-
-        {#if selectedProvider.requiresAccountId}
-          <div class="flex flex-col gap-1">
-            <label class="text-xs font-medium" for="doh-account-id">
-              {selectedProvider.accountIdLabel ?? t.netAccountIdLabel}
-            </label>
-            <input
-              id="doh-account-id"
-              type="text"
-              value={doh.customProfileId ?? ""}
-              oninput={(e) => {
-                const val = e.currentTarget.value.trim();
-                settingsStore.update((d) => {
-                  d.doh.customProfileId = val || null;
-                }, 250);
-              }}
-              placeholder="e.g. a1b2c3"
-              class="rounded-lg border px-3 py-1.5 text-xs outline-none"
-              style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
-            />
-            {#if missingRequiredAccountId}
-              <div
-                class="mt-1 flex items-center gap-1.5 text-[11px] font-medium"
-                style="color: var(--danger);"
-              >
-                <AlertTriangle size={12} class="shrink-0" />
-                <span>{t.netMissingAccountIdWarn}</span>
-              </div>
-            {/if}
-          </div>
-        {/if}
-
-        <div class="flex items-center justify-between gap-2 text-xs">
-          <div class="font-medium">{t.netSystemFallbackLabel}</div>
-          <ToggleSwitch
-            size="sm"
-            checked={doh.allowSystemFallback}
-            ariaLabel={t.netSystemFallbackLabel}
-            onchange={(checked) => {
-              settingsStore.update((d) => (d.doh.allowSystemFallback = checked));
-            }}
-          />
-        </div>
-
-        <!-- Live Connectivity & Latency Test -->
-        <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
-          <button
-            type="button"
-            onclick={runDohTest}
-            disabled={testing || missingRequiredAccountId}
-            class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-            style="background-color: var(--surface); border-color: var(--border);"
-          >
-            {#if testing}
-              <Loader2 size={13} class="animate-spin" />
-              <span>{t.proxyTesting}</span>
-            {:else}
-              <Activity size={13} />
-              <span>{t.netTestDnsBtn}</span>
-            {/if}
-          </button>
-
-          {#if testResult}
-            <div
-              class="inline-flex items-center gap-1.5 text-xs font-medium"
-              style="color: {testResult.ok ? 'var(--success, #16a34a)' : 'var(--danger)'};"
+    <div transition:collapseReveal|local class="flex flex-col gap-3">
+      <!-- Zero-Config Provider Catalog -->
+      <div class="flex flex-col gap-2">
+        <div class="text-xs font-medium">{t.netSelectProvider}</div>
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {#each providers as provider (provider.id)}
+            {@const active = doh.providerId === provider.id}
+            <button
+              type="button"
+              onclick={() => selectProvider(provider)}
+              class="gpu-press flex flex-col gap-1 rounded-xl border p-3 text-left"
+              style="border-color: {active
+                ? 'var(--accent)'
+                : 'var(--border)'}; background-color: {active
+                ? 'color-mix(in srgb, var(--surface) 88%, var(--accent-soft))'
+                : 'var(--surface-subtle)'};"
             >
-              {#if testResult.ok}
-                <CheckCircle2 size={14} />
-                <span>{t.netTestDnsOk(testResult.latencyMs, testResult.resolvedIps)}</span>
-              {:else}
-                <XCircle size={14} />
-                <span>{testResult.error ?? t.netTestDnsFailed}</span>
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-xs font-semibold">{provider.name}</span>
+                <span
+                  class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                  style="background-color: {active
+                    ? 'var(--accent-soft)'
+                    : 'var(--surface-hover)'}; color: {active ? 'var(--accent)' : 'var(--text-muted)'};"
+                >
+                  {serviceTypeLabel(provider.serviceType)}
+                </span>
+              </div>
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      <!-- Active Provider Profile & Account ID -->
+      {#if selectedProvider}
+        <div
+          class="flex flex-col gap-3 rounded-xl border p-3.5"
+          style="background-color: var(--surface-subtle); border-color: var(--border);"
+        >
+          <div class="flex flex-col gap-1.5">
+            <div class="text-xs font-medium">{t.netProfileLabel}</div>
+            <div class="flex flex-wrap gap-1.5">
+              {#each selectedProvider.profiles as profile (profile.id)}
+                <button
+                  type="button"
+                  onclick={() => selectProfile(profile.id)}
+                  class="net-pill gpu-press"
+                  class:net-pill-active={doh.profileId === profile.id}
+                  title={profile.description}
+                >
+                  {profile.label}
+                </button>
+              {/each}
+            </div>
+          </div>
+
+          {#if selectedProvider.requiresAccountId}
+            <div transition:collapseReveal|local class="flex flex-col gap-1">
+              <label class="text-xs font-medium" for="doh-account-id">
+                {selectedProvider.accountIdLabel ?? t.netAccountIdLabel}
+              </label>
+              <input
+                id="doh-account-id"
+                type="text"
+                value={doh.customProfileId ?? ""}
+                oninput={(e) => {
+                  const val = e.currentTarget.value.trim();
+                  settingsStore.update((d) => {
+                    d.doh.customProfileId = val || null;
+                  }, 250);
+                }}
+                placeholder="e.g. a1b2c3"
+                class="rounded-lg border px-3 py-1.5 text-xs outline-none"
+                style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+              />
+              {#if missingRequiredAccountId}
+                <div
+                  transition:collapseReveal|local
+                  class="mt-1 flex items-center gap-1.5 text-[11px] font-medium"
+                  style="color: var(--danger);"
+                >
+                  <AlertTriangle size={12} class="shrink-0" />
+                  <span>{t.netMissingAccountIdWarn}</span>
+                </div>
               {/if}
             </div>
           {/if}
+
+          <div class="flex items-center justify-between gap-2 text-xs">
+            <div class="font-medium">{t.netSystemFallbackLabel}</div>
+            <ToggleSwitch
+              size="sm"
+              checked={doh.allowSystemFallback}
+              ariaLabel={t.netSystemFallbackLabel}
+              onchange={(checked) => {
+                settingsStore.update((d) => (d.doh.allowSystemFallback = checked));
+              }}
+            />
+          </div>
+
+          <!-- Live Connectivity & Latency Test -->
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <button
+              type="button"
+              onclick={runDohTest}
+              disabled={testing || missingRequiredAccountId}
+              class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+              style="background-color: var(--surface); border-color: var(--border);"
+            >
+              {#if testing}
+                <Loader2 size={13} class="animate-spin" />
+                <span>{t.proxyTesting}</span>
+              {:else}
+                <Activity size={13} />
+                <span>{t.netTestDnsBtn}</span>
+              {/if}
+            </button>
+
+            {#if testResult}
+              <div
+                transition:popoverPop|local={{ duration: 150, y: 4 }}
+                class="inline-flex items-center gap-1.5 text-xs font-medium"
+                style="color: {testResult.ok ? 'var(--success, #16a34a)' : 'var(--danger)'};"
+              >
+                {#if testResult.ok}
+                  <CheckCircle2 size={14} />
+                  <span>{t.netTestDnsOk(testResult.latencyMs, testResult.resolvedIps)}</span>
+                {:else}
+                  <XCircle size={14} />
+                  <span>{testResult.error ?? t.netTestDnsFailed}</span>
+                {/if}
+              </div>
+            {/if}
+          </div>
         </div>
-      </div>
-    {/if}
+      {/if}
+    </div>
   {/if}
 
   <!-- Local Tunnel Quick Preset + Collapsible Advanced Proxy -->
@@ -310,7 +314,7 @@
     <button
       type="button"
       onclick={applyLocalWarpSocksPreset}
-      class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium"
+      class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium"
       style="background-color: var(--surface-subtle); border-color: var(--border);"
       title={t.netLocalTunnelPresetDesc}
     >
@@ -323,21 +327,20 @@
       onclick={() => {
         showAdvancedProxy = !showAdvancedProxy;
       }}
-      class="inline-flex items-center gap-1 text-xs font-medium"
+      aria-expanded={showAdvancedProxy}
+      class="gpu-press inline-flex items-center gap-1 text-xs font-medium"
       style="color: var(--text-muted);"
     >
       <span>{t.netAdvancedProxyToggle}</span>
-      {#if showAdvancedProxy}
-        <ChevronUp size={14} />
-      {:else}
-        <ChevronDown size={14} />
-      {/if}
+      <ChevronDown size={14} class="chevron-rot" data-open={showAdvancedProxy ? "true" : "false"} />
     </button>
   </div>
 </section>
 
 {#if showAdvancedProxy}
-  <ProxySettingsPanel />
+  <div transition:collapseReveal|local>
+    <ProxySettingsPanel />
+  </div>
 {/if}
 
 <style>
@@ -360,7 +363,11 @@
     font-size: 0.75rem;
     font-weight: 500;
     cursor: pointer;
-    transition: all 140ms ease;
+    transition:
+      transform var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      background-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .net-pill-active {

@@ -1,12 +1,20 @@
 <script lang="ts">
-  import { ArrowDown, ArrowUp, BookOpen, CheckCircle2, Dices, Play, RotateCcw, Sparkles, X } from "lucide-svelte";
+  import { ArrowDown, BookOpen, CheckCircle2, Dices, Play, RotateCcw, Sparkles, X } from "lucide-svelte";
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { api } from "../lib/api";
   import CbzDropZone from "../lib/components/CbzDropZone.svelte";
   import LinkInput from "../lib/components/LinkInput.svelte";
   import MangaCard from "../lib/components/MangaCard.svelte";
-  import { flipDuration, popoverPop, pressable, shouldStaggerItem, staggerDelay } from "../lib/motion";
+  import {
+    flipDuration,
+    itemExit,
+    popoverPop,
+    pressable,
+    shouldStaggerItem,
+    staggerDelay,
+    viewReveal,
+  } from "../lib/motion";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { randomMangaStore } from "../lib/stores/randomManga.svelte";
   import { router } from "../lib/stores/router.svelte";
@@ -155,7 +163,7 @@
 
   <!-- Unified Sort Bar + Random Manga 3D Carousel Launcher -->
   {#if !loading && history.length > 0}
-    <div class="flex flex-wrap items-center justify-between gap-2.5">
+    <div in:viewReveal|local={{ duration: 150, y: 4 }} class="flex flex-wrap items-center justify-between gap-2.5">
       <button
         type="button"
         use:pressable
@@ -186,11 +194,7 @@
           style="color: var(--text);"
           title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
         >
-          {#if sortDir === "desc"}
-            <ArrowDown size={13} />
-          {:else}
-            <ArrowUp size={13} />
-          {/if}
+          <ArrowDown size={13} class="chevron-rot" data-open={sortDir === "asc" ? "true" : "false"} />
           <span>{sortDir === "desc" ? t.sortDesc : t.sortAsc}</span>
         </button>
       </div>
@@ -199,7 +203,7 @@
 
   <!-- New chapters section -->
   {#if updatedItems.length > 0}
-    <section class="flex flex-col gap-4">
+    <section in:viewReveal|local={{ duration: 160, y: 6 }} class="flex flex-col gap-4">
       <div class="flex items-center gap-2">
         <Sparkles size={17} style="color: var(--accent);" />
         <h2 class="text-base font-bold tracking-tight">{t.newChapters}</h2>
@@ -215,6 +219,7 @@
           {@const animateStagger = shouldStaggerItem(idx, updatedItems.length)}
           <div
             animate:flip={{ duration: flipDuration(180, updatedItems.length) }}
+            out:itemExit|local
             class:stagger-item={animateStagger}
             style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 18, 180, updatedItems.length)}ms;` : undefined}
           >
@@ -263,6 +268,7 @@
         </div>
       {:else if history.length === 0}
         <div
+          in:viewReveal|local={{ duration: 165, y: 6 }}
           class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-14 text-center"
           style="border-color: var(--border-strong); color: var(--text-muted);"
         >
@@ -275,6 +281,7 @@
             {@const animateStagger = shouldStaggerItem(idx, activeItems.length)}
             <div
               animate:flip={{ duration: flipDuration(180, activeItems.length) }}
+              out:itemExit|local
               class:stagger-item={animateStagger}
               style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, activeItems.length)}ms;` : undefined}
             >
@@ -288,7 +295,7 @@
 
   <!-- Completed Section at the bottom with editorial dashed divider -->
   {#if !loading && completedItems.length > 0}
-    <section class="flex flex-col gap-4 pt-2">
+    <section in:viewReveal|local={{ duration: 165, y: 6 }} class="flex flex-col gap-4 pt-2">
       <div class="flex items-center gap-3">
         <div
           class="h-px flex-1 border-b-2 border-dashed opacity-70"
@@ -316,8 +323,14 @@
       </div>
 
       <div class="fluid-manga-grid opacity-90">
-        {#each completedItems as item (item.mangaId)}
-          <div animate:flip={{ duration: flipDuration(180, completedItems.length) }}>
+        {#each completedItems as item, idx (item.mangaId)}
+          {@const animateStagger = shouldStaggerItem(idx, completedItems.length)}
+          <div
+            animate:flip={{ duration: flipDuration(180, completedItems.length) }}
+            out:itemExit|local
+            class:stagger-item={animateStagger}
+            style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, completedItems.length)}ms;` : undefined}
+          >
             <MangaCard {item} />
           </div>
         {/each}

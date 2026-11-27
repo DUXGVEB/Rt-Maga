@@ -25,6 +25,8 @@
   import {
     adaptiveOverlay,
     backdropFade,
+    badgePop,
+    collapseReveal,
     createOverlayGuard,
     pressable,
     viewReveal,
@@ -335,7 +337,7 @@
                 type="button"
                 disabled={isSpinning}
                 onclick={() => handleScopeChange("all")}
-                class="rounded-lg px-2.5 py-1 transition-opacity disabled:opacity-50"
+                class="gpu-press rounded-lg px-2.5 py-1 disabled:opacity-50"
                 style="background-color: {scope === 'all'
                   ? 'var(--accent)'
                   : 'transparent'}; color: {scope === 'all'
@@ -348,7 +350,7 @@
                 type="button"
                 disabled={isSpinning}
                 onclick={() => handleScopeChange("bookmarks")}
-                class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 transition-opacity disabled:opacity-50"
+                class="gpu-press inline-flex items-center gap-1 rounded-lg px-2.5 py-1 disabled:opacity-50"
                 style="background-color: {scope === 'bookmarks'
                   ? 'var(--accent)'
                   : 'transparent'}; color: {scope === 'bookmarks'
@@ -362,18 +364,20 @@
           {/if}
 
           {#if filteredItems.length > poolItems.length}
-            <button
-              type="button"
-              use:pressable
-              disabled={isSpinning}
-              onclick={handleReshuffleDeck}
-              class="gpu-press inline-flex min-h-[34px] items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-medium disabled:opacity-45"
-              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
-              title={t.randomMangaReshufflePool}
-            >
-              <Shuffle size={13} />
-              <span class="hidden sm:inline">{t.randomMangaReshufflePool}</span>
-            </button>
+            <span transition:badgePop|local class="inline-flex">
+              <button
+                type="button"
+                use:pressable
+                disabled={isSpinning}
+                onclick={handleReshuffleDeck}
+                class="gpu-press inline-flex min-h-[34px] items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-medium disabled:opacity-45"
+                style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+                title={t.randomMangaReshufflePool}
+              >
+                <Shuffle size={13} />
+                <span class="hidden sm:inline">{t.randomMangaReshufflePool}</span>
+              </button>
+            </span>
           {/if}
 
           <button
@@ -392,6 +396,7 @@
       <!-- Quick Genre Filter Bar (rendered whenever local genre metadata exists) -->
       {#if genreStats.length > 0}
         <div
+          transition:collapseReveal|local
           class="flex shrink-0 items-center gap-2 border-b px-4 py-2.5 sm:px-5"
           style="background-color: var(--surface-subtle); border-color: var(--border);"
         >
@@ -469,6 +474,7 @@
           </div>
         {:else if poolItems.length === 0}
           <div
+            in:viewReveal|local={{ duration: 160, y: 6 }}
             class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-16 text-center"
             style="border-color: var(--border-strong); color: var(--text-muted);"
           >

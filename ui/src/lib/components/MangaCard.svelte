@@ -2,7 +2,7 @@
   import { Bookmark, BookOpen, CheckCircle2, Sparkles } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
   import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../comicFormats";
-  import { pressable } from "../motion";
+  import { badgePop, pressable } from "../motion";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -10,11 +10,13 @@
 
   let { item }: { item: HistoryItemView } = $props();
   let coverError = $state(false);
+  let coverLoaded = $state(false);
   const t = $derived(settingsStore.t);
 
   $effect(() => {
     void item.coverToken;
     coverError = false;
+    coverLoaded = false;
   });
 
   const progressPct = $derived(() => {
@@ -62,10 +64,15 @@
           alt={item.title}
           loading="lazy"
           decoding="async"
+          onload={() => {
+            coverLoaded = true;
+          }}
           onerror={() => {
             coverError = true;
           }}
-          class="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03]"
+          class="h-full w-full object-cover transition-[transform,opacity] duration-200 ease-out group-hover:scale-[1.03] {coverLoaded
+            ? 'opacity-100'
+            : 'opacity-0'}"
         />
       {:else}
         <div class="flex h-full w-full items-center justify-center" style="color: var(--text-muted);">
@@ -118,6 +125,7 @@
 
     {#if item.bookmarked}
       <span
+        transition:badgePop|local
         class="pointer-events-none absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full text-white shadow-sm backdrop-blur-md"
         style="background-color: rgba(11, 11, 15, 0.65);"
         title={t.navBookmarks}

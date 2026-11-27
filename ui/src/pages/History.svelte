@@ -1,8 +1,17 @@
 <script lang="ts">
   import { BookOpen, CheckCircle2, Clock, Sparkles, Trash2 } from "lucide-svelte";
+  import { flip } from "svelte/animate";
   import { api, imgProxyUrl } from "../lib/api";
   import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../lib/comicFormats";
-  import { popoverPop, pressable, shouldStaggerItem, staggerDelay } from "../lib/motion";
+  import {
+    flipDuration,
+    itemExit,
+    popoverPop,
+    pressable,
+    shouldStaggerItem,
+    staggerDelay,
+    viewReveal,
+  } from "../lib/motion";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -157,17 +166,19 @@
           </button>
         </div>
       {:else}
-        <button
-          type="button"
-          onclick={() => {
-            confirmingClear = true;
-          }}
-          class="surface-card gpu-press inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium"
-          style="color: var(--danger);"
-        >
-          <Trash2 size={14} />
-          <span>{t.clearAll}</span>
-        </button>
+        <span in:popoverPop|local={{ duration: 140, y: 0 }} class="inline-flex">
+          <button
+            type="button"
+            onclick={() => {
+              confirmingClear = true;
+            }}
+            class="surface-card gpu-press inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium"
+            style="color: var(--danger);"
+          >
+            <Trash2 size={14} />
+            <span>{t.clearAll}</span>
+          </button>
+        </span>
       {/if}
     {/if}
   </div>
@@ -183,6 +194,7 @@
     </div>
   {:else if items.length === 0}
     <div
+      in:viewReveal|local={{ duration: 165, y: 6 }}
       class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-16 text-center"
       style="border-color: var(--border-strong); color: var(--text-muted);"
     >
@@ -191,7 +203,7 @@
     </div>
   {:else}
     {#each grouped() as group (group.key)}
-      <section class="flex flex-col gap-2.5">
+      <section out:itemExit|local class="flex flex-col gap-2.5">
         <h2 class="text-xs font-semibold tracking-wider uppercase" style="color: var(--text-muted);">
           {group.label}
         </h2>
@@ -200,6 +212,8 @@
             {@const completedOnly = item.isCompleted && !item.hasNew}
             {@const animateStagger = shouldStaggerItem(idx, group.list.length)}
             <div
+              animate:flip={{ duration: flipDuration(175, group.list.length) }}
+              out:itemExit|local
               class="card-contain surface-card flex items-center gap-3.5 rounded-2xl p-3 sm:gap-4"
               class:stagger-item={animateStagger}
               style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 18, 180, group.list.length)}ms;` : undefined}

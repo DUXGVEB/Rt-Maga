@@ -24,7 +24,7 @@
   import Sidebar from "./lib/components/Sidebar.svelte";
   import ToastContainer from "./lib/components/ToastContainer.svelte";
   import UpdatePromptModal from "./lib/components/UpdatePromptModal.svelte";
-  import { popoverPop, viewReveal } from "./lib/motion";
+  import { backdropFade, badgePop, popoverPop, viewReveal } from "./lib/motion";
   import { appReleaseStore } from "./lib/stores/appRelease.svelte";
   import { deviceEnv } from "./lib/stores/deviceEnv.svelte";
   import { notificationsStore } from "./lib/stores/notifications.svelte";
@@ -211,11 +211,15 @@
             title={isDark ? t.lightMode : t.darkMode}
             aria-label={isDark ? t.lightMode : t.darkMode}
           >
-            {#if isDark}
-              <Sun size={18} />
-            {:else}
-              <Moon size={18} />
-            {/if}
+            {#key isDark}
+              <span in:badgePop|local={{ duration: 140, start: 0.72 }} class="inline-flex">
+                {#if isDark}
+                  <Sun size={18} />
+                {:else}
+                  <Moon size={18} />
+                {/if}
+              </span>
+            {/key}
           </button>
 
           <button
@@ -231,6 +235,7 @@
             <Bell size={19} />
             {#if notificationsStore.unreadCount > 0}
               <span
+                transition:badgePop|local
                 class="absolute top-1.5 right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold"
                 style="background-color: var(--accent); color: var(--accent-fg);"
               >
@@ -251,7 +256,7 @@
     >
       {#if !isReader && !appReleaseStore.promptOpen && appReleaseStore.shouldShowBanner && appReleaseStore.release}
         <div
-          in:popoverPop|local={{ duration: 180, y: -6 }}
+          transition:popoverPop|local={{ duration: 170, y: -6 }}
           class="glass-chrome sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2.5 text-xs"
           style="border-color: var(--border);"
         >
@@ -295,12 +300,14 @@
       {/if}
 
       {#if router.current.name === "reader"}
-        <Reader
-          mangaId={router.current.mangaId}
-          chapterUrl={router.current.chapterUrl}
-          initialScrollRatio={router.current.scrollRatio ?? 0}
-          initialPageIndex={router.current.pageIndex ?? 0}
-        />
+        <div in:backdropFade|local={{ duration: 150 }} class="h-full w-full">
+          <Reader
+            mangaId={router.current.mangaId}
+            chapterUrl={router.current.chapterUrl}
+            initialScrollRatio={router.current.scrollRatio ?? 0}
+            initialPageIndex={router.current.pageIndex ?? 0}
+          />
+        </div>
       {:else}
         {#key routeViewKey()}
           <div in:viewReveal|local={{ duration: 160, y: 6 }} class="min-h-full w-full">
@@ -356,12 +363,13 @@
             aria-current={active ? "page" : undefined}
           >
             <span
-              class="relative flex h-7 w-12 items-center justify-center rounded-full"
-              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+              class="nav-pill-bg relative flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'}; transform: scale({active ? 1 : 0.94});"
             >
               <HomeIcon size={19} strokeWidth={active ? 2.25 : 1.85} />
               {#if updatesStore.newCount > 0}
                 <span
+                  transition:badgePop|local
                   class="absolute -top-0.5 right-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[9px] font-bold"
                   style="background-color: var(--accent); color: var(--accent-fg);"
                 >
@@ -381,8 +389,8 @@
             aria-current={active ? "page" : undefined}
           >
             <span
-              class="flex h-7 w-12 items-center justify-center rounded-full"
-              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+              class="nav-pill-bg flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'}; transform: scale({active ? 1 : 0.94});"
             >
               <Compass size={19} strokeWidth={active ? 2.25 : 1.85} />
             </span>
@@ -398,8 +406,8 @@
             aria-current={active ? "page" : undefined}
           >
             <span
-              class="flex h-7 w-12 items-center justify-center rounded-full"
-              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+              class="nav-pill-bg flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'}; transform: scale({active ? 1 : 0.94});"
             >
               <Bookmark size={19} strokeWidth={active ? 2.25 : 1.85} />
             </span>
@@ -416,8 +424,8 @@
             title={t.historyResumeHint}
           >
             <span
-              class="flex h-7 w-12 items-center justify-center rounded-full"
-              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+              class="nav-pill-bg flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'}; transform: scale({active ? 1 : 0.94});"
             >
               <Clock size={19} strokeWidth={active ? 2.25 : 1.85} />
             </span>
@@ -433,8 +441,8 @@
             aria-current={active ? "page" : undefined}
           >
             <span
-              class="flex h-7 w-12 items-center justify-center rounded-full"
-              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+              class="nav-pill-bg flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'}; transform: scale({active ? 1 : 0.94});"
             >
               <SettingsIcon size={19} strokeWidth={active ? 2.25 : 1.85} />
             </span>
@@ -449,9 +457,6 @@
 
   {#if !isReader}
     <RandomMangaModal />
-  {/if}
-
-  {#if !isReader && appReleaseStore.promptOpen && appReleaseStore.release}
     <UpdatePromptModal />
   {/if}
 

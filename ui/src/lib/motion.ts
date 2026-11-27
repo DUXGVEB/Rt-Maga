@@ -238,6 +238,72 @@ export function toastSlide(
   };
 }
 
+/** GPU-only crisp scale + opacity pop for badges, chips, icon swaps, and floating action controls. */
+export function badgePop(
+  _node: Element,
+  params: { duration?: number; start?: number } = {}
+): TransitionConfig {
+  if (prefersReducedMotion()) {
+    return { duration: 0 };
+  }
+  const duration = Math.min(200, Math.max(100, params.duration ?? 150));
+  const start = Math.min(0.98, Math.max(0.5, params.start ?? 0.76));
+  return {
+    duration,
+    easing: easeSnappy,
+    css: (t) => {
+      const scale = start + (1 - start) * t;
+      return `opacity: ${t}; transform: scale(${scale.toFixed(4)});`;
+    },
+  };
+}
+
+/**
+ * GPU-only reveal for accordions, inline filter drawers, diagnostics, and conditional form panels.
+ * Uses pure transform + opacity (zero height layout thrashing) to keep Android WebView locked at 60/120fps.
+ */
+export function collapseReveal(
+  _node: Element,
+  params: { duration?: number; y?: number; startScale?: number } = {}
+): TransitionConfig {
+  if (prefersReducedMotion()) {
+    return { duration: 0 };
+  }
+  const duration = Math.min(200, Math.max(120, params.duration ?? 165));
+  const y = params.y ?? 6;
+  const startScale = Math.min(1, Math.max(0.92, params.startScale ?? 0.985));
+  return {
+    duration,
+    easing: easeSnappy,
+    css: (t, u) => {
+      const scale = startScale + (1 - startScale) * t;
+      const ty = -u * y;
+      return `opacity: ${t}; transform-origin: top center; transform: translate3d(0, ${ty.toFixed(2)}px, 0) scale(${scale.toFixed(4)});`;
+    },
+  };
+}
+
+/** GPU-only fade + slight scale-down for list/grid item removals paired with `animate:flip`. */
+export function itemExit(
+  _node: Element,
+  params: { duration?: number; scale?: number; y?: number } = {}
+): TransitionConfig {
+  if (prefersReducedMotion()) {
+    return { duration: 0 };
+  }
+  const duration = Math.min(180, Math.max(100, params.duration ?? 140));
+  const scaleStart = Math.min(1, Math.max(0.88, params.scale ?? 0.95));
+  const y = params.y ?? 4;
+  return {
+    duration,
+    easing: easeSnappy,
+    css: (t, u) => {
+      const scale = scaleStart + (1 - scaleStart) * t;
+      return `opacity: ${t}; transform: translate3d(0, ${(u * y).toFixed(2)}px, 0) scale(${scale.toFixed(4)});`;
+    },
+  };
+}
+
 /**
  * Svelte action for tactile pointerdown press feedback (`scale(0.97)`) with strict VRAM hygiene:
  * promotes `will-change: transform` ONLY during the active press/release and clears it immediately after.

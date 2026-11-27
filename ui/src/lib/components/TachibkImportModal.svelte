@@ -13,7 +13,13 @@
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../api";
   import { getLocale } from "../i18n";
-  import { adaptiveOverlay, backdropFade, createOverlayGuard } from "../motion";
+  import {
+    adaptiveOverlay,
+    backdropFade,
+    badgePop,
+    createOverlayGuard,
+    viewReveal,
+  } from "../motion";
   import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -259,7 +265,7 @@
           <button
             type="button"
             onclick={handleCancel}
-            class="rounded-lg p-1.5 opacity-70 transition-opacity hover:opacity-100"
+            class="gpu-press rounded-lg p-1.5 opacity-70 hover:opacity-100"
             aria-label={t.cancel}
           >
             <X size={17} />
@@ -431,7 +437,7 @@
                   onclick={() => {
                     matchFilter = tab.key as "all" | "matched" | "unmatched";
                   }}
-                  class="rounded-lg px-2.5 py-1 transition-colors"
+                  class="gpu-press rounded-lg px-2.5 py-1 transition-colors"
                   style="background-color: {matchFilter === tab.key
                     ? 'var(--accent)'
                     : 'transparent'}; color: {matchFilter === tab.key
@@ -448,7 +454,7 @@
                 type="button"
                 onclick={selectAllVisible}
                 disabled={importing}
-                class="rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-opacity hover:opacity-85"
+                class="gpu-press rounded-lg border px-2.5 py-1 text-[11px] font-medium hover:opacity-85"
                 style="border-color: var(--border); background-color: var(--surface-subtle);"
               >
                 {t.tachibkSelectVisible}
@@ -457,7 +463,7 @@
                 type="button"
                 onclick={clearAllVisible}
                 disabled={importing}
-                class="rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-opacity hover:opacity-85"
+                class="gpu-press rounded-lg border px-2.5 py-1 text-[11px] font-medium hover:opacity-85"
                 style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text-muted);"
               >
                 {t.tachibkClearVisible}
@@ -473,7 +479,7 @@
                 onclick={() => {
                   activeCategory = "__all__";
                 }}
-                class="rounded-lg border px-2 py-0.5 text-[11px] font-medium transition-colors"
+                class="gpu-press rounded-lg border px-2 py-0.5 text-[11px] font-medium transition-colors"
                 style="border-color: {activeCategory === '__all__'
                   ? 'var(--accent)'
                   : 'var(--border)'}; background-color: {activeCategory === '__all__'
@@ -490,7 +496,7 @@
                   onclick={() => {
                     activeCategory = cat.name;
                   }}
-                  class="rounded-lg border px-2 py-0.5 text-[11px] font-medium transition-colors"
+                  class="gpu-press rounded-lg border px-2 py-0.5 text-[11px] font-medium transition-colors"
                   style="border-color: {activeCategory === cat.name
                     ? 'var(--accent)'
                     : 'var(--border)'}; background-color: {activeCategory === cat.name
@@ -513,6 +519,7 @@
         >
           {#if filteredEntries().length === 0}
             <div
+              in:viewReveal|local={{ duration: 150, y: 4 }}
               class="flex flex-1 flex-col items-center justify-center gap-2 py-10 text-xs"
               style="color: var(--text-muted);"
             >
@@ -545,7 +552,9 @@
                     : 'var(--surface)'}; color: var(--accent-fg);"
                 >
                   {#if checked}
-                    <Check size={12} strokeWidth={3} />
+                    <span in:badgePop|local={{ duration: 120, start: 0.55 }} class="inline-flex">
+                      <Check size={12} strokeWidth={3} />
+                    </span>
                   {/if}
                 </span>
 
@@ -678,7 +687,7 @@
             type="button"
             disabled={importing}
             onclick={handleCancel}
-            class="rounded-xl border px-4 py-2 text-xs font-medium transition-opacity hover:opacity-85 disabled:opacity-50"
+            class="gpu-press rounded-xl border px-4 py-2 text-xs font-medium hover:opacity-85 disabled:opacity-50"
             style="border-color: var(--border); background-color: var(--surface-subtle);"
           >
             {t.cancel}
@@ -688,7 +697,7 @@
             type="button"
             disabled={importing || effectiveSelection().indices.length === 0}
             onclick={() => void handleConfirmImport()}
-            class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition-opacity hover:opacity-90 disabled:opacity-45"
+            class="gpu-press inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold hover:opacity-90 disabled:opacity-45"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
             {#if importing}

@@ -5,6 +5,7 @@
     resolveFloatingPositions,
     type FloatingControlRequest,
   } from "../floatingLayout";
+  import { badgePop } from "../motion";
   import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import type { FloatingScreenKey, OrientationLockMode } from "../types";
@@ -225,38 +226,45 @@
     class="floating-slot fixed top-0 left-0 z-30"
     style={wrapperStyleFor("orientationLock")}
   >
-    <button
-      type="button"
-      onpointerdown={(e) => startHold("orientationLock", e, onLongPressOrientationLock)}
-      onpointermove={moveHold}
-      onpointerup={endHold}
-      onpointercancel={endHold}
-      onpointerleave={cancelHold}
-      oncontextmenu={(e) => {
-        if (onLongPressOrientationLock) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      }}
-      onkeydown={(e) => handleKeydown(e, onLongPressOrientationLock)}
-      onclick={(e) => handleClick("orientationLock", e, onCycleOrientationLock)}
-      title={orientationTitle()}
-      aria-label={orientationTitle()}
-      class="glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
-      style="box-shadow: var(--shadow-md); border-color: {holdingId === 'orientationLock' || orientationLock !== 'auto'
-        ? 'var(--accent)'
-        : 'color-mix(in srgb, var(--border-strong) 85%, transparent)'}; color: {orientationLock !== 'auto' || holdingId === 'orientationLock'
-        ? 'var(--accent)'
-        : 'var(--text)'}; -webkit-touch-callout: none; -webkit-user-select: none;"
-    >
-      {#if orientationLock === "portrait"}
-        <Smartphone size={17} strokeWidth={1.9} />
-      {:else if orientationLock === "landscape"}
-        <Monitor size={17} strokeWidth={1.9} />
-      {:else}
-        <RotateCw size={17} strokeWidth={1.9} />
-      {/if}
-    </button>
+    <div transition:badgePop|local={{ duration: 165, start: 0.78 }} class="h-full w-full">
+      <button
+        type="button"
+        onpointerdown={(e) => startHold("orientationLock", e, onLongPressOrientationLock)}
+        onpointermove={moveHold}
+        onpointerup={endHold}
+        onpointercancel={endHold}
+        onpointerleave={cancelHold}
+        oncontextmenu={(e) => {
+          if (onLongPressOrientationLock) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
+        onkeydown={(e) => handleKeydown(e, onLongPressOrientationLock)}
+        onclick={(e) => handleClick("orientationLock", e, onCycleOrientationLock)}
+        title={orientationTitle()}
+        aria-label={orientationTitle()}
+        class="glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
+        class:floating-holding={holdingId === "orientationLock"}
+        style="box-shadow: var(--shadow-md); border-color: {holdingId === 'orientationLock' || orientationLock !== 'auto'
+          ? 'var(--accent)'
+          : 'color-mix(in srgb, var(--border-strong) 85%, transparent)'}; color: {orientationLock !== 'auto' || holdingId === 'orientationLock'
+          ? 'var(--accent)'
+          : 'var(--text)'}; -webkit-touch-callout: none; -webkit-user-select: none;"
+      >
+        {#key orientationLock}
+          <span in:badgePop|local={{ duration: 140, start: 0.7 }} class="inline-flex">
+            {#if orientationLock === "portrait"}
+              <Smartphone size={17} strokeWidth={1.9} />
+            {:else if orientationLock === "landscape"}
+              <Monitor size={17} strokeWidth={1.9} />
+            {:else}
+              <RotateCw size={17} strokeWidth={1.9} />
+            {/if}
+          </span>
+        {/key}
+      </button>
+    </div>
   </div>
 {/if}
 
@@ -265,32 +273,35 @@
     class="floating-slot fixed top-0 left-0 z-30"
     style={wrapperStyleFor("readerSettings")}
   >
-    <button
-      type="button"
-      onpointerdown={(e) => startHold("readerSettings", e, onLongPressReaderSettings)}
-      onpointermove={moveHold}
-      onpointerup={endHold}
-      onpointercancel={endHold}
-      onpointerleave={cancelHold}
-      oncontextmenu={(e) => {
-        if (onLongPressReaderSettings) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      }}
-      onkeydown={(e) => handleKeydown(e, onLongPressReaderSettings)}
-      onclick={(e) => handleClick("readerSettings", e, onToggleReaderSettings)}
-      title={readerSettingsTitle()}
-      aria-label={readerSettingsTitle()}
-      class="glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
-      style="box-shadow: var(--shadow-md); border-color: {readerSettingsActive || holdingId === 'readerSettings'
-        ? 'var(--accent)'
-        : 'color-mix(in srgb, var(--border-strong) 85%, transparent)'}; color: {readerSettingsActive || holdingId === 'readerSettings'
-        ? 'var(--accent)'
-        : 'var(--text)'}; -webkit-touch-callout: none; -webkit-user-select: none;"
-    >
-      <SlidersHorizontal size={17} strokeWidth={1.9} />
-    </button>
+    <div transition:badgePop|local={{ duration: 165, start: 0.78 }} class="h-full w-full">
+      <button
+        type="button"
+        onpointerdown={(e) => startHold("readerSettings", e, onLongPressReaderSettings)}
+        onpointermove={moveHold}
+        onpointerup={endHold}
+        onpointercancel={endHold}
+        onpointerleave={cancelHold}
+        oncontextmenu={(e) => {
+          if (onLongPressReaderSettings) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
+        onkeydown={(e) => handleKeydown(e, onLongPressReaderSettings)}
+        onclick={(e) => handleClick("readerSettings", e, onToggleReaderSettings)}
+        title={readerSettingsTitle()}
+        aria-label={readerSettingsTitle()}
+        class="glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
+        class:floating-holding={holdingId === "readerSettings"}
+        style="box-shadow: var(--shadow-md); border-color: {readerSettingsActive || holdingId === 'readerSettings'
+          ? 'var(--accent)'
+          : 'color-mix(in srgb, var(--border-strong) 85%, transparent)'}; color: {readerSettingsActive || holdingId === 'readerSettings'
+          ? 'var(--accent)'
+          : 'var(--text)'}; -webkit-touch-callout: none; -webkit-user-select: none;"
+      >
+        <SlidersHorizontal size={17} strokeWidth={1.9} />
+      </button>
+    </div>
   </div>
 {/if}
 
@@ -299,32 +310,35 @@
     class="floating-slot fixed top-0 left-0 z-30"
     style={wrapperStyleFor("scrollToTop")}
   >
-    <button
-      type="button"
-      onpointerdown={(e) => startHold("scrollToTop", e, onLongPressScrollTop)}
-      onpointermove={moveHold}
-      onpointerup={endHold}
-      onpointercancel={endHold}
-      onpointerleave={cancelHold}
-      oncontextmenu={(e) => {
-        if (onLongPressScrollTop) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      }}
-      onkeydown={(e) => handleKeydown(e, onLongPressScrollTop)}
-      onclick={(e) => handleClick("scrollToTop", e, onScrollTop)}
-      title={scrollTopTitle()}
-      aria-label={scrollTopTitle()}
-      class="glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
-      style="box-shadow: var(--shadow-md); border-color: {holdingId === 'scrollToTop'
-        ? 'var(--accent)'
-        : 'color-mix(in srgb, var(--border-strong) 85%, transparent)'}; color: {holdingId === 'scrollToTop'
-        ? 'var(--accent)'
-        : 'var(--text)'}; -webkit-touch-callout: none; -webkit-user-select: none;"
-    >
-      <ArrowUp size={18} strokeWidth={2} />
-    </button>
+    <div transition:badgePop|local={{ duration: 165, start: 0.78 }} class="h-full w-full">
+      <button
+        type="button"
+        onpointerdown={(e) => startHold("scrollToTop", e, onLongPressScrollTop)}
+        onpointermove={moveHold}
+        onpointerup={endHold}
+        onpointercancel={endHold}
+        onpointerleave={cancelHold}
+        oncontextmenu={(e) => {
+          if (onLongPressScrollTop) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
+        onkeydown={(e) => handleKeydown(e, onLongPressScrollTop)}
+        onclick={(e) => handleClick("scrollToTop", e, onScrollTop)}
+        title={scrollTopTitle()}
+        aria-label={scrollTopTitle()}
+        class="glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
+        class:floating-holding={holdingId === "scrollToTop"}
+        style="box-shadow: var(--shadow-md); border-color: {holdingId === 'scrollToTop'
+          ? 'var(--accent)'
+          : 'color-mix(in srgb, var(--border-strong) 85%, transparent)'}; color: {holdingId === 'scrollToTop'
+          ? 'var(--accent)'
+          : 'var(--text)'}; -webkit-touch-callout: none; -webkit-user-select: none;"
+      >
+        <ArrowUp size={18} strokeWidth={2} />
+      </button>
+    </div>
   </div>
 {/if}
 
@@ -333,5 +347,9 @@
     transition:
       transform var(--dur-base, 175ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
       opacity var(--dur-base, 175ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+  }
+
+  .floating-holding {
+    transform: scale(0.92);
   }
 </style>

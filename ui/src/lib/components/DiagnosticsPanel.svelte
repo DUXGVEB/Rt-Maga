@@ -3,7 +3,6 @@
     AlertCircle,
     Check,
     CheckCircle2,
-    ChevronDown,
     ChevronRight,
     Copy,
     Download,
@@ -13,6 +12,7 @@
   } from "lucide-svelte";
   import { onMount } from "svelte";
   import { api, formatAppError } from "../api";
+  import { badgePop, collapseReveal, viewReveal } from "../motion";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
   import type { DiagnosticLogEntry, SavedDiagnosticFile } from "../types";
@@ -147,7 +147,7 @@
         type="button"
         onclick={loadLogs}
         disabled={loading}
-        class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+        class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
         style="border-color: var(--border); background-color: var(--surface-subtle);"
       >
         <RefreshCw size={12} class={loading ? "animate-spin" : ""} />
@@ -157,7 +157,7 @@
         type="button"
         onclick={copyLogs}
         disabled={exporting}
-        class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+        class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
         style="border-color: var(--border); background-color: var(--surface-subtle);"
       >
         <Copy size={12} />
@@ -167,23 +167,25 @@
         type="button"
         onclick={saveLogsToFile}
         disabled={exporting}
-        class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+        class="gpu-press inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50"
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         <Download size={12} />
         <span>{t.diagnosticsExportBtn}</span>
       </button>
       {#if logs.length > 0}
-        <button
-          type="button"
-          onclick={clearLogs}
-          disabled={clearing}
-          class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
-          style="border-color: var(--border); color: var(--danger);"
-        >
-          <Trash2 size={12} />
-          <span>{t.diagnosticsClearBtn}</span>
-        </button>
+        <span transition:badgePop|local class="inline-flex">
+          <button
+            type="button"
+            onclick={clearLogs}
+            disabled={clearing}
+            class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+            style="border-color: var(--border); color: var(--danger);"
+          >
+            <Trash2 size={12} />
+            <span>{t.diagnosticsClearBtn}</span>
+          </button>
+        </span>
       {/if}
     </div>
   </div>
@@ -191,6 +193,7 @@
   <!-- Explicit Exported File Path Feedback (Part 6) -->
   {#if savedFile}
     <div
+      transition:collapseReveal|local
       class="flex flex-col gap-2 rounded-xl border p-3 text-xs"
       style="background-color: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.4);"
     >
@@ -203,14 +206,18 @@
         <button
           type="button"
           onclick={copySavedPath}
-          class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium"
+          class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium"
           style="border-color: rgba(16, 185, 129, 0.45); background-color: var(--surface); color: var(--text);"
         >
-          {#if copiedPath}
-            <Check size={12} style="color: #10b981;" />
-          {:else}
-            <Copy size={12} />
-          {/if}
+          {#key copiedPath}
+            <span in:badgePop|local={{ duration: 140, start: 0.65 }} class="inline-flex">
+              {#if copiedPath}
+                <Check size={12} style="color: #10b981;" />
+              {:else}
+                <Copy size={12} />
+              {/if}
+            </span>
+          {/key}
           <span>{t.diagnosticsCopyPathBtn}</span>
         </button>
       </div>
@@ -225,6 +232,7 @@
 
   {#if exportError}
     <div
+      transition:collapseReveal|local
       class="flex items-start gap-2 rounded-xl border p-3 text-xs"
       style="background-color: rgba(239, 68, 68, 0.08); border-color: var(--danger); color: var(--danger);"
     >
@@ -235,6 +243,7 @@
 
   {#if logs.length === 0}
     <div
+      in:viewReveal|local={{ duration: 150, y: 4 }}
       class="flex items-center gap-2 rounded-xl border border-dashed px-4 py-5 text-xs"
       style="border-color: var(--border); color: var(--text-muted);"
     >
@@ -255,14 +264,11 @@
           <button
             type="button"
             onclick={() => toggleExpanded(entry.id)}
-            class="flex w-full items-start gap-2 px-2.5 py-2 text-left"
+            aria-expanded={open}
+            class="gpu-press flex w-full items-start gap-2 px-2.5 py-2 text-left"
           >
             <span class="mt-0.5 shrink-0" style="color: var(--text-muted);">
-              {#if open}
-                <ChevronDown size={13} />
-              {:else}
-                <ChevronRight size={13} />
-              {/if}
+              <ChevronRight size={13} class="chevron-rot-90" data-open={open ? "true" : "false"} />
             </span>
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-1.5">
@@ -307,6 +313,7 @@
 
           {#if open}
             <div
+              transition:collapseReveal|local
               class="flex flex-col gap-1 border-t px-3 py-2 font-mono text-[11px] break-all whitespace-pre-wrap"
               style="border-color: var(--border); color: var(--text-muted); background-color: var(--surface-subtle);"
             >
