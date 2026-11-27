@@ -18,6 +18,7 @@ class LibraryCacheStore {
 
   invalidate() {
     this.historyLoaded = false;
+    this.bookmarksLoaded = {};
   }
 
   removeHistoryItem(mangaId: number) {

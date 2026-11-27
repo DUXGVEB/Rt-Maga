@@ -120,7 +120,7 @@
   const horizontalBoxStyle = $derived(() => {
     if (!horizontal) return "";
     if (continuousHorizontal) {
-      return "width: auto; max-width: calc(100vw - var(--safe-left) - var(--safe-right));";
+      return "width: auto; max-width: calc(100dvw - var(--safe-left) - var(--safe-right));";
     }
     if (groupPageCount <= 1) {
       return "width: 100%; max-width: 100%;";
@@ -222,7 +222,7 @@
     {:else}
       <div
         class="flex flex-col items-center justify-center gap-3 rounded-lg border px-4 py-8 text-center {horizontal
-          ? 'h-[72dvh] w-[62vw] max-w-[420px]'
+          ? 'h-[72dvh] w-[62dvw] max-w-[420px]'
           : 'min-h-[240px] w-full'}"
         style="background-color: var(--surface); border-color: var(--border);"
       >

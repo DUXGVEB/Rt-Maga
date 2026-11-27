@@ -7,8 +7,11 @@
     Download,
     ExternalLink,
     Home as HomeIcon,
+    Moon,
+    RefreshCw,
     Settings as SettingsIcon,
     Sparkles,
+    Sun,
     X,
   } from "lucide-svelte";
   import { onMount } from "svelte";
@@ -19,6 +22,7 @@
   import Sidebar from "./lib/components/Sidebar.svelte";
   import ToastContainer from "./lib/components/ToastContainer.svelte";
   import UpdatePromptModal from "./lib/components/UpdatePromptModal.svelte";
+  import { popoverPop, viewReveal } from "./lib/motion";
   import { appReleaseStore } from "./lib/stores/appRelease.svelte";
   import { deviceEnv } from "./lib/stores/deviceEnv.svelte";
   import { notificationsStore } from "./lib/stores/notifications.svelte";
@@ -104,9 +108,23 @@
   });
 
   const isReader = $derived(router.current.name === "reader");
+  const isDark = $derived(settingsStore.resolvedTheme === "dark");
+  const checkingAny = $derived(updatesStore.checking || appReleaseStore.checking);
   const t = $derived(settingsStore.t);
   const activeScreen = $derived<FloatingScreenKey>(router.current.name);
   const navOrder = $derived(normalizeNavOrder(settingsStore.value.ui.navOrder));
+  const routeViewKey = $derived(() => {
+    const r = router.current;
+    if (r.name === "manga") return `manga:${r.id}`;
+    if (r.name === "browse") return `browse:${r.sourceId ?? ""}:${r.url}`;
+    return r.name;
+  });
+
+  function toggleThemeMobile() {
+    settingsStore.update((d) => {
+      d.theme = isDark ? "light" : "dark";
+    });
+  }
 
   $effect(() => {
     void router.current.name;
@@ -133,45 +151,78 @@
   }
 </script>
 
-<div class="flex h-full w-full flex-col overflow-hidden md:flex-row">
+<div class="app-canvas flex h-full w-full flex-col overflow-hidden md:flex-row">
   {#if !isReader}
     <Sidebar />
   {/if}
 
   <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-    <!-- Mobile Top App Bar: seamlessly anchored at y=0 and paints behind status bar / cutout -->
+    <!-- Mobile Top App Bar: frosted Option 1 Sumi Studio header with quick Updates, Theme & Notifications -->
     {#if !isReader}
       <header
-        class="z-20 flex shrink-0 items-center justify-between border-b md:hidden"
-        style="padding-top: calc(0.625rem + var(--safe-top)); padding-bottom: 0.625rem; padding-left: max(1rem, var(--safe-left)); padding-right: max(1rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border);"
+        class="glass-chrome z-20 flex shrink-0 items-center justify-between border-b md:hidden"
+        style="padding-top: calc(0.45rem + var(--safe-top)); padding-bottom: 0.45rem; padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); border-color: var(--border);"
       >
         <button
           type="button"
           onclick={() => router.goHome()}
-          class="flex items-center gap-2 text-left"
+          class="gpu-press flex min-h-[44px] items-center gap-2.5 rounded-xl px-1.5 text-left"
         >
-          <img src={logoUrl} alt="RtMaga" class="h-6 w-6 rounded-md shadow-sm" />
-          <span class="text-sm font-semibold tracking-tight">RtMaga</span>
+          <img src={logoUrl} alt="RtMaga" class="h-7 w-7 rounded-xl shadow-sm" />
+          <div class="leading-tight">
+            <div class="text-sm font-bold tracking-tight">RtMaga</div>
+          </div>
         </button>
 
-        <button
-          type="button"
-          onclick={() => notificationsStore.toggleDrawer()}
-          class="relative rounded-lg p-1.5"
-          style="color: var(--text);"
-          title={t.notifCenterTitle}
-          aria-label={t.notifCenterTitle}
-        >
-          <Bell size={19} />
-          {#if notificationsStore.unreadCount > 0}
-            <span
-              class="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold"
-              style="background-color: var(--accent); color: var(--accent-fg);"
-            >
-              {notificationsStore.unreadCount > 99 ? "99+" : notificationsStore.unreadCount}
-            </span>
-          {/if}
-        </button>
+        <div class="flex items-center gap-0.5">
+          <button
+            type="button"
+            onclick={() => updatesStore.checkNow()}
+            disabled={checkingAny}
+            class="gpu-press flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl disabled:opacity-55"
+            style="color: var(--text-muted);"
+            title={t.checkUpdatesTooltip}
+            aria-label={t.checkUpdates}
+          >
+            <RefreshCw size={18} class={checkingAny ? "animate-spin" : ""} />
+          </button>
+
+          <button
+            type="button"
+            onclick={toggleThemeMobile}
+            class="gpu-press flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl"
+            style="color: var(--text-muted);"
+            title={isDark ? t.lightMode : t.darkMode}
+            aria-label={isDark ? t.lightMode : t.darkMode}
+          >
+            {#if isDark}
+              <Sun size={18} />
+            {:else}
+              <Moon size={18} />
+            {/if}
+          </button>
+
+          <button
+            type="button"
+            onclick={() => notificationsStore.toggleDrawer()}
+            class="gpu-press relative flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl"
+            style="color: {notificationsStore.drawerOpen ? 'var(--accent)' : 'var(--text)'}; background-color: {notificationsStore.drawerOpen
+              ? 'var(--accent-soft)'
+              : 'transparent'};"
+            title={t.notifCenterTitle}
+            aria-label={t.notifCenterTitle}
+          >
+            <Bell size={19} />
+            {#if notificationsStore.unreadCount > 0}
+              <span
+                class="absolute top-1.5 right-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-bold"
+                style="background-color: var(--accent); color: var(--accent-fg);"
+              >
+                {notificationsStore.unreadCount > 99 ? "99+" : notificationsStore.unreadCount}
+              </span>
+            {/if}
+          </button>
+        </div>
       </header>
     {/if}
 
@@ -181,14 +232,12 @@
       class="relative min-h-0 min-w-0 flex-1 {isReader
         ? 'overflow-hidden'
         : 'main-scroll-area overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y'}"
-      style={isReader
-        ? ""
-        : "padding-left: var(--safe-left); padding-right: var(--safe-right);"}
     >
       {#if !isReader && !appReleaseStore.promptOpen && appReleaseStore.shouldShowBanner && appReleaseStore.release}
         <div
-          class="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2.5 text-xs backdrop-blur-md"
-          style="background-color: color-mix(in srgb, var(--surface) 92%, var(--accent-soft)); border-color: var(--border);"
+          in:popoverPop|local={{ duration: 180, y: -6 }}
+          class="glass-chrome sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2.5 text-xs"
+          style="border-color: var(--border);"
         >
           <div class="flex min-w-0 items-center gap-2 font-medium">
             <Sparkles size={15} class="shrink-0" style="color: var(--accent);" />
@@ -201,7 +250,7 @@
             <button
               type="button"
               onclick={() => appReleaseStore.openPrompt()}
-              class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1 font-semibold transition-opacity hover:opacity-90"
+              class="gpu-press inline-flex min-h-[34px] items-center gap-1.5 rounded-xl px-3 py-1 font-semibold hover:opacity-90"
               style="background-color: var(--accent); color: var(--accent-fg);"
             >
               <Download size={13} />
@@ -210,7 +259,7 @@
             <button
               type="button"
               onclick={() => appReleaseStore.openReleasePage()}
-              class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 font-medium transition-opacity hover:opacity-85"
+              class="gpu-press inline-flex min-h-[34px] items-center gap-1 rounded-xl border px-2.5 py-1 font-medium hover:opacity-85"
               style="border-color: var(--border); background-color: var(--surface);"
             >
               <ExternalLink size={12} />
@@ -219,7 +268,7 @@
             <button
               type="button"
               onclick={() => appReleaseStore.dismissPrompt()}
-              class="rounded-lg p-1 opacity-70 transition-opacity hover:opacity-100"
+              class="gpu-press flex h-8 w-8 items-center justify-center rounded-xl opacity-70 hover:opacity-100"
               aria-label={t.dismissUpdate}
               title={t.dismissUpdate}
             >
@@ -229,31 +278,37 @@
         </div>
       {/if}
 
-      {#if router.current.name === "home"}
-        <Home />
-      {:else if router.current.name === "sources"}
-        <Sources initialQuery={router.current.initialQuery} />
-      {:else if router.current.name === "browse"}
-        <Browse
-          url={router.current.url}
-          sourceId={router.current.sourceId}
-          initialCatalog={router.current.initialCatalog}
-        />
-      {:else if router.current.name === "bookmarks"}
-        <Bookmarks />
-      {:else if router.current.name === "manga"}
-        <Manga id={router.current.id} />
-      {:else if router.current.name === "reader"}
+      {#if router.current.name === "reader"}
         <Reader
           mangaId={router.current.mangaId}
           chapterUrl={router.current.chapterUrl}
           initialScrollRatio={router.current.scrollRatio ?? 0}
           initialPageIndex={router.current.pageIndex ?? 0}
         />
-      {:else if router.current.name === "history"}
-        <History />
-      {:else if router.current.name === "settings"}
-        <Settings focusSection={router.current.section} subTarget={router.current.subTarget} />
+      {:else}
+        {#key routeViewKey()}
+          <div in:viewReveal|local={{ duration: 170, y: 6 }} class="min-h-full w-full">
+            {#if router.current.name === "home"}
+              <Home />
+            {:else if router.current.name === "sources"}
+              <Sources initialQuery={router.current.initialQuery} />
+            {:else if router.current.name === "browse"}
+              <Browse
+                url={router.current.url}
+                sourceId={router.current.sourceId}
+                initialCatalog={router.current.initialCatalog}
+              />
+            {:else if router.current.name === "bookmarks"}
+              <Bookmarks />
+            {:else if router.current.name === "manga"}
+              <Manga id={router.current.id} />
+            {:else if router.current.name === "history"}
+              <History />
+            {:else if router.current.name === "settings"}
+              <Settings focusSection={router.current.section} subTarget={router.current.subTarget} />
+            {/if}
+          </div>
+        {/key}
       {/if}
     </main>
   </div>
@@ -265,89 +320,109 @@
       showScrollTop={showMainScrollTop}
       onScrollTop={scrollMainToTop}
       onLongPressScrollTop={() => router.goSettings("floating")}
-      hasBottomNav={deviceEnv.viewportWidth < 768}
+      hasBottomNav={deviceEnv.layoutTier === "compact"}
     />
 
-    <!-- Mobile Bottom Navigation (hidden at >=768px where Sidebar renders): user-ordered destinations -->
+    <!-- Compact Portrait Bottom Navigation (< 768px): ergonomic >=44x44px thumb targets -->
     <nav
       aria-label={t.navOrderSection}
-      class="fixed right-0 bottom-0 left-0 z-20 flex items-center justify-around border-t py-1.5 md:hidden"
-      style="padding-bottom: max(0.375rem, var(--safe-bottom)); padding-left: var(--safe-left); padding-right: var(--safe-right); background-color: var(--surface); border-color: var(--border);"
+      class="glass-chrome fixed right-0 bottom-0 left-0 z-20 flex items-center justify-around border-t px-1.5 pt-1.5 md:hidden"
+      style="padding-bottom: max(0.45rem, var(--safe-bottom)); padding-left: max(0.45rem, var(--safe-left)); padding-right: max(0.45rem, var(--safe-right)); border-color: var(--border);"
     >
       {#each navOrder as dest (dest)}
         {#if dest === "home"}
+          {@const active = router.current.name === "home" || router.current.name === "manga"}
           <button
             type="button"
             onclick={() => router.goHome()}
-            class="flex flex-col items-center gap-0.5 px-2.5 py-1 text-[11px] font-medium"
-            style="color: {router.current.name === 'home' ||
-            router.current.name === 'manga'
-              ? 'var(--accent)'
-              : 'var(--text-muted)'};"
-            aria-current={router.current.name === 'home' ||
-            router.current.name === 'manga'
-              ? 'page'
-              : undefined}
+            class="gpu-press relative flex min-h-[46px] min-w-[46px] flex-1 flex-col items-center justify-center gap-0.5 rounded-2xl px-1.5 py-1 text-[11px] font-medium"
+            style="color: {active ? 'var(--accent)' : 'var(--text-muted)'};"
+            aria-current={active ? "page" : undefined}
           >
-            <HomeIcon size={19} />
-            <span>{t.navHome}</span>
+            <span
+              class="relative flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+            >
+              <HomeIcon size={19} strokeWidth={active ? 2.25 : 1.85} />
+              {#if updatesStore.newCount > 0}
+                <span
+                  class="absolute -top-0.5 right-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[9px] font-bold"
+                  style="background-color: var(--accent); color: var(--accent-fg);"
+                >
+                  {updatesStore.newCount > 9 ? "9+" : updatesStore.newCount}
+                </span>
+              {/if}
+            </span>
+            <span class="truncate leading-tight {active ? 'font-semibold' : ''}">{t.navHome}</span>
           </button>
         {:else if dest === "sources"}
+          {@const active = router.current.name === "sources" || router.current.name === "browse"}
           <button
             type="button"
             onclick={() => router.goSources()}
-            class="flex flex-col items-center gap-0.5 px-2.5 py-1 text-[11px] font-medium"
-            style="color: {router.current.name === 'sources' ||
-            router.current.name === 'browse'
-              ? 'var(--accent)'
-              : 'var(--text-muted)'};"
-            aria-current={router.current.name === 'sources' ||
-            router.current.name === 'browse'
-              ? 'page'
-              : undefined}
+            class="gpu-press flex min-h-[46px] min-w-[46px] flex-1 flex-col items-center justify-center gap-0.5 rounded-2xl px-1.5 py-1 text-[11px] font-medium"
+            style="color: {active ? 'var(--accent)' : 'var(--text-muted)'};"
+            aria-current={active ? "page" : undefined}
           >
-            <Compass size={19} />
-            <span>{t.navSources}</span>
+            <span
+              class="flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+            >
+              <Compass size={19} strokeWidth={active ? 2.25 : 1.85} />
+            </span>
+            <span class="truncate leading-tight {active ? 'font-semibold' : ''}">{t.navSources}</span>
           </button>
         {:else if dest === "bookmarks"}
+          {@const active = router.current.name === "bookmarks"}
           <button
             type="button"
             onclick={() => router.goBookmarks()}
-            class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
-            style="color: {router.current.name === 'bookmarks'
-              ? 'var(--accent)'
-              : 'var(--text-muted)'};"
-            aria-current={router.current.name === 'bookmarks' ? 'page' : undefined}
+            class="gpu-press flex min-h-[46px] min-w-[46px] flex-1 flex-col items-center justify-center gap-0.5 rounded-2xl px-1.5 py-1 text-[11px] font-medium"
+            style="color: {active ? 'var(--accent)' : 'var(--text-muted)'};"
+            aria-current={active ? "page" : undefined}
           >
-            <Bookmark size={19} />
-            <span>{t.navBookmarks}</span>
+            <span
+              class="flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+            >
+              <Bookmark size={19} strokeWidth={active ? 2.25 : 1.85} />
+            </span>
+            <span class="truncate leading-tight {active ? 'font-semibold' : ''}">{t.navBookmarks}</span>
           </button>
         {:else if dest === "history"}
+          {@const active = router.current.name === "history"}
           <button
             type="button"
             onclick={() => void router.goHistoryOrResume()}
-            class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
-            style="color: {router.current.name === 'history'
-              ? 'var(--accent)'
-              : 'var(--text-muted)'};"
-            aria-current={router.current.name === 'history' ? 'page' : undefined}
+            class="gpu-press flex min-h-[46px] min-w-[46px] flex-1 flex-col items-center justify-center gap-0.5 rounded-2xl px-1.5 py-1 text-[11px] font-medium"
+            style="color: {active ? 'var(--accent)' : 'var(--text-muted)'};"
+            aria-current={active ? "page" : undefined}
             title={t.historyResumeHint}
           >
-            <Clock size={19} />
-            <span>{t.navHistory}</span>
+            <span
+              class="flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+            >
+              <Clock size={19} strokeWidth={active ? 2.25 : 1.85} />
+            </span>
+            <span class="truncate leading-tight {active ? 'font-semibold' : ''}">{t.navHistory}</span>
           </button>
         {:else}
+          {@const active = router.current.name === "settings"}
           <button
             type="button"
             onclick={() => router.goSettings()}
-            class="flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-medium"
-            style="color: {router.current.name === 'settings'
-              ? 'var(--accent)'
-              : 'var(--text-muted)'};"
-            aria-current={router.current.name === 'settings' ? 'page' : undefined}
+            class="gpu-press flex min-h-[46px] min-w-[46px] flex-1 flex-col items-center justify-center gap-0.5 rounded-2xl px-1.5 py-1 text-[11px] font-medium"
+            style="color: {active ? 'var(--accent)' : 'var(--text-muted)'};"
+            aria-current={active ? "page" : undefined}
           >
-            <SettingsIcon size={19} />
-            <span>{t.navSettings}</span>
+            <span
+              class="flex h-7 w-12 items-center justify-center rounded-full"
+              style="background-color: {active ? 'var(--accent-soft)' : 'transparent'};"
+            >
+              <SettingsIcon size={19} strokeWidth={active ? 2.25 : 1.85} />
+            </span>
+            <span class="truncate leading-tight {active ? 'font-semibold' : ''}">{t.navSettings}</span>
           </button>
         {/if}
       {/each}

@@ -51,6 +51,9 @@ import type {
   SyncDecision,
   SyncSenderMode,
   SyncStatusView,
+  TachibkBackupPreview,
+  TachibkImportReport,
+  TachibkImportRequest,
   UpdateDownloadProgress,
   UpdateProgress,
   UpdateSummary,
@@ -518,6 +521,40 @@ export const api = {
       uploadIds,
       targetMangaId: targetMangaId ?? null,
     });
+  },
+
+  detectTachibkPaths: (paths: string[]) => invoke<string[]>("detect_tachibk_paths", { paths }),
+  previewTachibkBackup: (path: string) =>
+    invoke<TachibkBackupPreview>("preview_tachibk_backup", { path }),
+  previewTachibkUpload: (uploadId: string) =>
+    invoke<TachibkBackupPreview>("preview_tachibk_upload", { uploadId }),
+  discardTachibkUpload: (uploadId: string) =>
+    invoke<void>("discard_tachibk_upload", { uploadId }),
+  importTachibkBackup: (request: TachibkImportRequest) =>
+    invoke<TachibkImportReport>("import_tachibk_backup", { request }),
+  uploadTachibkBrowserFile: async (file: File): Promise<TachibkBackupPreview> => {
+    const CHUNK_BYTES = 512 * 1024;
+    const uploadId = await invoke<string>("begin_cbz_upload", { filename: file.name });
+    try {
+      let offset = 0;
+      while (offset < file.size) {
+        const slice = file.slice(offset, offset + CHUNK_BYTES);
+        const buf = new Uint8Array(await slice.arrayBuffer());
+        let binary = "";
+        for (let i = 0; i < buf.length; i += 0x8000) {
+          binary += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+        }
+        await invoke<void>("append_cbz_chunk", {
+          uploadId,
+          chunkBase64: btoa(binary),
+        });
+        offset += CHUNK_BYTES;
+      }
+      return await invoke<TachibkBackupPreview>("preview_tachibk_upload", { uploadId });
+    } catch (err) {
+      void invoke<void>("discard_tachibk_upload", { uploadId }).catch(() => {});
+      throw err;
+    }
   },
 
   buildFeedbackReport: (request: FeedbackReportRequest) =>

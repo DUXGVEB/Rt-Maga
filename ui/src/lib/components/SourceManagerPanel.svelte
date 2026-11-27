@@ -17,6 +17,7 @@
     X,
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../api";
+  import { backdropFade, modalScale } from "../motion";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -580,15 +581,14 @@
             {:else if group.entries.length === 0}
               <div class="text-xs" style="color: var(--text-muted);">{t.sourcesSearchEmpty}</div>
             {:else}
-              <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+              <div class="fluid-manga-grid">
                 {#each group.entries as entry (entry.url)}
                   {@const busy = openingEntryUrl === entry.url}
                   <button
                     type="button"
                     disabled={openingEntryUrl !== null}
                     onclick={() => void openCatalogEntry(entry)}
-                    class="group flex flex-col overflow-hidden rounded-xl border text-left transition-transform duration-150 hover:-translate-y-0.5 disabled:opacity-70"
-                    style="background-color: var(--surface-subtle); border-color: var(--border);"
+                    class="card-cq surface-card group flex flex-col overflow-hidden rounded-2xl text-left transition-transform duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.985] disabled:opacity-70"
                   >
                     <div
                       class="relative aspect-[3/4] w-full overflow-hidden"
@@ -602,7 +602,7 @@
                           onerror={() => {
                             failedEntryCovers = { ...failedEntryCovers, [entry.url]: true };
                           }}
-                          class="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                          class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
                         />
                       {:else}
                         <div
@@ -614,8 +614,8 @@
                       {/if}
                       {#if entry.latestChapter}
                         <span
-                          class="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded px-1.5 py-0.5 text-[10px] font-semibold text-white"
-                          style="background-color: rgba(15, 15, 18, 0.8);"
+                          class="absolute bottom-1.5 left-1.5 max-w-[calc(100%-0.75rem)] truncate rounded-lg px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-md"
+                          style="background-color: rgba(11, 11, 15, 0.8);"
                         >
                           {entry.latestChapter}
                         </span>
@@ -626,8 +626,8 @@
                         </div>
                       {/if}
                     </div>
-                    <div class="p-2">
-                      <div class="line-clamp-2 text-xs font-semibold leading-snug">{entry.title}</div>
+                    <div class="card-body p-2.5">
+                      <div class="card-title line-clamp-2 font-semibold">{entry.title}</div>
                     </div>
                   </button>
                 {/each}
@@ -756,7 +756,7 @@
                 <button
                   type="button"
                   onclick={() => router.goBrowse(src.baseUrl, undefined, false, src.id)}
-                  class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold"
+                  class="gpu-press inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold"
                   style="background-color: var(--accent-soft); color: var(--accent);"
                 >
                   <ExternalLink size={12} />
@@ -765,7 +765,7 @@
                 <button
                   type="button"
                   onclick={() => void openSourceFilters(src)}
-                  class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-medium"
+                  class="gpu-press inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-medium"
                   style="border-color: {isSelectedFilter
                     ? 'var(--accent)'
                     : 'var(--border)'}; background-color: {isSelectedFilter
@@ -781,30 +781,30 @@
                 <button
                   type="button"
                   onclick={() => startEditSource(src)}
-                  class="rounded-lg border p-1.5 hover:brightness-95"
+                  class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
                   style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
                   title={t.sourcesEditBtn}
                   aria-label={t.sourcesEditBtn}
                 >
-                  <Edit3 size={13} />
+                  <Edit3 size={14} />
                 </button>
 
                 <button
                   type="button"
                   onclick={() => void moveVisibility(src)}
-                  class="rounded-lg border p-1.5 hover:brightness-95"
+                  class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
                   style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
                   title={scope === "main" ? t.sourcesMoveToSuppBtn : t.sourcesMoveToMainBtn}
                   aria-label={scope === "main" ? t.sourcesMoveToSuppBtn : t.sourcesMoveToMainBtn}
                 >
-                  <ArrowLeftRight size={13} />
+                  <ArrowLeftRight size={14} />
                 </button>
 
                 {#if confirmDeleteId === src.id}
                   <button
                     type="button"
                     onclick={() => void removeSource(src.id)}
-                    class="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-white"
+                    class="gpu-press inline-flex min-h-[36px] items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white"
                     style="background-color: var(--danger);"
                   >
                     <Check size={12} />
@@ -815,10 +815,11 @@
                     onclick={() => {
                       confirmDeleteId = null;
                     }}
-                    class="rounded-lg border p-1"
+                    class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
                     style="border-color: var(--border); color: var(--text-muted);"
+                    aria-label={t.cancel}
                   >
-                    <X size={12} />
+                    <X size={13} />
                   </button>
                 {:else}
                   <button
@@ -826,12 +827,12 @@
                     onclick={() => {
                       confirmDeleteId = src.id;
                     }}
-                    class="rounded-lg border p-1.5 hover:brightness-95"
+                    class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
                     style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--danger);"
                     title={t.sourcesDeleteBtn}
                     aria-label={t.sourcesDeleteBtn}
                   >
-                    <Trash2 size={13} />
+                    <Trash2 size={14} />
                   </button>
                 {/if}
               </div>
@@ -843,23 +844,41 @@
   {/if}
 </div>
 
-<!-- Add Source Modal -->
+<!-- Add Source Modal (Bottom Sheet on Compact Mobile, Centered Dialog on sm+) -->
 {#if addModalOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
+  <div
+    class="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
+    style="padding-top: max(1rem, var(--safe-top)); padding-left: var(--safe-left); padding-right: var(--safe-right);"
+    role="dialog"
+    aria-modal="true"
+  >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      transition:backdropFade|local
+      onclick={() => {
+        if (!addingSource) addModalOpen = false;
+      }}
+      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+    ></div>
+
     <form
+      transition:modalScale|local
       onsubmit={(e) => {
         e.preventDefault();
         void submitAddSource();
       }}
-      class="flex max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-3.5 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
-      style="background-color: var(--surface); border-color: var(--border);"
+      class="modal-cq relative z-10 flex max-h-[calc(100dvh-1.5rem-var(--safe-top))] w-full max-w-md flex-col gap-3.5 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 sm:max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
+      style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >
+      <div class="sheet-handle -mt-2 sm:hidden" aria-hidden="true"></div>
       <div class="flex items-center justify-between">
         <h3 class="text-base font-bold">{t.sourcesAddModalTitle}</h3>
         <button
           type="button"
           onclick={() => (addModalOpen = false)}
-          class="rounded-lg p-1 opacity-70 hover:opacity-100"
+          class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl opacity-70 hover:opacity-100"
+          aria-label={t.cancel}
         >
           <X size={16} />
         </button>
@@ -872,7 +891,7 @@
           required
           bind:value={addUrl}
           placeholder={t.sourcesAddUrlPlaceholder}
-          class="rounded-xl border px-3 py-2 text-xs outline-none"
+          class="min-h-[42px] rounded-xl border px-3 py-2 text-xs outline-none"
           style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
         />
       </label>
@@ -883,16 +902,16 @@
           type="text"
           bind:value={addName}
           placeholder={t.sourcesAddNamePlaceholder}
-          class="rounded-xl border px-3 py-2 text-xs outline-none"
+          class="min-h-[42px] rounded-xl border px-3 py-2 text-xs outline-none"
           style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
         />
       </label>
 
-      <div class="flex justify-end gap-2 pt-1">
+      <div class="modal-footer-stack flex justify-end gap-2 pt-1">
         <button
           type="button"
           onclick={() => (addModalOpen = false)}
-          class="rounded-xl border px-4 py-2 text-xs font-medium"
+          class="gpu-press min-h-[42px] rounded-xl border px-4 py-2 text-xs font-medium"
           style="border-color: var(--border); background-color: var(--surface-subtle);"
         >
           {t.cancel}
@@ -900,7 +919,7 @@
         <button
           type="submit"
           disabled={addingSource || !addUrl.trim()}
-          class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
+          class="gpu-press inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
           style="background-color: var(--accent); color: var(--accent-fg);"
         >
           {#if addingSource}
@@ -913,23 +932,41 @@
   </div>
 {/if}
 
-<!-- Edit Source & Mirror Modal -->
+<!-- Edit Source & Mirror Modal (Bottom Sheet on Compact Mobile, Centered Dialog on sm+) -->
 {#if editTarget}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
+  <div
+    class="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
+    style="padding-top: max(1rem, var(--safe-top)); padding-left: var(--safe-left); padding-right: var(--safe-right);"
+    role="dialog"
+    aria-modal="true"
+  >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      transition:backdropFade|local
+      onclick={() => {
+        if (!savingEdit) editTarget = null;
+      }}
+      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+    ></div>
+
     <form
+      transition:modalScale|local
       onsubmit={(e) => {
         e.preventDefault();
         void submitEditSource();
       }}
-      class="flex max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-3.5 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
-      style="background-color: var(--surface); border-color: var(--border);"
+      class="modal-cq relative z-10 flex max-h-[calc(100dvh-1.5rem-var(--safe-top))] w-full max-w-md flex-col gap-3.5 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 sm:max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
+      style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >
+      <div class="sheet-handle -mt-2 sm:hidden" aria-hidden="true"></div>
       <div class="flex items-center justify-between">
         <h3 class="text-base font-bold">{t.sourcesEditModalTitle}</h3>
         <button
           type="button"
           onclick={() => (editTarget = null)}
-          class="rounded-lg p-1 opacity-70 hover:opacity-100"
+          class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl opacity-70 hover:opacity-100"
+          aria-label={t.cancel}
         >
           <X size={16} />
         </button>
@@ -941,7 +978,7 @@
           type="text"
           required
           bind:value={editName}
-          class="rounded-xl border px-3 py-2 text-xs outline-none"
+          class="min-h-[42px] rounded-xl border px-3 py-2 text-xs outline-none"
           style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
         />
       </label>
@@ -952,12 +989,12 @@
           type="url"
           required
           bind:value={editBaseUrl}
-          class="rounded-xl border px-3 py-2 text-xs outline-none"
+          class="min-h-[42px] rounded-xl border px-3 py-2 text-xs outline-none"
           style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
         />
       </label>
 
-      <div class="flex items-center justify-between rounded-xl border px-3 py-2 text-xs" style="border-color: var(--border); background-color: var(--surface-subtle);">
+      <div class="flex min-h-[44px] items-center justify-between rounded-xl border px-3 py-2 text-xs" style="border-color: var(--border); background-color: var(--surface-subtle);">
         <span class="font-medium">{t.sourcesEnabledLabel}</span>
         <SquishSwitch
           size="sm"
@@ -969,11 +1006,11 @@
         />
       </div>
 
-      <div class="flex justify-end gap-2 pt-1">
+      <div class="modal-footer-stack flex justify-end gap-2 pt-1">
         <button
           type="button"
           onclick={() => (editTarget = null)}
-          class="rounded-xl border px-4 py-2 text-xs font-medium"
+          class="gpu-press min-h-[42px] rounded-xl border px-4 py-2 text-xs font-medium"
           style="border-color: var(--border); background-color: var(--surface-subtle);"
         >
           {t.cancel}
@@ -981,7 +1018,7 @@
         <button
           type="submit"
           disabled={savingEdit}
-          class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
+          class="gpu-press inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
           style="background-color: var(--accent); color: var(--accent-fg);"
         >
           {#if savingEdit}

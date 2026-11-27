@@ -70,6 +70,7 @@
   import SourceManagerPanel from "../lib/components/SourceManagerPanel.svelte";
   import ToggleSwitch from "../lib/components/ToggleSwitch.svelte";
   import { LANGUAGE_OPTIONS } from "../lib/i18n";
+  import { backdropFade, modalScale } from "../lib/motion";
   import { appReleaseStore } from "../lib/stores/appRelease.svelte";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
@@ -2440,7 +2441,7 @@
               {#if s.floating.scrollToTopScreens.length > 0}
                 <span
                   title={t.floatingScrollTopPos}
-                  class="absolute flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full shadow-sm transition-all"
+                  class="absolute flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full shadow-sm transition-transform duration-200"
                   style="top: {s.floating.scrollToTop.verticalPercent}%; {s.floating.scrollToTop.edge === 'left'
                     ? 'left: 8px;'
                     : 'right: 8px;'} background-color: var(--accent); color: var(--accent-fg);"
@@ -2452,7 +2453,7 @@
               {#if s.floating.showReaderSettings}
                 <span
                   title={t.floatingReaderSettingsLabel}
-                  class="absolute flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-white shadow-sm transition-all"
+                  class="absolute flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-white shadow-sm transition-transform duration-200"
                   style="top: {s.floating.readerSettings.verticalPercent}%; {s.floating.readerSettings.edge === 'left'
                     ? 'left: 8px;'
                     : 'right: 8px;'} background-color: #3b82f6;"
@@ -2464,7 +2465,7 @@
               {#if s.floating.showOrientationLock}
                 <span
                   title={t.floatingOrientationLockLabel}
-                  class="absolute flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-white shadow-sm transition-all"
+                  class="absolute flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-white shadow-sm transition-transform duration-200"
                   style="top: {s.floating.orientationLock.verticalPercent}%; {s.floating.orientationLock.edge === 'left'
                     ? 'left: 8px;'
                     : 'right: 8px;'} background-color: #8b5cf6;"
@@ -2657,8 +2658,8 @@
 
             <div class="h-2 w-full overflow-hidden rounded-full" style="background-color: var(--border);">
               <div
-                class="h-full rounded-full transition-all duration-300"
-                style="width: {cacheUsagePercent}%; background-color: var(--accent);"
+                class="h-full w-full origin-left rounded-full transition-transform duration-300 ease-out"
+                style="transform: scaleX({Math.max(0, Math.min(1, cacheUsagePercent / 100))}); background-color: var(--accent);"
               ></div>
             </div>
 
@@ -2917,17 +2918,30 @@
   {/if}
 </div>
 
-<!-- Reset All Settings Confirmation Modal -->
+<!-- Reset All Settings Confirmation Modal (Bottom Sheet on Compact Mobile, Centered Dialog on sm+) -->
 {#if showResetAllModal}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+    class="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
+    style="padding-top: max(1rem, var(--safe-top)); padding-left: var(--safe-left); padding-right: var(--safe-right);"
     role="dialog"
     aria-modal="true"
   >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="flex max-h-[calc(var(--app-height,100dvh)-2rem-var(--safe-top)-var(--safe-bottom)-var(--ime-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
-      style="background-color: var(--surface); border-color: var(--border);"
+      transition:backdropFade|local
+      onclick={() => {
+        if (!resettingAll) showResetAllModal = false;
+      }}
+      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+    ></div>
+
+    <div
+      transition:modalScale|local
+      class="modal-cq relative z-10 flex max-h-[calc(var(--app-height,100dvh)-1.5rem-var(--safe-top)-var(--ime-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 sm:max-h-[calc(var(--app-height,100dvh)-2rem-var(--safe-top)-var(--safe-bottom)-var(--ime-bottom))] sm:rounded-2xl sm:border"
+      style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >
+      <div class="sheet-handle -mt-2 sm:hidden" aria-hidden="true"></div>
       <div class="flex items-start gap-3">
         <div
           class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
@@ -2942,12 +2956,12 @@
           </p>
         </div>
       </div>
-      <div class="flex items-center justify-end gap-2 pt-1">
+      <div class="modal-footer-stack flex items-center justify-end gap-2 pt-1">
         <button
           type="button"
           disabled={resettingAll}
           onclick={() => (showResetAllModal = false)}
-          class="rounded-xl border px-4 py-2 text-xs font-medium"
+          class="gpu-press min-h-[42px] rounded-xl border px-4 py-2 text-xs font-medium"
           style="border-color: var(--border); background-color: var(--surface-subtle);"
         >
           {t.cancel}
@@ -2956,7 +2970,7 @@
           type="button"
           disabled={resettingAll}
           onclick={handleResetAll}
-          class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+          class="gpu-press inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
           style="background-color: var(--danger);"
         >
           {#if resettingAll}
@@ -2971,17 +2985,30 @@
   </div>
 {/if}
 
-<!-- Hidden Manga Permanent Delete Modal -->
+<!-- Hidden Manga Permanent Delete Modal (Bottom Sheet on Compact Mobile, Centered Dialog on sm+) -->
 {#if pendingDeleteHidden}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+    class="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
+    style="padding-top: max(1rem, var(--safe-top)); padding-left: var(--safe-left); padding-right: var(--safe-right);"
     role="dialog"
     aria-modal="true"
   >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="flex max-h-[calc(var(--app-height,100dvh)-2rem-var(--safe-top)-var(--safe-bottom)-var(--ime-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
-      style="background-color: var(--surface); border-color: var(--border);"
+      transition:backdropFade|local
+      onclick={() => {
+        if (!deletingHidden) pendingDeleteHidden = null;
+      }}
+      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+    ></div>
+
+    <div
+      transition:modalScale|local
+      class="modal-cq relative z-10 flex max-h-[calc(var(--app-height,100dvh)-1.5rem-var(--safe-top)-var(--ime-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 sm:max-h-[calc(var(--app-height,100dvh)-2rem-var(--safe-top)-var(--safe-bottom)-var(--ime-bottom))] sm:rounded-2xl sm:border"
+      style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >
+      <div class="sheet-handle -mt-2 sm:hidden" aria-hidden="true"></div>
       <div class="flex items-start gap-3">
         <div
           class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
@@ -2996,12 +3023,12 @@
           </p>
         </div>
       </div>
-      <div class="flex items-center justify-end gap-2 pt-1">
+      <div class="modal-footer-stack flex items-center justify-end gap-2 pt-1">
         <button
           type="button"
           disabled={deletingHidden}
           onclick={() => (pendingDeleteHidden = null)}
-          class="rounded-xl border px-4 py-2 text-xs font-medium"
+          class="gpu-press min-h-[42px] rounded-xl border px-4 py-2 text-xs font-medium"
           style="border-color: var(--border); background-color: var(--surface-subtle);"
         >
           {t.cancel}
@@ -3010,7 +3037,7 @@
           type="button"
           disabled={deletingHidden}
           onclick={confirmDeleteHiddenManga}
-          class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+          class="gpu-press inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
           style="background-color: var(--danger);"
         >
           {#if deletingHidden}
@@ -3029,12 +3056,13 @@
   .top-tab {
     flex: 1 1 auto;
     min-width: max-content;
+    min-height: 2.5rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.45rem;
-    padding: 0.5rem 0.7rem;
-    border-radius: 0.7rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.75rem;
     border: 1px solid transparent;
     background: transparent;
     color: var(--text-muted);
@@ -3042,12 +3070,16 @@
     font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
-    transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+    transition: transform var(--dur-fast, 150ms) var(--ease-out, ease), opacity var(--dur-fast, 150ms) ease;
   }
 
   .top-tab:hover {
     background-color: var(--surface-hover);
     color: var(--text);
+  }
+
+  .top-tab:active {
+    transform: scale(0.97);
   }
 
   .top-tab-active {
@@ -3061,39 +3093,44 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.4rem;
-    min-height: 4.35rem;
-    padding: 0.6rem 0.4rem;
-    border-radius: 0.9rem;
+    gap: 0.45rem;
+    min-height: 4.5rem;
+    padding: 0.65rem 0.5rem;
+    border-radius: 1rem;
     border: 1px solid var(--border);
     background-color: var(--surface);
+    box-shadow: var(--shadow-sm);
     color: var(--text);
     cursor: pointer;
+    transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
+  }
+
+  .quick-tile:active {
+    transform: scale(0.97);
   }
 
   .quick-icon {
     display: flex;
-    width: 1.85rem;
-    height: 1.85rem;
+    width: 1.95rem;
+    height: 1.95rem;
     align-items: center;
     justify-content: center;
-    border-radius: 0.55rem;
+    border-radius: 0.6rem;
   }
 
   .hub-row {
     display: flex;
     width: 100%;
-    min-height: 3.75rem;
+    min-height: 3.9rem;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.65rem 0.9rem;
+    padding: 0.7rem 0.95rem;
     border: none;
     border-bottom: 1px solid var(--border);
     background: transparent;
     color: var(--text);
     text-align: left;
     cursor: pointer;
-    transition: background-color 120ms ease;
   }
 
   .hub-row:hover {
@@ -3106,12 +3143,12 @@
 
   .hub-icon {
     display: flex;
-    width: 2.25rem;
-    height: 2.25rem;
+    width: 2.35rem;
+    height: 2.35rem;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    border-radius: 0.65rem;
+    border-radius: 0.7rem;
   }
 
   .bento-card {
@@ -3122,6 +3159,7 @@
     border-radius: 1rem;
     border: 1px solid var(--border);
     background-color: var(--surface);
+    box-shadow: var(--shadow-sm);
   }
 
   .card-head {
@@ -3134,12 +3172,12 @@
 
   .card-icon {
     display: flex;
-    width: 1.9rem;
-    height: 1.9rem;
+    width: 2rem;
+    height: 2rem;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    border-radius: 0.55rem;
+    border-radius: 0.6rem;
   }
 
   .card-title {
@@ -3182,17 +3220,21 @@
 
   .icon-btn {
     display: inline-flex;
-    width: 1.95rem;
-    height: 1.95rem;
+    width: 2.35rem;
+    height: 2.35rem;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    border-radius: 0.55rem;
+    border-radius: 0.65rem;
     border: 1px solid var(--border);
     background-color: var(--surface-subtle);
     color: var(--text-muted);
     cursor: pointer;
-    transition: color 120ms ease, background-color 120ms ease;
+    transition: transform var(--dur-fast, 150ms) var(--ease-out, ease);
+  }
+
+  .icon-btn:active:not(:disabled) {
+    transform: scale(0.95);
   }
 
   .icon-btn:hover:not(:disabled) {
@@ -3207,10 +3249,11 @@
 
   .compact-btn {
     display: inline-flex;
+    min-height: 2.25rem;
     align-items: center;
     gap: 0.35rem;
-    padding: 0.38rem 0.65rem;
-    border-radius: 0.55rem;
+    padding: 0.4rem 0.75rem;
+    border-radius: 0.65rem;
     border: 1px solid var(--border);
     background-color: var(--surface-subtle);
     color: var(--text);
@@ -3229,13 +3272,12 @@
     flex-direction: column;
     align-items: center;
     gap: 0.45rem;
-    padding: 0.5rem;
-    border-radius: 0.75rem;
+    padding: 0.55rem;
+    border-radius: 0.85rem;
     border: 1.5px solid var(--border);
     background-color: var(--surface-subtle);
     color: var(--text);
     cursor: pointer;
-    transition: border-color 140ms ease, background-color 140ms ease;
   }
 
   .theme-card-active {
@@ -3247,22 +3289,22 @@
   .theme-swatch {
     width: 100%;
     height: 2.2rem;
-    border-radius: 0.45rem;
+    border-radius: 0.5rem;
     border: 1px solid var(--border);
   }
 
   .mode-tile {
     display: flex;
+    min-height: 2.75rem;
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
     padding: 0.6rem 0.75rem;
-    border-radius: 0.75rem;
+    border-radius: 0.85rem;
     border: 1.5px solid var(--border);
     background-color: var(--surface-subtle);
     color: var(--text);
     cursor: pointer;
-    transition: border-color 140ms ease, background-color 140ms ease;
   }
 
   .mode-tile-active {
@@ -3273,12 +3315,13 @@
 
   .icon-seg {
     display: flex;
+    min-height: 3.1rem;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 0.25rem;
-    padding: 0.45rem 0.4rem;
-    border-radius: 0.65rem;
+    padding: 0.5rem 0.4rem;
+    border-radius: 0.75rem;
     border: 1px solid var(--border);
     background-color: var(--surface-subtle);
     color: var(--text-muted);
@@ -3295,14 +3338,14 @@
 
   .toggle-tile {
     display: flex;
+    min-height: 2.85rem;
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    padding: 0.55rem 0.7rem;
-    border-radius: 0.7rem;
+    padding: 0.55rem 0.75rem;
+    border-radius: 0.8rem;
     border: 1px solid var(--border);
     background-color: var(--surface-subtle);
-    transition: border-color 140ms ease, background-color 140ms ease;
   }
 
   .toggle-tile-on {
@@ -3316,19 +3359,19 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem 0.75rem;
-    padding: 0.6rem 0.75rem;
-    border-radius: 0.75rem;
+    padding: 0.65rem 0.8rem;
+    border-radius: 0.85rem;
     border: 1px solid var(--border);
     background-color: var(--surface-subtle);
   }
 
   .edge-btn {
     display: inline-flex;
-    width: 1.75rem;
-    height: 1.65rem;
+    width: 2.15rem;
+    height: 2.15rem;
     align-items: center;
     justify-content: center;
-    border-radius: 0.45rem;
+    border-radius: 0.55rem;
     border: 1px solid var(--border);
     background-color: var(--surface);
     color: var(--text-muted);
@@ -3342,15 +3385,15 @@
   }
 
   .chip {
-    padding: 0.3rem 0.6rem;
-    border-radius: 0.5rem;
+    min-height: 2.1rem;
+    padding: 0.35rem 0.7rem;
+    border-radius: 0.6rem;
     border: 1px solid var(--border);
     background-color: var(--surface-subtle);
     color: var(--text);
     font-size: 0.72rem;
     font-weight: 600;
     cursor: pointer;
-    transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
   }
 
   .chip-active {

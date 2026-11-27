@@ -1,20 +1,34 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #fafafa;
+  /* Sumi Studio — Editorial Ink & Paper (Light) */
+  --bg: #f5f4f0;
   --surface: #ffffff;
-  --surface-hover: #f4f4f5;
-  --surface-subtle: #f1f1f3;
-  --border: #e4e4e7;
-  --text: #18181b;
-  --text-muted: #71717a;
+  --surface-elevated: #ffffff;
+  --surface-hover: #efede8;
+  --surface-subtle: #eceae3;
+  --surface-glass: rgba(255, 255, 255, 0.84);
+  --border: #e4e1d9;
+  --border-strong: #d3cec3;
+  --text: #16161a;
+  --text-muted: #66656f;
   --accent: #e11d48;
   --accent-hover: #be123c;
   --accent-soft: rgba(225, 29, 72, 0.1);
   --accent-fg: #ffffff;
   --danger: #dc2626;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-sm: 0 1px 2px rgba(22, 22, 26, 0.05), 0 1px 1px rgba(22, 22, 26, 0.03);
+  --shadow-md: 0 10px 28px -6px rgba(22, 22, 26, 0.1), 0 4px 10px -4px rgba(22, 22, 26, 0.05);
+  --shadow-lg: 0 22px 48px -12px rgba(22, 22, 26, 0.16), 0 8px 20px -6px rgba(22, 22, 26, 0.08);
+
+  /* Motion tokens (GPU-composited properties only) */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --dur-fast: 150ms;
+  --dur-base: 210ms;
+  --dur-slow: 280ms;
+
+  /* Dynamic viewports & mobile safe areas */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
@@ -23,24 +37,30 @@
   --gesture-right: 0px;
   --ime-bottom: 0px;
   --app-height: 100dvh;
+  --app-width: 100dvw;
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #0f0f12;
-  --surface: #18181d;
-  --surface-hover: #222229;
-  --surface-subtle: #141418;
-  --border: #27272f;
-  --text: #f4f4f5;
-  --text-muted: #a1a1aa;
+  /* Sumi Studio — Editorial Ink & Obsidian (Dark) */
+  --bg: #0b0b0f;
+  --surface: #131319;
+  --surface-elevated: #1a1a22;
+  --surface-hover: #1e1e28;
+  --surface-subtle: #101016;
+  --surface-glass: rgba(19, 19, 25, 0.84);
+  --border: #252531;
+  --border-strong: #353546;
+  --text: #f3f3f6;
+  --text-muted: #9a9aa8;
   --accent: #f43f5e;
   --accent-hover: #fb7185;
-  --accent-soft: rgba(244, 63, 94, 0.14);
+  --accent-soft: rgba(244, 63, 94, 0.15);
   --accent-fg: #ffffff;
   --danger: #ef4444;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --shadow-md: 0 14px 34px -6px rgba(0, 0, 0, 0.52), 0 4px 12px -4px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 26px 56px -12px rgba(0, 0, 0, 0.68), 0 10px 24px -6px rgba(0, 0, 0, 0.45);
   color-scheme: dark;
 }
 
@@ -51,16 +71,21 @@
 html,
 body,
 #app {
+  width: 100%;
+  width: var(--app-width, 100dvw);
   height: 100%;
   height: var(--app-height, 100dvh);
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   margin: 0;
   padding: 0;
   background-color: var(--bg);
   color: var(--text);
-  font-family: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: "Segoe UI Variable", "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   overscroll-behavior: none;
 }
 
@@ -71,8 +96,8 @@ input[type="radio"] {
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
 }
 
 ::-webkit-scrollbar-track {
@@ -80,7 +105,7 @@ input[type="radio"] {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--border-strong);
   border-radius: 999px;
 }
 
@@ -100,16 +125,171 @@ input[type="radio"] {
   height: 0;
 }
 
+/* Subtle ambient ink-wash glow for app shell background (zero layout/animation cost). */
+.app-canvas {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(64rem 34rem at 18% -10%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 62%),
+    radial-gradient(52rem 28rem at 92% 0%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 58%);
+}
+
+/* Frosted glass chrome for nav bars, side rail, HUD bars, and floating pills. */
+.glass-chrome {
+  background-color: var(--surface-glass);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+/* Elevated card surface with refined hairline border and tactile shadow. */
+.surface-card {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+/* GPU-composited interactive feedback (transform & opacity only). */
+.gpu-press {
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+  will-change: transform;
+}
+
+.gpu-press:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Adaptive fluid library grid across phones, foldables, tablets, and ultrawide desktops. */
+.fluid-manga-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(140px, 18vw, 220px), 1fr));
+  gap: clamp(0.7rem, 1.35vw, 1.1rem);
+  align-items: start;
+}
+
+@media (max-width: 359px) {
+  .fluid-manga-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+  }
+}
+
+/* Mobile bottom-sheet grab handle */
+.sheet-handle {
+  width: 2.5rem;
+  height: 0.25rem;
+  border-radius: 9999px;
+  background-color: var(--border-strong);
+  margin: 0.5rem auto 0.25rem;
+  flex-shrink: 0;
+}
+
+/* CSS Container Queries for cards and modals */
+.card-cq {
+  container-type: inline-size;
+  container-name: manga-card;
+}
+
+.card-cq .card-title {
+  font-size: 0.875rem;
+  line-height: 1.32;
+}
+
+.card-cq .card-meta {
+  font-size: 0.72rem;
+}
+
+@container manga-card (max-width: 162px) {
+  .card-cq .card-title {
+    font-size: 0.78rem;
+    line-height: 1.28;
+  }
+  .card-cq .card-meta {
+    font-size: 0.67rem;
+  }
+  .card-cq .card-body {
+    padding: 0.5rem 0.55rem 0.6rem;
+  }
+}
+
+@container manga-card (min-width: 204px) {
+  .card-cq .card-title {
+    font-size: 0.92rem;
+  }
+  .card-cq .card-body {
+    padding: 0.7rem 0.8rem 0.8rem;
+  }
+}
+
+.modal-cq {
+  container-type: inline-size;
+  container-name: modal-shell;
+}
+
+@container modal-shell (max-width: 440px) {
+  .modal-cq .modal-footer-stack {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* Capped GPU-only staggered list entrance animation (total delay <= 300ms). */
+@keyframes rtmaga-stagger-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.stagger-item {
+  animation: rtmaga-stagger-enter var(--dur-base) var(--ease-out) both;
+  animation-delay: var(--stagger-delay, 0ms);
+}
+
 /* Natural scroll container accounting for safe areas, virtual keyboard, and mobile bottom nav (<768px).
-   On width >= 768px (desktop & phone landscape), Sidebar takes over navigation so bottom nav clears cleanly. */
+   On width >= 768px (tablet, phone landscape, desktop), side rail / sidebar handles navigation. */
 .main-scroll-area {
   -webkit-overflow-scrolling: touch;
-  padding-bottom: calc(4.75rem + var(--safe-bottom) + var(--ime-bottom));
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+  padding-bottom: calc(5.25rem + var(--safe-bottom) + var(--ime-bottom));
 }
 
 @media (min-width: 768px) {
   .main-scroll-area {
     padding-top: var(--safe-top);
-    padding-bottom: calc(1.5rem + var(--safe-bottom) + var(--ime-bottom));
+    padding-left: 0;
+    padding-right: var(--safe-right);
+    padding-bottom: calc(1.75rem + var(--safe-bottom) + var(--ime-bottom));
+  }
+}
+
+/* Ergonomic minimum touch targets on touch/coarse-pointer devices. */
+@media (pointer: coarse) {
+  .touch-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* Strict accessibility: eliminate non-essential motion when user prefers reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .stagger-item {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
 }

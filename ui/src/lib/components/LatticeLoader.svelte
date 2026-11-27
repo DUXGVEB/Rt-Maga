@@ -158,18 +158,18 @@
     display: block;
     width: 100%;
     height: 100%;
-    border-radius: 1.5px;
+    border-radius: 2px;
     background-color: currentColor;
     will-change: transform, opacity;
   }
 
   .lattice-orbit {
-    animation: lattice-orbit-wave 960ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
-    animation-delay: calc(var(--step) * -120ms);
+    animation: lattice-orbit-wave 920ms var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) infinite;
+    animation-delay: calc(var(--step) * -115ms);
   }
 
   .lattice-center {
-    animation: lattice-center-breathe 1920ms ease-in-out infinite;
+    animation: lattice-center-breathe 1840ms ease-in-out infinite;
   }
 
   @keyframes lattice-orbit-wave {

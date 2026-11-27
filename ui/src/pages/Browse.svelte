@@ -472,10 +472,10 @@
 
   <!-- Body -->
   {#if loading}
-    <div class="grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+    <div class="fluid-manga-grid">
       {#each Array(10) as _, i (i)}
         <div
-          class="aspect-[3/4] animate-pulse rounded-xl"
+          class="aspect-[3/4] animate-pulse rounded-2xl"
           style="background-color: var(--surface-hover);"
         ></div>
       {/each}
@@ -495,21 +495,20 @@
   {:else if !catalog || catalog.entries.length === 0}
     <div
       class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-16 text-center"
-      style="border-color: var(--border); color: var(--text-muted);"
+      style="border-color: var(--border-strong); color: var(--text-muted);"
     >
       <BookOpen size={30} strokeWidth={1.5} />
       <div class="text-sm font-medium" style="color: var(--text);">{t.browseEmptyTitle}</div>
     </div>
   {:else}
-    <div class="grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+    <div class="fluid-manga-grid">
       {#each catalog.entries as entry (entry.url)}
         {@const isOpening = openingEntryUrl === entry.url}
         <button
           type="button"
           disabled={openingEntryUrl !== null}
           onclick={() => void openEntry(entry)}
-          class="group flex flex-col overflow-hidden rounded-xl border text-left transition-transform duration-150 hover:-translate-y-0.5 disabled:opacity-70"
-          style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-sm);"
+          class="card-cq surface-card group flex flex-col overflow-hidden rounded-2xl text-left transition-transform duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.985] disabled:opacity-70"
         >
           <div
             class="relative aspect-[3/4] w-full overflow-hidden"
@@ -523,7 +522,7 @@
                 onerror={() => {
                   failedCovers = { ...failedCovers, [entry.url]: true };
                 }}
-                class="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
               />
             {:else}
               <div
@@ -536,8 +535,8 @@
 
             {#if entry.updatedAt}
               <span
-                class="absolute top-2 left-2 max-w-[60%] truncate rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white"
-                style="background-color: rgba(15, 15, 18, 0.74);"
+                class="absolute top-2 left-2 max-w-[60%] truncate rounded-lg px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-md"
+                style="background-color: rgba(11, 11, 15, 0.74);"
               >
                 {entry.updatedAt}
               </span>
@@ -545,8 +544,8 @@
 
             {#if entry.latestChapter}
               <span
-                class="absolute bottom-2 left-2 max-w-[calc(100%-1rem)] truncate rounded-md px-2 py-0.5 text-[10px] font-semibold text-white"
-                style="background-color: rgba(15, 15, 18, 0.8);"
+                class="absolute bottom-2 left-2 max-w-[calc(100%-1rem)] truncate rounded-lg px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-md"
+                style="background-color: rgba(11, 11, 15, 0.8);"
               >
                 {entry.latestChapter}
               </span>
@@ -554,8 +553,8 @@
 
             {#if entry.status}
               <span
-                class="absolute top-2 right-2 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white"
-                style="background-color: rgba(15, 15, 18, 0.72);"
+                class="absolute top-2 right-2 rounded-lg px-1.5 py-0.5 text-[10px] font-semibold uppercase text-white backdrop-blur-md"
+                style="background-color: rgba(11, 11, 15, 0.72);"
               >
                 {entry.status}
               </span>
@@ -570,15 +569,15 @@
             {/if}
           </div>
 
-          <div class="flex flex-1 flex-col gap-1 p-2.5">
-            <div class="line-clamp-2 text-xs font-semibold leading-snug sm:text-sm">
+          <div class="card-body flex flex-1 flex-col gap-1 p-2.5">
+            <div class="card-title line-clamp-2 font-semibold">
               {entry.title}
             </div>
             {#if entry.genres.length > 0}
               <div class="mt-auto flex flex-wrap gap-1 pt-1">
                 {#each entry.genres.slice(0, 2) as genre (genre)}
                   <span
-                    class="rounded px-1.5 py-0.5 text-[10px]"
+                    class="rounded-md px-1.5 py-0.5 text-[10px]"
                     style="background-color: var(--surface-subtle); color: var(--text-muted);"
                   >
                     {genre}

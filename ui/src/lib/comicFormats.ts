@@ -13,6 +13,8 @@ export const COMIC_ARCHIVE_EXTENSIONS = [
 
 export const COMIC_DOC_EXTENSIONS = ["epub", "pdf"] as const;
 
+export const BACKUP_EXTENSIONS = ["tachibk", "gz"] as const;
+
 export const COMIC_IMAGE_EXTENSIONS = [
   "jpg",
   "jpeg",
@@ -29,10 +31,19 @@ export const ALL_SUPPORTED_COMIC_EXTENSIONS = [
   ...COMIC_IMAGE_EXTENSIONS,
 ] as const;
 
+export const ALL_SUPPORTED_UPLOAD_EXTENSIONS = [
+  ...ALL_SUPPORTED_COMIC_EXTENSIONS,
+  ...BACKUP_EXTENSIONS,
+] as const;
+
 export const COMIC_DIALOG_FILTERS: DialogFilter[] = [
   {
-    name: "All Supported Comics & Images",
-    extensions: [...ALL_SUPPORTED_COMIC_EXTENSIONS],
+    name: "All Supported Comics, Images & Backups",
+    extensions: [...ALL_SUPPORTED_COMIC_EXTENSIONS, "tachibk"],
+  },
+  {
+    name: "Mihon / Tachiyomi Backups (TACHIBK, PROTO.GZ)",
+    extensions: [...BACKUP_EXTENSIONS],
   },
   {
     name: "Comic Archives (CBZ, CBR, CB7, CBT, ZIP, RAR, 7z, TAR)",
@@ -51,10 +62,14 @@ export const COMIC_DIALOG_FILTERS: DialogFilter[] = [
 /**
  * Broad accept string for WebView `<input type="file">`.
  * Includes `application/octet-stream` and `image/*` so Android document pickers never gray out
- * `.cbz`, `.cbr`, `.cb7`, or `.cbt` files whose MIME types are unknown to the OS.
+ * `.cbz`, `.cbr`, `.cb7`, `.cbt`, or `.tachibk` files whose MIME types are unknown to the OS.
  */
 export const BROWSER_FILE_ACCEPT = [
   ...ALL_SUPPORTED_COMIC_EXTENSIONS.map((ext) => `.${ext}`),
+  ".tachibk",
+  ".proto.gz",
+  "application/gzip",
+  "application/x-gzip",
   "application/vnd.comicbook+zip",
   "application/vnd.comicbook-rar",
   "application/zip",
@@ -68,9 +83,25 @@ export const BROWSER_FILE_ACCEPT = [
   "image/*",
 ].join(",");
 
-/** Returns `true` for locally imported offline comics (including legacy `local:cbz` entries). */
+/** Returns `true` for locally imported offline comics (including legacy `local:cbz` and catalog entries). */
 export function isLocalComicSite(site: string): boolean {
   return site.startsWith("local:");
+}
+
+/** Returns `true` for metadata-only catalog entries imported from a `.tachibk` backup without local files yet. */
+export function isTachibkCatalogSite(site: string): boolean {
+  return site === "local:tachibk";
+}
+
+/** Returns `true` when a chapter URL is a metadata-only `.tachibk` stub without linked local pages. */
+export function isMetadataOnlyChapterUrl(url: string): boolean {
+  return url.startsWith("https://tachibk.local/");
+}
+
+/** Returns `true` when a filename carries a Mihon / Tachiyomi backup extension (`.tachibk` or `.proto.gz`). */
+export function isBackupFilename(rawName: string): boolean {
+  const lower = rawName.trim().toLowerCase();
+  return lower.endsWith(".tachibk") || lower.endsWith(".proto.gz") || lower.endsWith(".tachibk.gz");
 }
 
 /** Filters OS junk metadata files (`__MACOSX`, `.DS_Store`, `Thumbs.db`, AppleDouble `._*`). */
@@ -109,6 +140,9 @@ export function shouldUploadBrowserFile(file: File, includeFolderMeta = false): 
   if (includeFolderMeta && (lower === "comicinfo.xml" || lower === "details.json")) {
     return true;
   }
+  if (!includeFolderMeta && isBackupFilename(lower)) {
+    return true;
+  }
   if (file.type.startsWith("image/")) return true;
 
   const dotIdx = lower.lastIndexOf(".");
@@ -117,5 +151,8 @@ export function shouldUploadBrowserFile(file: File, includeFolderMeta = false): 
     return true;
   }
   const ext = lower.slice(dotIdx + 1);
+  if (!includeFolderMeta && ext === "gz") {
+    return true;
+  }
   return (ALL_SUPPORTED_COMIC_EXTENSIONS as readonly string[]).includes(ext);
 }

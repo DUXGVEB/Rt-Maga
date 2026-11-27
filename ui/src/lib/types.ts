@@ -913,3 +913,70 @@ export type AppError =
       report: SourceDiagnosticReport;
     }
   | { kind: "internal"; message: string };
+
+export type TachibkMatchKind = "none" | "local_library" | "web_library" | "catalog_entry";
+
+export interface TachibkCategoryPreview {
+  name: string;
+  order: number;
+  mangaCount: number;
+}
+
+export interface TachibkMangaPreview {
+  index: number;
+  title: string;
+  author: string | null;
+  artist: string | null;
+  description: string | null;
+  genres: string[];
+  categories: string[];
+  status: string | null;
+  coverToken: string | null;
+  sourceName: string | null;
+  favorite: boolean;
+  totalChapters: number;
+  readChapters: number;
+  bookmarkedChapters: number;
+  lastReadAt: number | null;
+  dateAdded: number | null;
+  trackingCount: number;
+  matchedMangaId: number | null;
+  matchedMangaTitle: string | null;
+  matchKind: TachibkMatchKind;
+}
+
+export interface TachibkBackupPreview {
+  sourcePath: string | null;
+  uploadId: string | null;
+  fileName: string;
+  fileSize: number;
+  totalManga: number;
+  matchedLocalCount: number;
+  matchedExistingCount: number;
+  unmatchedCount: number;
+  totalChapters: number;
+  totalReadChapters: number;
+  categories: TachibkCategoryPreview[];
+  entries: TachibkMangaPreview[];
+}
+
+export interface TachibkImportRequest {
+  sourcePath: string | null;
+  uploadId: string | null;
+  selectedIndices: number[];
+  syncReadingProgress: boolean;
+  importMetadataOnly: boolean;
+  importCategories: boolean;
+  importBookmarks: boolean;
+}
+
+export interface TachibkImportReport {
+  linkedLocalCount: number;
+  updatedExistingCount: number;
+  createdCatalogCount: number;
+  skippedCount: number;
+  syncedChaptersRead: number;
+  syncedBookmarks: number;
+  syncedHistory: number;
+  importedMangaIds: number[];
+}

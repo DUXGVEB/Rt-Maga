@@ -13,6 +13,7 @@ pub(crate) mod pdf;
 pub(crate) mod rar;
 pub(crate) mod sevenz;
 pub(crate) mod sort;
+pub(crate) mod tachibk;
 pub(crate) mod tar_src;
 pub(crate) mod zip_epub;
 
@@ -38,6 +39,11 @@ pub(crate) use importer::{
     append_comic_staging_chunk, begin_comic_staging, delete_local_files_for_manga,
     finish_comic_staging_import, import_comic_paths, load_local_chapter,
     pick_and_import_comics_windows, read_local_page_bytes,
+};
+pub(crate) use tachibk::{
+    TachibkBackupPreview, TachibkImportReport, TachibkImportRequest, detect_tachibk_paths,
+    discard_tachibk_upload, import_tachibk_backup, is_tachibk_url, preview_tachibk_from_path,
+    preview_tachibk_from_upload,
 };
 
 /// Canonical container/source format persisted in `local_comic_chapter.source_format`.
@@ -110,6 +116,7 @@ pub(crate) enum DetectedFileKind {
     Tar,
     Pdf,
     Image,
+    Tachibk,
 }
 
 /// Entry descriptor for RAR/7z archives indexed by name and entry index.
@@ -356,7 +363,13 @@ pub(crate) fn detect_format_magic(path: &Path) -> Result<DetectedFileKind, AppEr
     let slice = &header[..n];
     drop(file);
 
-    // 1. Check explicit magic signatures + `infer` classification.
+    // 1. Check GZIP magic (`0x1F 0x8B`) for Mihon/Tachiyomi `.tachibk` / `.proto.gz` backups
+    //    (explicitly excluding compressed `.tar.gz` / `.cbt` archives).
+    if tachibk::is_gzip_magic(slice) && tachibk::probe_tachibk_file_sync(path) {
+        return Ok(DetectedFileKind::Tachibk);
+    }
+
+    // 2. Check explicit magic signatures + `infer` classification.
     if let Some(kind) = sniff_header_magic_bytes(slice) {
         if kind == DetectedFileKind::Zip && is_zip_epub_sync(path) {
             return Ok(DetectedFileKind::Epub);
@@ -366,7 +379,7 @@ pub(crate) fn detect_format_magic(path: &Path) -> Result<DetectedFileKind, AppEr
 
     Err(AppError::UnsupportedFormat {
         message: format!(
-            "unsupported file format for '{}'; expected CBZ/ZIP, CBR/RAR, CB7/7z, CBT/TAR, EPUB, PDF, or raster images",
+            "unsupported file format for '{}'; expected CBZ/ZIP, CBR/RAR, CB7/7z, CBT/TAR, EPUB, PDF, .tachibk backup, or raster images",
             path.file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("selected file")
@@ -440,6 +453,9 @@ pub(crate) fn inspect_single_archive_sync(
         DetectedFileKind::SevenZ => inspect_sevenz_sync(path, override_series),
         DetectedFileKind::Tar => inspect_tar_sync(path, override_series),
         DetectedFileKind::Pdf => inspect_pdf_sync(path, override_series),
+        DetectedFileKind::Tachibk => Err(AppError::UnsupportedFormat {
+            message: "Mihon/Tachiyomi backup (.tachibk/.proto.gz) contains library metadata, not offline comic pages; import it via the backup preview dialog".to_owned(),
+        }),
         DetectedFileKind::Directory | DetectedFileKind::Image => Err(AppError::UnsupportedFormat {
             message: "expected an archive or document file".to_owned(),
         }),

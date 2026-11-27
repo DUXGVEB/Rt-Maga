@@ -464,6 +464,11 @@ fn prepare_import_chapters_sync(
             DetectedFileKind::Image => {
                 loose_images.push(path.clone());
             }
+            DetectedFileKind::Tachibk => {
+                return Err(AppError::UnsupportedFormat {
+                    message: "Mihon/Tachiyomi backup (.tachibk/.proto.gz) must be imported via the backup preview modal".to_owned(),
+                });
+            }
             DetectedFileKind::Zip
             | DetectedFileKind::Epub
             | DetectedFileKind::Rar
@@ -572,7 +577,7 @@ async fn persist_series_group(
     let first = &items[0].parsed;
     let source_id = format!("local:{series_slug}");
     let legacy_source_id = format!("cbz:{series_slug}");
-    let existing_id = if let Some(tid) = target_manga_id {
+    let mut existing_id = if let Some(tid) = target_manga_id {
         Some(tid)
     } else if let Some(id) = state.db.find_manga_id_by_source_id(&source_id).await? {
         Some(id)
@@ -583,10 +588,31 @@ async fn persist_series_group(
             .await?
     };
 
+    if existing_id.is_none() {
+        let norm_title =
+            crate::services::comics::tachibk::normalize_match_title(&first.series_title);
+        if !norm_title.is_empty() {
+            existing_id = state
+                .db
+                .list_manga_match_candidates()
+                .await?
+                .into_iter()
+                .find(|c| {
+                    c.site == crate::services::comics::tachibk::TACHIBK_SITE_KEY
+                        && crate::services::comics::tachibk::normalize_match_title(&c.title)
+                            == norm_title
+                })
+                .map(|c| c.id);
+        }
+    }
+
     // Preserve existing local manga URL/site if appending chapters to a pre-existing entry.
+    // If upgrading a metadata-only `.tachibk` catalog entry, graduate its site to `local:comic`.
+    let mut upgraded_from_tachibk = false;
     let (series_url, cover_url, site_key) = if let Some(eid) = existing_id
         && let Some(row) = state.db.get_manga_by_id(eid).await?
     {
+        upgraded_from_tachibk = row.site == crate::services::comics::tachibk::TACHIBK_SITE_KEY;
         let u = Url::parse(&row.url).unwrap_or_else(|_| {
             Url::parse(&format!("https://comic.local/series/{series_slug}"))
                 .expect("static local series url is valid")
@@ -599,7 +625,12 @@ async fn persist_series_group(
                 Url::parse(&format!("https://comic.local/cover/{series_slug}.img"))
                     .expect("static local cover url is valid")
             });
-        (u, c, row.site)
+        let effective_site = if upgraded_from_tachibk {
+            "local:comic".to_owned()
+        } else {
+            row.site
+        };
+        (u, c, effective_site)
     } else {
         let u = Url::parse(&format!("https://comic.local/series/{series_slug}"))
             .expect("static local series url is valid");
@@ -608,39 +639,45 @@ async fn persist_series_group(
         (u, c, "local:comic".to_owned())
     };
 
-    let mut merged_chapters: Vec<ChapterRef> = if let Some(eid) = existing_id {
-        state
-            .db
-            .list_chapters(eid)
-            .await?
-            .into_iter()
-            .filter_map(|r| {
-                Some(ChapterRef {
-                    url: Url::parse(&r.url).ok()?,
-                    name: r.name,
-                    number: r.number.map(|n| {
-                        #[expect(
-                            clippy::as_conversions,
-                            clippy::cast_possible_truncation,
-                            reason = "chapter number stored as f64 in SQLite"
-                        )]
-                        {
-                            n as f32
-                        }
-                    }),
-                    volume: r.volume,
-                    published_at: r.published_at,
-                    language: r.language,
-                    source_id: r.source_id,
-                })
-            })
-            .collect()
+    let existing_chapter_rows = if let Some(eid) = existing_id {
+        state.db.list_chapters(eid).await?
     } else {
         Vec::new()
     };
+    let (tachibk_read_nums, tachibk_read_names) = if upgraded_from_tachibk {
+        crate::services::comics::tachibk::extract_tachibk_read_lookup(&existing_chapter_rows)
+    } else {
+        (BTreeMap::new(), std::collections::HashSet::new())
+    };
+
+    let mut merged_chapters: Vec<ChapterRef> = existing_chapter_rows
+        .into_iter()
+        .filter_map(|r| {
+            Some(ChapterRef {
+                url: Url::parse(&r.url).ok()?,
+                name: r.name,
+                number: r.number.map(|n| {
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        reason = "chapter number stored as f64 in SQLite"
+                    )]
+                    {
+                        n as f32
+                    }
+                }),
+                volume: r.volume,
+                published_at: r.published_at,
+                language: r.language,
+                source_id: r.source_id,
+            })
+        })
+        .collect();
 
     let mut chapter_records: Vec<(String, String, String, String, i64)> =
         Vec::with_capacity(items.len());
+    let mut restored_read_urls: Vec<String> = Vec::new();
+    let mut replaced_tachibk_urls: Vec<(String, String, String)> = Vec::new();
 
     for item in &items {
         let parsed = &item.parsed;
@@ -684,6 +721,43 @@ async fn persist_series_group(
             parsed.file_sha_short
         );
         let chap_url = Url::parse(&chap_url_str).expect("valid local chapter url");
+
+        // When upgrading a metadata-only `.tachibk` catalog entry, replace any matching
+        // `https://tachibk.local/chapter/...` stub with this real local comic chapter.
+        if upgraded_from_tachibk {
+            let norm_new_name =
+                crate::services::comics::tachibk::normalize_match_title(&parsed.chapter_title);
+            let matched_stub_pos = merged_chapters.iter().position(|c| {
+                if !crate::services::comics::is_tachibk_url(c.url.as_str()) {
+                    return false;
+                }
+                if let (Some(na), Some(nb)) = (c.number, parsed.chapter_number)
+                    && (na - nb).abs() < 0.001
+                {
+                    return true;
+                }
+                !norm_new_name.is_empty()
+                    && crate::services::comics::tachibk::normalize_match_title(&c.name)
+                        == norm_new_name
+            });
+            if let Some(pos) = matched_stub_pos {
+                let removed = merged_chapters.remove(pos);
+                replaced_tachibk_urls.push((
+                    removed.url.into(),
+                    chap_url_str.clone(),
+                    parsed.chapter_title.clone(),
+                ));
+            }
+            if crate::services::comics::tachibk::matches_tachibk_read_lookup(
+                parsed.chapter_number,
+                &parsed.chapter_title,
+                &tachibk_read_nums,
+                &tachibk_read_names,
+            ) {
+                restored_read_urls.push(chap_url_str.clone());
+            }
+        }
+
         if let Some(existing_ch) = merged_chapters.iter_mut().find(|c| c.url == chap_url) {
             existing_ch.name.clone_from(&parsed.chapter_title);
             existing_ch.number = parsed.chapter_number;
@@ -739,22 +813,24 @@ async fn persist_series_group(
 
     let manga_id = state.db.upsert_manga_with_id(existing_id, &manga).await?;
 
-    let cover_key = ImageCache::key_for_url(cover_url.as_str());
-    state
-        .images
-        .put(
-            &cover_key,
-            &first.first_page_bytes,
-            &first.first_page_mime,
-            max_mb,
-            CacheEntryMeta {
-                site: Some(&site_key),
-                manga_id: Some(manga_id),
-                is_cover: true,
-                chapter_url: None,
-            },
-        )
-        .await;
+    if crate::services::comics::is_local_comic_url(cover_url.as_str()) {
+        let cover_key = ImageCache::key_for_url(cover_url.as_str());
+        state
+            .images
+            .put(
+                &cover_key,
+                &first.first_page_bytes,
+                &first.first_page_mime,
+                max_mb,
+                CacheEntryMeta {
+                    site: Some(&site_key),
+                    manga_id: Some(manga_id),
+                    is_cover: true,
+                    chapter_url: None,
+                },
+            )
+            .await;
+    }
 
     for (chap_url_str, format_str, rel_path, pages_json, fsize) in chapter_records {
         state
@@ -766,6 +842,28 @@ async fn persist_series_group(
                 &rel_path,
                 &pages_json,
                 fsize,
+            )
+            .await?;
+    }
+
+    for read_url in restored_read_urls {
+        state.db.mark_chapter_read(manga_id, &read_url).await?;
+    }
+
+    if !replaced_tachibk_urls.is_empty()
+        && let Some(hist) = state.db.get_history_for_manga(manga_id).await?
+        && let Some((_, new_url, new_name)) = replaced_tachibk_urls.iter().find(|(old_u, _, _)| {
+            old_u.trim_end_matches('/') == hist.chapter_url.trim_end_matches('/')
+        })
+    {
+        state
+            .db
+            .save_history(
+                manga_id,
+                new_url,
+                new_name,
+                hist.scroll_ratio,
+                hist.page_index,
             )
             .await?;
     }

@@ -200,10 +200,10 @@
       e.preventDefault();
       void submit();
     }}
-    class="flex flex-wrap items-center gap-1.5 rounded-2xl border p-2 transition-shadow focus-within:ring-2 sm:flex-nowrap sm:gap-2"
-    style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-sm); --tw-ring-color: var(--accent-soft);"
+    class="surface-card flex flex-col gap-2 rounded-2xl p-2 focus-within:ring-2 sm:flex-row sm:items-center sm:gap-2"
+    style="--tw-ring-color: var(--accent-soft);"
   >
-    <div class="flex min-w-0 flex-1 items-center gap-2 pl-2">
+    <div class="flex min-w-0 flex-1 items-center gap-2.5 px-2 sm:pl-2.5 sm:pr-0">
       <div class="shrink-0" style="color: var(--text-muted);">
         <Link2 size={18} />
       </div>
@@ -233,26 +233,26 @@
         type="button"
         onclick={pasteFromClipboard}
         disabled={loading || pasting}
-        class="inline-flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-opacity hover:opacity-85 disabled:opacity-40"
+        class="gpu-press inline-flex min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:opacity-85 disabled:opacity-40 sm:min-h-[38px] sm:flex-initial"
         style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
         title={t.pasteUrlBtn}
         aria-label={t.pasteUrlBtn}
       >
-        <ClipboardPaste size={13} />
-        <span class="hidden sm:inline">{t.pasteUrlBtn}</span>
+        <ClipboardPaste size={14} />
+        <span>{t.pasteUrlBtn}</span>
       </button>
 
-      <!-- Clear URL Button: positioned immediately left of Open Manga, smaller visual size -->
+      <!-- Clear URL Button: positioned immediately left of Open Manga -->
       <button
         type="button"
         onclick={clearUrlInput}
         disabled={loading || (!urlInput && !errorState)}
-        class="inline-flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-opacity hover:opacity-85 disabled:opacity-35"
+        class="gpu-press inline-flex min-h-[42px] min-w-[42px] shrink-0 items-center justify-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-medium hover:opacity-85 disabled:opacity-35 sm:min-h-[38px] sm:min-w-0"
         style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
         title={t.clearUrlBtn}
         aria-label={t.clearUrlBtn}
       >
-        <X size={13} />
+        <X size={14} />
         <span class="hidden sm:inline">{t.clearUrlBtn}</span>
       </button>
 
@@ -260,7 +260,7 @@
       <button
         type="submit"
         disabled={loading || !urlInput.trim()}
-        class="flex shrink-0 items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-medium transition-opacity disabled:opacity-45"
+        class="gpu-press flex min-h-[42px] flex-1 shrink-0 items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-sm font-semibold hover:opacity-92 disabled:opacity-45 sm:min-h-[38px] sm:flex-initial"
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         {#if loading}

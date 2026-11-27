@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Bookmark, BookOpen, CheckCircle2, Sparkles } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
+  import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../comicFormats";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -23,8 +24,13 @@
   });
 
   const isCompletedOnly = $derived(item.isCompleted && !item.hasNew);
+  const isCatalogOnly = $derived(isTachibkCatalogSite(item.site));
 
   function openContinue() {
+    if (isCatalogOnly || isMetadataOnlyChapterUrl(item.chapterUrl)) {
+      router.goManga(item.mangaId);
+      return;
+    }
     if (isCompletedOnly) {
       toasts.push(t.toastMangaCompletedNoResume, "info", 2800);
       return;
@@ -39,8 +45,7 @@
 </script>
 
 <article
-  class="group relative flex flex-col overflow-hidden rounded-xl border transition-all duration-150 hover:-translate-y-0.5"
-  style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-sm);"
+  class="card-cq surface-card group relative flex flex-col overflow-hidden rounded-2xl transition-transform duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.985]"
 >
   <div class="relative aspect-[3/4] w-full overflow-hidden" style="background-color: var(--surface-subtle);">
     <button
@@ -57,38 +62,51 @@
           onerror={() => {
             coverError = true;
           }}
-          class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+          class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
         />
       {:else}
         <div class="flex h-full w-full items-center justify-center" style="color: var(--text-muted);">
           <BookOpen size={32} strokeWidth={1.5} />
         </div>
       {/if}
+      <span
+        class="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/45 via-black/10 to-transparent"
+        aria-hidden="true"
+      ></span>
     </button>
 
     <div class="pointer-events-none absolute top-2 left-2 flex flex-col items-start gap-1">
       {#if item.hasNew}
         <span
-          class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold shadow-sm"
+          class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold shadow-sm"
           style="background-color: var(--accent); color: var(--accent-fg);"
         >
-          <Sparkles size={11} />
+          <Sparkles size={10} />
           {t.badgeNew}
         </span>
       {:else if isCompletedOnly}
         <span
-          class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm backdrop-blur-md"
-          style="background-color: rgba(16, 185, 129, 0.85);"
+          class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm backdrop-blur-md"
+          style="background-color: rgba(16, 185, 129, 0.88);"
         >
-          <CheckCircle2 size={11} />
+          <CheckCircle2 size={10} />
           {t.badgeCompleted}
+        </span>
+      {/if}
+
+      {#if isCatalogOnly}
+        <span
+          class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm backdrop-blur-md"
+          style="background-color: rgba(11, 11, 15, 0.78);"
+        >
+          {t.tachibkCatalogShortBadge}
         </span>
       {/if}
 
       {#if item.unreadCount > 0}
         <span
           class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold text-white shadow-sm backdrop-blur-md"
-          style="background-color: rgba(15, 15, 18, 0.78);"
+          style="background-color: rgba(11, 11, 15, 0.78);"
         >
           {t.unreadBadge(item.unreadCount)}
         </span>
@@ -98,7 +116,7 @@
     {#if item.bookmarked}
       <span
         class="pointer-events-none absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full text-white shadow-sm backdrop-blur-md"
-        style="background-color: rgba(15, 15, 18, 0.62);"
+        style="background-color: rgba(11, 11, 15, 0.65);"
         title={t.navBookmarks}
       >
         <Bookmark size={12} fill="currentColor" />
@@ -108,31 +126,31 @@
     <button
       type="button"
       onclick={openDetail}
-      class="absolute right-2 bottom-2 rounded-lg px-2 py-1 text-[11px] font-medium text-white opacity-90 backdrop-blur-md transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
-      style="background-color: rgba(15, 15, 18, 0.74);"
+      class="gpu-press absolute right-2 bottom-2 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white opacity-95 backdrop-blur-md sm:opacity-0 sm:group-hover:opacity-100"
+      style="background-color: rgba(11, 11, 15, 0.78);"
     >
       {t.chaptersBtn}
     </button>
   </div>
 
-  <div class="flex flex-1 flex-col gap-1.5 p-3">
+  <div class="card-body flex flex-1 flex-col gap-1.5 p-3">
     <button
       type="button"
       onclick={() => openDetail()}
-      class="line-clamp-2 cursor-pointer text-left text-sm font-semibold leading-snug transition-colors hover:underline"
+      class="card-title line-clamp-2 cursor-pointer text-left font-semibold hover:underline"
       title={item.title}
     >
       {item.title}
     </button>
-    <div class="truncate text-xs" style="color: var(--text-muted);">
+    <div class="card-meta truncate" style="color: var(--text-muted);">
       {item.chapterName}
     </div>
 
     <div class="mt-auto pt-1.5">
       <div class="h-1 w-full overflow-hidden rounded-full" style="background-color: var(--surface-hover);">
         <div
-          class="h-full rounded-full transition-all"
-          style="width: {progressPct()}%; background-color: {isCompletedOnly ? '#10b981' : 'var(--accent)'};"
+          class="h-full w-full origin-left rounded-full transition-transform duration-300 ease-out"
+          style="transform: scaleX({Math.max(0, Math.min(1, progressPct() / 100))}); background-color: {isCompletedOnly ? '#10b981' : 'var(--accent)'};"
         ></div>
       </div>
     </div>

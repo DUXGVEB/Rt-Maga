@@ -9,16 +9,21 @@
     CheckCircle2,
     CornerDownLeft,
     EyeOff,
-    Loader2,
     Play,
     RefreshCw,
     Search,
     Trash2,
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
-  import { isLocalComicSite } from "../lib/comicFormats";
+  import {
+    isLocalComicSite,
+    isMetadataOnlyChapterUrl,
+    isTachibkCatalogSite,
+  } from "../lib/comicFormats";
   import CbzDropZone from "../lib/components/CbzDropZone.svelte";
+  import LatticeLoader from "../lib/components/LatticeLoader.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
+  import { backdropFade, createOverlayGuard, modalScale } from "../lib/motion";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -45,6 +50,19 @@
   let descExpanded = $state(false);
   let tagsExpanded = $state(false);
   let loadSeq = 0;
+  const deleteModalGuard = createOverlayGuard(200);
+
+  function openDeleteModal() {
+    if (!deleteModalGuard.canAct()) return;
+    deleteModalGuard.lock();
+    showDeleteModal = true;
+  }
+
+  function closeDeleteModal() {
+    if (deleting || !deleteModalGuard.canAct()) return;
+    deleteModalGuard.lock();
+    showDeleteModal = false;
+  }
 
   const t = $derived(settingsStore.t);
 
@@ -227,6 +245,10 @@
   function startPrimary() {
     if (!manga || manga.chapters.length === 0) return;
     if (manga.progress) {
+      if (isMetadataOnlyChapterUrl(manga.progress.chapterUrl)) {
+        toasts.push(t.tachibkCatalogChapterNoFilesToast, "info", 3200);
+        return;
+      }
       router.goReader(
         manga.id,
         manga.progress.chapterUrl,
@@ -234,7 +256,12 @@
         manga.progress.pageIndex
       );
     } else {
-      router.goReader(manga.id, manga.chapters[0].url, 0, 0);
+      const firstReadable = manga.chapters.find((c) => !isMetadataOnlyChapterUrl(c.url));
+      if (!firstReadable) {
+        toasts.push(t.tachibkCatalogChapterNoFilesToast, "info", 3200);
+        return;
+      }
+      router.goReader(manga.id, firstReadable.url, 0, 0);
     }
   }
 
@@ -257,6 +284,10 @@
       return;
     }
     jumpInput = "";
+    if (isMetadataOnlyChapterUrl(target.url)) {
+      toasts.push(t.tachibkCatalogChapterNoFilesToast, "info", 3200);
+      return;
+    }
     const isCurrent =
       manga.progress !== null && normUrl(manga.progress.chapterUrl) === normUrl(target.url);
     router.goReader(
@@ -362,10 +393,8 @@
         </button>
         <button
           type="button"
-          onclick={() => {
-            showDeleteModal = true;
-          }}
-          class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:opacity-85"
+          onclick={openDeleteModal}
+          class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:opacity-85"
           style="background-color: var(--surface); border-color: var(--border); color: var(--danger);"
         >
           <Trash2 size={14} />
@@ -413,67 +442,138 @@
         onOpenNetworkSettings={() => router.goSettings("network")}
       />
     {/if}
-    <!-- Manga Header -->
+    <!-- Editorial Mobile-First & Desktop Series Hero -->
     <section
-      class="flex flex-col gap-6 rounded-2xl border p-6 sm:flex-row"
-      style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-sm);"
+      class="surface-card relative flex flex-col gap-5 overflow-hidden rounded-2xl p-4 sm:flex-row sm:gap-6 sm:p-6"
     >
-      <div
-        class="h-60 w-44 shrink-0 overflow-hidden rounded-xl"
-        style="background-color: var(--surface-subtle);"
-      >
-        {#if manga.coverToken && !coverError}
-          <img
-            src={imgProxyUrl(manga.coverToken)}
-            alt={manga.title}
-            onerror={() => {
-              coverError = true;
-            }}
-            class="h-full w-full object-cover"
-          />
-        {:else}
-          <div class="flex h-full w-full items-center justify-center" style="color: var(--text-muted);">
-            <BookOpen size={36} strokeWidth={1.5} />
-          </div>
-        {/if}
-      </div>
+      {#if manga.coverToken && !coverError}
+        <img
+          src={imgProxyUrl(manga.coverToken)}
+          alt=""
+          aria-hidden="true"
+          class="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover opacity-[0.07] blur-2xl"
+        />
+      {/if}
 
-      <div class="flex min-w-0 flex-1 flex-col justify-between gap-4">
-        <div class="flex flex-col gap-2">
-          <div class="flex flex-wrap items-center gap-2">
+      <!-- Mobile compact top strip (cover + primary headline side-by-side); stacks as left column on sm+ -->
+      <div class="relative z-10 flex items-start gap-4 sm:block sm:shrink-0">
+        <div
+          class="aspect-[3/4] w-28 shrink-0 overflow-hidden rounded-xl border shadow-md sm:h-60 sm:w-44"
+          style="background-color: var(--surface-subtle); border-color: var(--border);"
+        >
+          {#if manga.coverToken && !coverError}
+            <img
+              src={imgProxyUrl(manga.coverToken)}
+              alt={manga.title}
+              onerror={() => {
+                coverError = true;
+              }}
+              class="h-full w-full object-cover"
+            />
+          {:else}
+            <div class="flex h-full w-full items-center justify-center" style="color: var(--text-muted);">
+              <BookOpen size={34} strokeWidth={1.5} />
+            </div>
+          {/if}
+        </div>
+
+        <!-- Mobile-only side header summary beside cover so zero wasted horizontal space on phones -->
+        <div class="flex min-w-0 flex-1 flex-col gap-1.5 sm:hidden">
+          <div class="flex flex-wrap items-center gap-1.5">
             <span
-              class="rounded-md px-2 py-0.5 text-xs font-medium"
-              style="background-color: var(--surface-hover); color: var(--text-muted);"
+              class="rounded-md px-2 py-0.5 text-[11px] font-semibold"
+              style="background-color: {isTachibkCatalogSite(manga.site)
+                ? 'var(--accent-soft)'
+                : 'var(--surface-hover)'}; color: {isTachibkCatalogSite(manga.site)
+                ? 'var(--accent)'
+                : 'var(--text-muted)'};"
             >
-              {isLocalComicSite(manga.site) ? t.cbzLocalBadge : manga.site}
-            </span>
-            <span class="text-xs" style="color: var(--text-muted);">
-              {t.chapterCount(manga.chapters.length)}
+              {isTachibkCatalogSite(manga.site)
+                ? t.tachibkCatalogSiteBadge
+                : isLocalComicSite(manga.site)
+                  ? t.cbzLocalBadge
+                  : manga.site}
             </span>
             {#if manga.unreadCount > 0}
               <span
-                class="rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
                 style="background-color: var(--accent-soft); color: var(--accent);"
               >
                 {t.unreadBadge(manga.unreadCount)}
               </span>
             {:else if manga.isCompleted}
               <span
-                class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
                 style="background-color: rgba(16, 185, 129, 0.14); color: #10b981;"
               >
-                <CheckCircle2 size={11} />
+                <CheckCircle2 size={10} />
                 {t.badgeCompleted}
               </span>
             {/if}
           </div>
 
-          <h1 class="text-2xl font-bold leading-tight tracking-tight">{manga.title}</h1>
+          <h1 class="text-lg font-bold leading-snug tracking-tight">{manga.title}</h1>
           {#if manga.originalTitle && manga.originalTitle.toLowerCase() !== manga.title.toLowerCase()}
-            <div class="text-xs font-medium" style="color: var(--text-muted);">
+            <div class="line-clamp-1 text-[11px] font-medium" style="color: var(--text-muted);">
               {manga.originalTitle}
             </div>
           {/if}
+          <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px]" style="color: var(--text-muted);">
+            <span>{t.chapterCount(manga.chapters.length)}</span>
+            {#if manga.status}
+              <span class="capitalize">· {manga.status}</span>
+            {/if}
+          </div>
+        </div>
+      </div>
+
+      <div class="relative z-10 flex min-w-0 flex-1 flex-col justify-between gap-4">
+        <div class="flex flex-col gap-2">
+          <!-- Desktop/Tablet headline block (hidden on <640px since rendered beside cover above) -->
+          <div class="hidden flex-col gap-2 sm:flex">
+            <div class="flex flex-wrap items-center gap-2">
+              <span
+                class="rounded-md px-2 py-0.5 text-xs font-medium"
+                style="background-color: {isTachibkCatalogSite(manga.site)
+                  ? 'var(--accent-soft)'
+                  : 'var(--surface-hover)'}; color: {isTachibkCatalogSite(manga.site)
+                  ? 'var(--accent)'
+                  : 'var(--text-muted)'};"
+              >
+                {isTachibkCatalogSite(manga.site)
+                  ? t.tachibkCatalogSiteBadge
+                  : isLocalComicSite(manga.site)
+                    ? t.cbzLocalBadge
+                    : manga.site}
+              </span>
+              <span class="text-xs" style="color: var(--text-muted);">
+                {t.chapterCount(manga.chapters.length)}
+              </span>
+              {#if manga.unreadCount > 0}
+                <span
+                  class="rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                  style="background-color: var(--accent-soft); color: var(--accent);"
+                >
+                  {t.unreadBadge(manga.unreadCount)}
+                </span>
+              {:else if manga.isCompleted}
+                <span
+                  class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                  style="background-color: rgba(16, 185, 129, 0.14); color: #10b981;"
+                >
+                  <CheckCircle2 size={11} />
+                  {t.badgeCompleted}
+                </span>
+              {/if}
+            </div>
+
+            <h1 class="text-2xl font-bold leading-tight tracking-tight">{manga.title}</h1>
+            {#if manga.originalTitle && manga.originalTitle.toLowerCase() !== manga.title.toLowerCase()}
+              <div class="text-xs font-medium" style="color: var(--text-muted);">
+                {manga.originalTitle}
+              </div>
+            {/if}
+          </div>
           {#if manga.altTitles.length > 0}
             <div class="text-xs leading-relaxed" style="color: var(--text-muted);">
               <span class="font-semibold">{t.mangaAltTitlesLabel}:</span>
@@ -496,7 +596,7 @@
             {/if}
             {#if manga.status}
               <span
-                class="rounded-md px-2 py-0.5 text-[11px] font-semibold capitalize"
+                class="hidden rounded-md px-2 py-0.5 text-[11px] font-semibold capitalize sm:inline-flex"
                 style="background-color: var(--surface-subtle); color: var(--text);"
               >
                 {t.mangaStatusLabel}: {manga.status}
@@ -561,18 +661,28 @@
           <div class="truncate text-[11px] opacity-75" style="color: var(--text-muted);">
             {manga.canonicalUrl ?? manga.url}
           </div>
+
+          {#if isTachibkCatalogSite(manga.site)}
+            <div
+              class="rounded-xl border px-3 py-2 text-xs leading-relaxed"
+              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+            >
+              {t.tachibkCatalogBanner}
+            </div>
+          {/if}
         </div>
 
-        <div class="flex flex-wrap items-center gap-3">
+        <!-- Primary Action Bar: Full-width thumb CTA on mobile, inline row on sm+ -->
+        <div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
           <button
             type="button"
             onclick={startPrimary}
             disabled={manga.chapters.length === 0}
-            class="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-45"
+            class="gpu-press inline-flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold hover:opacity-92 disabled:opacity-45 sm:min-h-[42px] sm:w-auto"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
             <Play size={16} fill="currentColor" />
-            <span>
+            <span class="truncate">
               {#if manga.progress}
                 {t.continueChapter(manga.progress.chapterName)}
               {:else}
@@ -581,40 +691,50 @@
             </span>
           </button>
 
-          <button
-            type="button"
-            onclick={toggleBookmark}
-            class="inline-flex items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors"
-            style="border-color: {manga.bookmarked
-              ? 'var(--accent)'
-              : 'var(--border)'}; background-color: {manga.bookmarked
-              ? 'var(--accent-soft)'
-              : 'var(--surface-subtle)'}; color: {manga.bookmarked
-              ? 'var(--accent)'
-              : 'var(--text)'};"
-          >
-            <Bookmark size={15} fill={manga.bookmarked ? "currentColor" : "none"} />
-            <span>{manga.bookmarked ? t.bookmarkedLabel : t.bookmarkAdd}</span>
-          </button>
-
-          {#if manga.progress && manga.chapters.length > 0}
+          <div class="flex w-full items-center gap-2 sm:w-auto">
             <button
               type="button"
-              onclick={() => manga && router.goReader(manga.id, manga.chapters[0].url, 0, 0)}
-              class="rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors"
-              style="border-color: var(--border); background-color: var(--surface-subtle);"
+              onclick={toggleBookmark}
+              class="gpu-press inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium sm:min-h-[42px] sm:flex-initial"
+              style="border-color: {manga.bookmarked
+                ? 'var(--accent)'
+                : 'var(--border)'}; background-color: {manga.bookmarked
+                ? 'var(--accent-soft)'
+                : 'var(--surface-subtle)'}; color: {manga.bookmarked
+                ? 'var(--accent)'
+                : 'var(--text)'};"
             >
-              {t.readFromFirst}
+              <Bookmark size={15} fill={manga.bookmarked ? "currentColor" : "none"} />
+              <span>{manga.bookmarked ? t.bookmarkedLabel : t.bookmarkAdd}</span>
             </button>
-          {/if}
+
+            {#if manga.progress && manga.chapters.length > 0 && !isTachibkCatalogSite(manga.site)}
+              <button
+                type="button"
+                onclick={() => {
+                  if (!manga) return;
+                  const firstReadable = manga.chapters.find((c) => !isMetadataOnlyChapterUrl(c.url));
+                  if (!firstReadable) {
+                    toasts.push(t.tachibkCatalogChapterNoFilesToast, "info", 3200);
+                    return;
+                  }
+                  router.goReader(manga.id, firstReadable.url, 0, 0);
+                }}
+                class="gpu-press min-h-[44px] flex-1 rounded-xl border px-4 py-2.5 text-sm font-medium sm:min-h-[42px] sm:flex-initial"
+                style="border-color: var(--border); background-color: var(--surface-subtle);"
+              >
+                {t.readFromFirst}
+              </button>
+            {/if}
+          </div>
         </div>
       </div>
     </section>
 
     <!-- Chapter list controls + Quick Chapter Jump -->
     <section class="flex flex-col gap-3">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <h2 class="text-base font-semibold">{t.chaptersHeading}</h2>
+      <div class="flex flex-col gap-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3">
+        <h2 class="text-base font-bold tracking-tight">{t.chaptersHeading}</h2>
 
         <div class="flex flex-wrap items-center gap-2">
           <!-- Quick Chapter Jump -->
@@ -623,18 +743,18 @@
               e.preventDefault();
               handleQuickJump();
             }}
-            class="flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs"
+            class="flex min-h-[40px] flex-1 items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs sm:flex-initial"
             style="background-color: var(--surface); border-color: var(--border);"
           >
             <input
               type="text"
               bind:value={jumpInput}
               placeholder={t.quickJumpPlaceholder}
-              class="w-28 bg-transparent py-0.5 text-xs outline-none"
+              class="min-w-0 flex-1 bg-transparent py-0.5 text-xs outline-none sm:w-28 sm:flex-initial"
             />
             <button
               type="submit"
-              class="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold transition-opacity hover:opacity-90"
+              class="gpu-press inline-flex min-h-[30px] items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold hover:opacity-90"
               style="background-color: var(--accent); color: var(--accent-fg);"
               title={t.quickChapterJump}
             >
@@ -645,15 +765,15 @@
 
           <!-- Filter chapters -->
           <div
-            class="flex items-center gap-2 rounded-xl border px-3 py-1.5 text-sm"
+            class="flex min-h-[40px] flex-1 items-center gap-2 rounded-xl border px-3 py-1.5 text-sm sm:flex-initial"
             style="background-color: var(--surface); border-color: var(--border);"
           >
-            <Search size={14} style="color: var(--text-muted);" />
+            <Search size={14} class="shrink-0" style="color: var(--text-muted);" />
             <input
               type="text"
               bind:value={query}
               placeholder={t.filterChapters}
-              class="w-36 bg-transparent text-xs outline-none"
+              class="min-w-0 flex-1 bg-transparent text-xs outline-none sm:w-36 sm:flex-initial"
             />
           </div>
 
@@ -662,7 +782,7 @@
             onclick={() => {
               newestFirst = !newestFirst;
             }}
-            class="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
+            class="gpu-press inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
             style="background-color: var(--surface); border-color: var(--border);"
           >
             <ArrowDownUp size={14} />
@@ -715,24 +835,30 @@
       {/if}
 
       <div
-        class="grid max-h-[55vh] grid-cols-1 gap-1.5 overflow-y-auto rounded-2xl border p-3 sm:grid-cols-2 lg:grid-cols-3"
+        class="grid max-h-[55dvh] grid-cols-1 gap-1.5 overflow-y-auto rounded-2xl border p-3 sm:grid-cols-2 lg:grid-cols-3"
         style="background-color: var(--surface); border-color: var(--border);"
       >
         {#each filteredChapters() as chapter (chapter.url)}
           {@const isCurrent =
             manga.progress !== null &&
             normUrl(manga.progress.chapterUrl) === normUrl(chapter.url)}
+          {@const isMetaStub = isMetadataOnlyChapterUrl(chapter.url)}
           <button
             type="button"
-            onclick={() =>
-              manga &&
+            onclick={() => {
+              if (!manga) return;
+              if (isMetaStub) {
+                toasts.push(t.tachibkCatalogChapterNoFilesToast, "info", 3200);
+                return;
+              }
               router.goReader(
                 manga.id,
                 chapter.url,
                 isCurrent ? manga.progress?.scrollRatio : 0,
                 isCurrent ? manga.progress?.pageIndex : 0
-              )}
-            class="flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-all hover:brightness-95"
+              );
+            }}
+            class="gpu-press flex min-h-[42px] items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-sm hover:opacity-95"
             style="background-color: {isCurrent
               ? 'var(--accent-soft)'
               : 'var(--surface-subtle)'}; color: {isCurrent
@@ -764,9 +890,14 @@
                 </div>
               {/if}
             </div>
-            {#if chapter.read}
-              <Check size={14} class="shrink-0 opacity-75" />
-            {/if}
+            <div class="flex shrink-0 items-center gap-1">
+              {#if chapter.sourceId === "tachibk:bookmarked"}
+                <Bookmark size={12} fill="currentColor" style="color: var(--accent);" />
+              {/if}
+              {#if chapter.read}
+                <Check size={14} class="opacity-75" />
+              {/if}
+            </div>
           </button>
         {/each}
       </div>
@@ -774,17 +905,27 @@
   {/if}
 </div>
 
-<!-- Permanent Delete Confirmation Modal -->
+<!-- Permanent Delete Confirmation Modal (Bottom Sheet on Compact Mobile, Centered Dialog on sm+) -->
 {#if showDeleteModal && manga}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+    class="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
+    style="padding-top: max(1rem, var(--safe-top)); padding-left: var(--safe-left); padding-right: var(--safe-right);"
     role="dialog"
     aria-modal="true"
   >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="flex max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
-      style="background-color: var(--surface); border-color: var(--border);"
+      transition:backdropFade|local
+      onclick={closeDeleteModal}
+      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+    ></div>
+    <div
+      transition:modalScale|local
+      class="modal-cq relative z-10 flex max-h-[calc(100dvh-1.5rem-var(--safe-top))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 shadow-2xl sm:max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
+      style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >
+      <div class="sheet-handle -mt-2 sm:hidden" aria-hidden="true"></div>
       <div class="flex items-start gap-3">
         <div
           class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
@@ -800,14 +941,12 @@
         </div>
       </div>
 
-      <div class="flex items-center justify-end gap-2 pt-1">
+      <div class="modal-footer-stack flex items-center justify-end gap-2 pt-1">
         <button
           type="button"
           disabled={deleting}
-          onclick={() => {
-            showDeleteModal = false;
-          }}
-          class="rounded-xl border px-4 py-2 text-xs font-medium"
+          onclick={closeDeleteModal}
+          class="gpu-press min-h-[40px] rounded-xl border px-4 py-2 text-xs font-medium"
           style="border-color: var(--border); background-color: var(--surface-subtle);"
         >
           {t.cancel}
@@ -816,11 +955,11 @@
           type="button"
           disabled={deleting}
           onclick={confirmDeleteManga}
-          class="inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+          class="gpu-press inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
           style="background-color: var(--danger);"
         >
           {#if deleting}
-            <Loader2 size={13} class="animate-spin" />
+            <LatticeLoader size="xs" tone="inherit" inline />
           {:else}
             <Trash2 size={13} />
           {/if}

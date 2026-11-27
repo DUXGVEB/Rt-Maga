@@ -27,6 +27,7 @@
   import PageImage from "../lib/components/PageImage.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import SquishSwitch from "../lib/components/SquishSwitch.svelte";
+  import { backdropFade, createOverlayGuard, drawerSlide } from "../lib/motion";
   import {
     clampZoomPan,
     computeAnchoredZoom,
@@ -87,6 +88,31 @@
   let quickFloatConfig = $state<"scrollToTop" | "orientationLock" | null>(null);
   let chapterJumpOpen = $state(false);
   let chapterJumpQuery = $state("");
+  const LANDSCAPE_AUTO_SPREAD_KEY = "rtmaga.reader.landscapeAutoSpread.v1";
+  let landscapeAutoSpread = $state(
+    typeof window !== "undefined" &&
+      window.localStorage?.getItem(LANDSCAPE_AUTO_SPREAD_KEY) === "1"
+  );
+  const popoverGuard = createOverlayGuard(160);
+  const isCompactMobile = $derived(deviceEnv.layoutTier === "compact");
+
+  function closeReaderOverlays() {
+    if (!popoverGuard.canAct()) return;
+    popoverGuard.lock(140);
+    chapterJumpOpen = false;
+    quickSettingsOpen = false;
+    openQuickCat = null;
+    quickFloatConfig = null;
+  }
+
+  function setLandscapeAutoSpread(next: boolean) {
+    landscapeAutoSpread = next;
+    try {
+      window.localStorage?.setItem(LANDSCAPE_AUTO_SPREAD_KEY, next ? "1" : "0");
+    } catch {
+      // Ignore restricted storage environments.
+    }
+  }
   let isFullscreen = $state(false);
   let showScrollTopBtn = $state(false);
   let controlsDimmed = $state(false);
@@ -299,8 +325,13 @@
 
   const lastChapter = $derived(strip[strip.length - 1] ?? null);
   const totalPages = $derived(activeChapter?.images.length ?? 0);
+  const effectivePagesPerGroup = $derived(
+    isHorizontal && landscapeAutoSpread && deviceEnv.isLandscape && hCfg.pagesPerGroup === 1
+      ? 2
+      : Math.max(1, hCfg.pagesPerGroup)
+  );
   const horizontalGroups = $derived(
-    activeChapter ? partitionPages(activeChapter.images, hCfg.pagesPerGroup) : []
+    activeChapter ? partitionPages(activeChapter.images, effectivePagesPerGroup) : []
   );
   const currentHorizontalGroup = $derived(
     !horizontalAtEnd && horizontalGroups.length > 0
@@ -317,7 +348,7 @@
     computeHorizontalTrackMetrics(
       horizontalVpWidth,
       horizontalVpHeight,
-      hCfg.pagesPerGroup,
+      effectivePagesPerGroup,
       hCfg.groupGapPx || 18
     )
   );
@@ -884,7 +915,7 @@
 
     if (isHorizontal) {
       horizontalAtEnd = false;
-      const perGroup = Math.max(1, hCfg.pagesPerGroup);
+      const perGroup = effectivePagesPerGroup;
       activeGroupIdx = Math.max(
         0,
         Math.min(Math.max(0, horizontalGroups.length - 1), Math.floor(clamped / perGroup))
@@ -915,7 +946,7 @@
     if (isHorizontal) {
       horizontalAtEnd = false;
       const totalImgs = activeChapter?.images.length ?? 0;
-      const perGroup = Math.max(1, hCfg.pagesPerGroup);
+      const perGroup = effectivePagesPerGroup;
       const totalGroups = Math.max(1, horizontalGroups.length);
       let targetGroup = 0;
       if (pageIdx > 0 && totalImgs > 0) {
@@ -1087,11 +1118,37 @@
       }
     };
 
-    const scheduleViewportAnchorRestore = () => {
+    const reclampActiveZoomAfterResize = () => {
+      if (!scrollEl || zoomScale <= 1.01) return;
+      const vpRect = scrollEl.getBoundingClientRect();
+      if (vpRect.width <= 0 || vpRect.height <= 0) return;
+      const contentEl = isHorizontal ? horizontalStageEl : verticalContentEl;
+      const rect: RectBox = contentEl
+        ? {
+            left: 0,
+            top: 0,
+            width: contentEl.clientWidth || vpRect.width,
+            height: contentEl.clientHeight || vpRect.height,
+          }
+        : { left: 0, top: 0, width: vpRect.width, height: vpRect.height };
+      zoomContentRect = rect;
+      const clamped = clampZoomPan(
+        zoomTx,
+        isHorizontal ? zoomTy : 0,
+        zoomScale,
+        vpRect.width,
+        vpRect.height,
+        rect,
+        zoomOriginLeft,
+        zoomOriginTop
+      );
+      zoomTx = clamped.tx;
+      zoomTy = isHorizontal ? clamped.ty : 0;
+    };
+
+    const scheduleViewportAnchorRestore = (delayMs = 180) => {
       if (!scrollEl || loadingInitial || strip.length === 0) return;
-      resetZoom();
       suppressAutoHideUntil = Date.now() + 650;
-      wakeFloatingControls();
       captureCurrentProgressNow();
 
       const anchorChap = activeUrl;
@@ -1119,7 +1176,15 @@
         if (!scrollEl || !anchorChap) return;
         if (isHorizontal) {
           scrollEl.scrollLeft = 0;
+          if (!horizontalAtEnd) {
+            const perGroup = effectivePagesPerGroup;
+            activeGroupIdx = Math.max(
+              0,
+              Math.min(Math.max(0, horizontalGroups.length - 1), Math.floor(anchorPage / perGroup))
+            );
+          }
           syncHorizontalViewportSize(true);
+          reclampActiveZoomAfterResize();
           updateFocusNow();
           return;
         }
@@ -1137,29 +1202,30 @@
           scrollEl.scrollTop = targetTop;
           lastScrollOffset = targetTop;
         }
+        reclampActiveZoomAfterResize();
         updateFocusNow();
       };
 
       orientationRestoreTimer = window.setTimeout(() => {
         orientationRestoreTimer = null;
         restoreNow();
-      }, 220);
+      }, delayMs);
     };
 
     const onOrientationChanged = () => {
-      toolbarVisible = true;
+      // Strictly preserve current HUD visibility, page index, chapter, and zoom anchor on rotate.
       lastViewportW = window.innerWidth;
       lastViewportH = window.innerHeight;
-      scheduleViewportAnchorRestore();
+      scheduleViewportAnchorRestore(200);
     };
 
     const onWindowResize = () => {
       const w = window.innerWidth;
       const h = window.innerHeight;
-      if (Math.abs(w - lastViewportW) < 24 && Math.abs(h - lastViewportH) < 24) return;
+      if (Math.abs(w - lastViewportW) < 20 && Math.abs(h - lastViewportH) < 20) return;
       lastViewportW = w;
       lastViewportH = h;
-      scheduleViewportAnchorRestore();
+      scheduleViewportAnchorRestore(140);
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1199,21 +1265,29 @@
   });
 
   let prevLayoutSig = "";
+  let prevLayoutOrient = "";
   $effect(() => {
-    const sig = `${effectiveOrientation}|${hCfg.pagesPerGroup}|${hCfg.direction}|${hCfg.noGapMode}`;
+    const orient = effectiveOrientation;
+    const perGroup = effectivePagesPerGroup;
+    const sig = `${orient}|${perGroup}|${hCfg.direction}|${hCfg.noGapMode}`;
     if (!prevLayoutSig) {
       prevLayoutSig = sig;
+      prevLayoutOrient = orient;
       return;
     }
     if (sig === prevLayoutSig) return;
+    const orientationSwitched = prevLayoutOrient !== orient;
     prevLayoutSig = sig;
+    prevLayoutOrient = orient;
 
     const anchorChap = untrack(() => activeUrl);
     const anchorPage = untrack(() => focusedPageIdx);
     if (!anchorChap || untrack(() => loadingInitial || strip.length === 0)) return;
 
     void (async () => {
-      resetZoom();
+      if (orientationSwitched) {
+        resetZoom();
+      }
       if (untrack(() => isHorizontal && strip.length > 1)) {
         const current = untrack(() => strip.find((c) => normUrl(c.url) === normUrl(anchorChap)));
         if (current) {
@@ -1223,7 +1297,6 @@
       await tick();
       if (isHorizontal) {
         horizontalAtEnd = false;
-        const perGroup = Math.max(1, hCfg.pagesPerGroup);
         activeGroupIdx = Math.max(
           0,
           Math.min(Math.max(0, horizontalGroups.length - 1), Math.floor(anchorPage / perGroup))
@@ -1250,14 +1323,63 @@
     if (isHorizontal) {
       syncHorizontalViewportSize(true);
     }
-    const ro = new ResizeObserver(() => {
+    let lastW = el.clientWidth;
+    let lastH = el.clientHeight;
+    let roDebounceTimer: number | null = null;
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      const nextW = Math.round(box?.width ?? el.clientWidth);
+      const nextH = Math.round(box?.height ?? el.clientHeight);
       if (isHorizontal) {
         syncHorizontalViewportSize(true);
       }
       scheduleFocusUpdate();
+      if (Math.abs(nextW - lastW) < 12 && Math.abs(nextH - lastH) < 12) return;
+      const anchorChap = untrack(() => activeUrl);
+      const anchorPage = untrack(() => focusedPageIdx);
+      const savedRatio = (() => {
+        if (isHorizontal || !anchorChap) return 0.25;
+        const curEl = el.querySelector<HTMLElement>(
+          `[data-page-key="${CSS.escape(`${anchorChap}:${anchorPage}`)}"]`
+        );
+        if (!curEl) return 0.25;
+        const sRect = el.getBoundingClientRect();
+        const pRect = curEl.getBoundingClientRect();
+        const focusY = sRect.top + sRect.height * 0.45;
+        return Math.max(0, Math.min(1, (focusY - pRect.top) / Math.max(1, pRect.height)));
+      })();
+      lastW = nextW;
+      lastH = nextH;
+      if (roDebounceTimer !== null) window.clearTimeout(roDebounceTimer);
+      roDebounceTimer = window.setTimeout(() => {
+        roDebounceTimer = null;
+        if (!scrollEl || loadingInitial || strip.length === 0 || !anchorChap) return;
+        if (isHorizontal) {
+          syncHorizontalViewportSize(true);
+        } else {
+          const pageEl = scrollEl.querySelector<HTMLElement>(
+            `[data-page-key="${CSS.escape(`${anchorChap}:${anchorPage}`)}"]`
+          );
+          if (pageEl) {
+            const sRect = scrollEl.getBoundingClientRect();
+            const pRect = pageEl.getBoundingClientRect();
+            const pageTopInScroll = scrollEl.scrollTop + (pRect.top - sRect.top);
+            const targetTop = Math.max(
+              0,
+              Math.round(pageTopInScroll + savedRatio * pRect.height - scrollEl.clientHeight * 0.45)
+            );
+            scrollEl.scrollTop = targetTop;
+            lastScrollOffset = targetTop;
+          }
+        }
+        updateFocusNow();
+      }, 120);
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      if (roDebounceTimer !== null) window.clearTimeout(roDebounceTimer);
+      ro.disconnect();
+    };
   });
 
   let prevSeamlessChapterUrl = "";
@@ -1266,7 +1388,7 @@
     const chapUrl = activeChapter?.url ?? "";
     const slideIdx = activeHorizontalSlideIdx;
     const dir = hCfg.direction;
-    const perGroup = hCfg.pagesPerGroup;
+    const perGroup = effectivePagesPerGroup;
     void slideIdx;
     void dir;
     void perGroup;
@@ -2323,6 +2445,8 @@
   }
 
   function toggleQuickSettings() {
+    if (!popoverGuard.canAct()) return;
+    popoverGuard.lock();
     const opening = !quickSettingsOpen;
     quickSettingsOpen = opening;
     openQuickCat = null;
@@ -2330,6 +2454,16 @@
       chapterJumpOpen = false;
       quickFloatConfig = null;
     }
+    wakeFloatingControls();
+  }
+
+  function toggleChapterJump() {
+    if (!popoverGuard.canAct()) return;
+    popoverGuard.lock();
+    chapterJumpOpen = !chapterJumpOpen;
+    quickSettingsOpen = false;
+    openQuickCat = null;
+    quickFloatConfig = null;
     wakeFloatingControls();
   }
 
@@ -2594,20 +2728,20 @@
   class="relative flex h-full w-full flex-col overflow-hidden"
   style="background-color: {readerBackdrop()};"
 >
-  <!-- Top Auto-Hide Toolbar (smooth fade, never auto-opened by upward scroll) -->
+  <!-- Top Auto-Hide Toolbar (frosted glass, GPU transform/opacity only, never overlaps corner tap zones) -->
   <header
-    class="fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 backdrop-blur-md transition-[opacity,transform] duration-200 sm:px-4"
-    style="padding-top: calc(0.5rem + var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 88%, transparent); border-color: var(--border); opacity: {toolbarVisible
+    class="glass-chrome fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 transition-[opacity,transform] duration-200 sm:px-4"
+    style="padding-top: calc(0.5rem + var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); border-color: var(--border); opacity: {toolbarVisible
       ? 1
-      : 0}; pointer-events: {toolbarVisible ? 'auto' : 'none'}; transform: translateY({toolbarVisible
+      : 0}; pointer-events: {toolbarVisible ? 'auto' : 'none'}; transform: translate3d(0, {toolbarVisible
       ? '0px'
-      : '-6px'});"
+      : '-8px'}, 0);"
   >
     <div class="flex min-w-0 items-center gap-2">
       <button
         type="button"
         onclick={exitReader}
-        class="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm hover:opacity-80"
+        class="gpu-press touch-target inline-flex min-h-[38px] items-center gap-1 rounded-xl px-2.5 py-1.5 text-sm font-medium hover:opacity-80"
         title={t.backTooltip}
       >
         <ArrowLeft size={17} />
@@ -2642,7 +2776,7 @@
         <button
           type="button"
           onclick={() => resetZoom()}
-          class="inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium"
+          class="gpu-press touch-target inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-semibold"
           style="border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent);"
           title={t.readerResetZoom}
         >
@@ -2654,14 +2788,8 @@
       {#if manga && manga.chapters.length > 0}
         <button
           type="button"
-          onclick={() => {
-            chapterJumpOpen = !chapterJumpOpen;
-            quickSettingsOpen = false;
-            openQuickCat = null;
-            quickFloatConfig = null;
-            wakeFloatingControls();
-          }}
-          class="inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-medium"
+          onclick={toggleChapterJump}
+          class="gpu-press touch-target inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-medium"
           style="border-color: {chapterJumpOpen
             ? 'var(--accent)'
             : 'var(--border)'}; background-color: {chapterJumpOpen
@@ -2678,11 +2806,12 @@
         <button
           type="button"
           onclick={toggleBookmark}
-          class="rounded-lg border p-1.5"
+          class="gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border"
           style="border-color: var(--border); background-color: {manga.bookmarked
             ? 'var(--accent-soft)'
             : 'var(--surface)'}; color: {manga.bookmarked ? 'var(--accent)' : 'var(--text)'};"
           title={manga.bookmarked ? t.bookmarkRemove : t.bookmarkAdd}
+          aria-label={manga.bookmarked ? t.bookmarkRemove : t.bookmarkAdd}
         >
           <Bookmark size={16} fill={manga.bookmarked ? "currentColor" : "none"} />
         </button>
@@ -2691,11 +2820,12 @@
       <button
         type="button"
         onclick={toggleQuickSettings}
-        class="rounded-lg border p-1.5"
+        class="gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border"
         style="border-color: var(--border); background-color: {quickSettingsOpen
           ? 'var(--accent-soft)'
           : 'var(--surface)'}; color: {quickSettingsOpen ? 'var(--accent)' : 'var(--text)'};"
         title={t.quickSettingsTooltip}
+        aria-label={t.quickSettingsTooltip}
       >
         <SlidersHorizontal size={16} />
       </button>
@@ -2704,9 +2834,10 @@
         <button
           type="button"
           onclick={toggleFullscreen}
-          class="rounded-lg border p-1.5"
+          class="gpu-press flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border"
           style="border-color: var(--border); background-color: var(--surface);"
           title={t.fullscreenTooltip}
+          aria-label={t.fullscreenTooltip}
         >
           {#if isFullscreen}
             <Minimize size={16} />
@@ -2718,21 +2849,56 @@
     </div>
   </header>
 
-  <!-- Quick Chapter Jump Popover (with dimmed read chapters) -->
+  <!-- Mobile Bottom-Sheet Backdrop when any Reader overlay is open on Compact Mobile (<768px) -->
+  {#if isCompactMobile && (chapterJumpOpen || quickSettingsOpen || quickFloatConfig !== null)}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      transition:backdropFade|local
+      onclick={closeReaderOverlays}
+      class="fixed inset-0 z-30 bg-black/48 backdrop-blur-[2px]"
+    ></div>
+  {/if}
+
+  <!-- Quick Chapter Jump (Thumb-Reachable Bottom Sheet on <768px, Frosted Popover on >=768px) -->
   {#if chapterJumpOpen && manga}
     <div
-      class="fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overscroll-contain rounded-2xl border p-3.5 text-xs shadow-xl"
-      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border);"
+      transition:drawerSlide|local={{
+        side: isCompactMobile ? "bottom" : "top",
+        distance: isCompactMobile ? 52 : 8,
+        duration: isCompactMobile ? 210 : 165,
+      }}
+      class={isCompactMobile
+        ? "glass-chrome fixed right-0 bottom-0 left-0 z-40 flex max-h-[78dvh] w-full flex-col gap-2.5 overscroll-contain rounded-t-3xl border-t px-4 pt-1 pb-4 text-xs"
+        : "glass-chrome fixed z-40 flex max-h-[calc(100dvh-4.75rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100dvw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overscroll-contain rounded-2xl border p-3.5 text-xs"}
+      style={isCompactMobile
+        ? "padding-bottom: max(1rem, var(--safe-bottom)); padding-left: max(1rem, var(--safe-left)); padding-right: max(1rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg);"
+        : "top: calc(3.75rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg);"}
     >
+      {#if isCompactMobile}
+        <div class="sheet-handle" aria-hidden="true"></div>
+      {/if}
       <div class="flex items-center justify-between font-semibold">
         <span>{t.quickChapterJump}</span>
-        <span style="color: var(--text-muted);">{t.chapterCount(manga.chapters.length)}</span>
+        <div class="flex items-center gap-2">
+          <span style="color: var(--text-muted);">{t.chapterCount(manga.chapters.length)}</span>
+          {#if isCompactMobile}
+            <button
+              type="button"
+              onclick={closeReaderOverlays}
+              class="gpu-press flex h-8 w-8 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
+              aria-label={t.cancel}
+            >
+              <X size={16} />
+            </button>
+          {/if}
+        </div>
       </div>
       <div
-        class="flex shrink-0 items-center gap-2 rounded-xl border px-2.5 py-1.5"
+        class="flex min-h-[40px] shrink-0 items-center gap-2 rounded-xl border px-3 py-1.5"
         style="background-color: var(--surface-subtle); border-color: var(--border);"
       >
-        <Search size={13} style="color: var(--text-muted);" />
+        <Search size={14} style="color: var(--text-muted);" />
         <input
           type="text"
           bind:value={chapterJumpQuery}
@@ -2740,13 +2906,13 @@
           class="w-full bg-transparent text-xs outline-none"
         />
       </div>
-      <div class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-0.5">
+      <div class="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-0.5">
         {#each filteredJumpChapters() as ch (ch.url)}
           {@const isCurrent = normUrl(ch.url) === normUrl(activeUrl)}
           <button
             type="button"
             onclick={() => jumpToChapter(ch.url)}
-            class="flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:brightness-95"
+            class="gpu-press flex min-h-[44px] items-center justify-between gap-2 rounded-xl px-3 py-2 text-left hover:opacity-95 sm:min-h-[36px]"
             style="background-color: {isCurrent
               ? 'var(--accent-soft)'
               : 'var(--surface-subtle)'}; color: {isCurrent
@@ -2757,7 +2923,7 @@
           >
             <span class="truncate font-medium">{ch.name}</span>
             {#if ch.read}
-              <Check size={13} class="shrink-0 opacity-75" />
+              <Check size={14} class="shrink-0 opacity-75" />
             {/if}
           </button>
         {/each}
@@ -2765,9 +2931,14 @@
     </div>
   {/if}
 
-  <!-- Quick Reader Settings Popover (Collapsible Categories, Collapsed by Default) -->
+  <!-- Quick Reader Settings (Thumb-Reachable Bottom Sheet on <768px, Frosted Popover on >=768px) -->
   {#if quickSettingsOpen}
     <div
+      transition:drawerSlide|local={{
+        side: isCompactMobile ? "bottom" : "top",
+        distance: isCompactMobile ? 52 : 8,
+        duration: isCompactMobile ? 210 : 165,
+      }}
       role="dialog"
       tabindex="-1"
       onpointerdown={(e) => e.stopPropagation()}
@@ -2776,20 +2947,39 @@
         wakeFloatingControls();
       }}
       onwheel={(e) => e.stopPropagation()}
-      class="reader-quick-popover fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overflow-y-auto overscroll-contain touch-pan-y rounded-2xl border p-3.5 text-xs shadow-xl"
-      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border); -webkit-overflow-scrolling: touch;"
+      class={isCompactMobile
+        ? "glass-chrome fixed right-0 bottom-0 left-0 z-40 flex max-h-[82dvh] w-full flex-col gap-2.5 overflow-y-auto overscroll-contain touch-pan-y rounded-t-3xl border-t px-4 pt-1 pb-4 text-xs"
+        : "reader-quick-popover glass-chrome fixed z-40 flex max-h-[calc(100dvh-4.75rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100dvw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overflow-y-auto overscroll-contain touch-pan-y rounded-2xl border p-3.5 text-xs"}
+      style={isCompactMobile
+        ? "padding-bottom: max(1rem, var(--safe-bottom)); padding-left: max(1rem, var(--safe-left)); padding-right: max(1rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;"
+        : "top: calc(3.75rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;"}
     >
+      {#if isCompactMobile}
+        <div class="sheet-handle" aria-hidden="true"></div>
+      {/if}
       <div class="flex shrink-0 items-center justify-between gap-2 pb-0.5">
         <span class="font-semibold">{t.readerSection}</span>
-        <button
-          type="button"
-          onclick={() => openFullSettings("reader")}
-          class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium hover:opacity-85"
-          style="background-color: var(--accent-soft); color: var(--accent);"
-        >
-          <ExternalLink size={11} />
-          <span>{t.openFullSettingsBtn}</span>
-        </button>
+        <div class="flex items-center gap-1.5">
+          <button
+            type="button"
+            onclick={() => openFullSettings("reader")}
+            class="gpu-press inline-flex min-h-[32px] items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-medium hover:opacity-85"
+            style="background-color: var(--accent-soft); color: var(--accent);"
+          >
+            <ExternalLink size={11} />
+            <span>{t.openFullSettingsBtn}</span>
+          </button>
+          {#if isCompactMobile}
+            <button
+              type="button"
+              onclick={closeReaderOverlays}
+              class="gpu-press flex h-8 w-8 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
+              aria-label={t.cancel}
+            >
+              <X size={16} />
+            </button>
+          {/if}
+        </div>
       </div>
 
       {#if hasCustomMangaSettings || isAutoWebtoonActive || effectiveOverride !== null}
@@ -2828,7 +3018,7 @@
             <div class="font-semibold">{t.readerCatLayout}</div>
             <div class="truncate text-[10px]" style="color: var(--text-muted);">
               {isHorizontal
-                ? `${t.modeHorizontal} · ${hCfg.direction.toUpperCase()} · ${hCfg.pagesPerGroup}x${hCfg.noGapMode ? ` · ${t.horizontalNoGapLabel}` : ""}`
+                ? `${t.modeHorizontal} · ${hCfg.direction.toUpperCase()} · ${effectivePagesPerGroup}x${hCfg.noGapMode ? ` · ${t.horizontalNoGapLabel}` : ""}`
                 : `${t.modeVertical} · ${effectiveNoGap ? t.noGapModeLabel : `${effectiveVerticalGapPx}px`}`}
             </div>
           </div>
@@ -2892,7 +3082,7 @@
               <div class="flex flex-col gap-1.5">
                 <div class="flex items-center justify-between font-medium">
                   <span>{t.pagesPerGroupLabel}</span>
-                  <span style="color: var(--text-muted);">{hCfg.pagesPerGroup}</span>
+                  <span style="color: var(--text-muted);">{effectivePagesPerGroup}</span>
                 </div>
                 <div class="grid grid-cols-4 gap-1.5">
                   {#each [1, 2, 3] as n (n)}
@@ -2922,6 +3112,18 @@
                   />
                 </div>
               </div>
+
+              {#if hCfg.pagesPerGroup === 1}
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-medium">{t.landscapeAutoSpreadLabel}</span>
+                  <SquishSwitch
+                    size="sm"
+                    checked={landscapeAutoSpread}
+                    ariaLabel={t.landscapeAutoSpreadLabel}
+                    onchange={(checked) => setLandscapeAutoSpread(checked)}
+                  />
+                </div>
+              {/if}
 
               <div class="flex items-center justify-between gap-2">
                 <span class="font-medium">{t.horizontalNoGapLabel}</span>
@@ -3144,9 +3346,14 @@
     </div>
   {/if}
 
-  <!-- Long-Press Contextual Configuration Panel (Scroll-to-Top / Screen Rotation) -->
+  <!-- Long-Press Contextual Configuration Panel (Bottom Sheet on <768px, Frosted Popover on >=768px) -->
   {#if quickFloatConfig !== null}
     <div
+      transition:drawerSlide|local={{
+        side: isCompactMobile ? "bottom" : "top",
+        distance: isCompactMobile ? 52 : 8,
+        duration: isCompactMobile ? 210 : 165,
+      }}
       role="dialog"
       tabindex="-1"
       onpointerdown={(e) => e.stopPropagation()}
@@ -3155,9 +3362,16 @@
         wakeFloatingControls();
       }}
       onwheel={(e) => e.stopPropagation()}
-      class="reader-quick-popover fixed z-40 flex max-h-[calc(100dvh-4.5rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100vw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-3 overflow-y-auto overscroll-contain touch-pan-y rounded-2xl border p-4 text-xs shadow-xl"
-      style="top: calc(3.5rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); background-color: var(--surface); border-color: var(--border); -webkit-overflow-scrolling: touch;"
+      class={isCompactMobile
+        ? "glass-chrome fixed right-0 bottom-0 left-0 z-40 flex max-h-[80dvh] w-full flex-col gap-3 overflow-y-auto overscroll-contain touch-pan-y rounded-t-3xl border-t px-4 pt-1 pb-4 text-xs"
+        : "reader-quick-popover glass-chrome fixed z-40 flex max-h-[calc(100dvh-4.75rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100dvw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-3 overflow-y-auto overscroll-contain touch-pan-y rounded-2xl border p-4 text-xs"}
+      style={isCompactMobile
+        ? "padding-bottom: max(1rem, var(--safe-bottom)); padding-left: max(1rem, var(--safe-left)); padding-right: max(1rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;"
+        : "top: calc(3.75rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;"}
     >
+      {#if isCompactMobile}
+        <div class="sheet-handle" aria-hidden="true"></div>
+      {/if}
       <div class="flex shrink-0 items-center justify-between gap-2">
         <span class="font-semibold">
           {quickFloatConfig === "scrollToTop"
@@ -3572,7 +3786,7 @@
               data-hslide-idx={horizontalEndSlideIdx}
               data-hslide-active={horizontalAtEnd ? "true" : "false"}
               class="flex h-full shrink-0 items-center justify-center px-6"
-              style="width: min(86vw, 28rem); opacity: {horizontalAtEnd
+              style="width: min(86dvw, 28rem); opacity: {horizontalAtEnd
                 ? 1
                 : hCfg.dimUnfocused
                   ? 0.3
@@ -3643,9 +3857,14 @@
         {/if}
       </div>
 
-      <!-- Scoped 3-Zone Invisible Interactive Hitboxes (Horizontal Mode Only; disabled while zoomed) -->
+      <!-- Scoped 3-Zone Invisible Interactive Hitboxes (Horizontal Mode Only; clears HUD top/bottom bars when visible) -->
       {#if zoomScale <= 1.01 && !horizontalAtEnd}
-        <div class="pointer-events-none absolute inset-0 z-10 flex">
+        <div
+          class="pointer-events-none absolute right-0 left-0 z-10 flex"
+          style="top: {toolbarVisible ? 'calc(3.75rem + var(--safe-top))' : '0px'}; bottom: {toolbarVisible
+            ? 'calc(4rem + var(--safe-bottom))'
+            : '0px'};"
+        >
           <!-- Left Zone (~27%): RTL = Next Page, LTR = Previous Page -->
           <div
             role="button"
@@ -3678,7 +3897,10 @@
           tabindex="-1"
           aria-label={t.zonePrevPageLabel}
           onclick={isRtl ? handleHorizontalRightZoneClick : handleHorizontalLeftZoneClick}
-          class="absolute top-0 bottom-0 z-10 w-[20%] cursor-pointer {isRtl ? 'right-0' : 'left-0'}"
+          class="absolute z-10 w-[20%] cursor-pointer {isRtl ? 'right-0' : 'left-0'}"
+          style="top: {toolbarVisible ? 'calc(3.75rem + var(--safe-top))' : '0px'}; bottom: {toolbarVisible
+            ? 'calc(4rem + var(--safe-bottom))'
+            : '0px'};"
         ></div>
       {/if}
     {:else}
@@ -3746,7 +3968,7 @@
                   jumpToChapter(lastChapter.next);
                 }
               }}
-              class="inline-flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold shadow-sm transition-opacity hover:opacity-90"
+              class="gpu-press inline-flex min-h-[44px] items-center gap-2 rounded-2xl px-6 py-3 text-sm font-semibold shadow-sm hover:opacity-90"
               style="background-color: var(--accent); color: var(--accent-fg);"
             >
               <span>{t.nextChapter}</span>
@@ -3765,23 +3987,24 @@
     {/if}
   </div>
 
-  <!-- Bottom Reading Progress Bar with Seek Support (smooth fade) -->
+  <!-- Bottom Reading Progress Bar with Seek Support (frosted glass, GPU transform/opacity only) -->
   {#if !loadingInitial && !errorState && activeChapter && totalPages > 0}
     <footer
-      class="fixed right-0 bottom-0 left-0 z-30 flex items-center gap-3 border-t px-3 py-2.5 backdrop-blur-md transition-[opacity,transform] duration-200 sm:px-5"
-      style="padding-bottom: calc(0.625rem + var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); background-color: color-mix(in srgb, var(--surface) 90%, transparent); border-color: var(--border); opacity: {toolbarVisible
+      class="glass-chrome fixed right-0 bottom-0 left-0 z-30 flex items-center gap-3 border-t px-3 py-2.5 transition-[opacity,transform] duration-200 sm:px-5"
+      style="padding-bottom: calc(0.625rem + var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); border-color: var(--border); opacity: {toolbarVisible
         ? 1
-        : 0}; pointer-events: {toolbarVisible ? 'auto' : 'none'}; transform: translateY({toolbarVisible
+        : 0}; pointer-events: {toolbarVisible ? 'auto' : 'none'}; transform: translate3d(0, {toolbarVisible
         ? '0px'
-        : '6px'});"
+        : '8px'}, 0);"
     >
       <button
         type="button"
         disabled={!activeChapter.prev}
         onclick={() => activeChapter?.prev && jumpToChapter(activeChapter.prev)}
-        class="rounded-lg border p-1.5 disabled:opacity-35"
+        class="gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
         style="border-color: var(--border); background-color: var(--surface);"
         title={t.prevChapterTooltip}
+        aria-label={t.prevChapterTooltip}
       >
         <ChevronLeft size={16} />
       </button>
@@ -3794,7 +4017,7 @@
           value={selectedChapUrl}
           onchange={(e) => jumpToChapter(e.currentTarget.value)}
           aria-label={t.quickChapterJump}
-          class="max-w-[7.5rem] shrink-0 truncate rounded-lg border px-2 py-1 text-xs font-medium outline-none sm:max-w-[12rem]"
+          class="min-h-[38px] max-w-[7.5rem] shrink-0 truncate rounded-xl border px-2.5 py-1 text-xs font-medium outline-none sm:max-w-[12rem]"
           style="border-color: var(--border); background-color: var(--surface); color: var(--text);"
         >
           {#each [...manga.chapters].reverse() as ch (ch.url)}
@@ -3843,9 +4066,10 @@
         type="button"
         disabled={!activeChapter.next}
         onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
-        class="rounded-lg border p-1.5 disabled:opacity-35"
+        class="gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
         style="border-color: var(--border); background-color: var(--surface);"
         title={t.nextChapterTooltip}
+        aria-label={t.nextChapterTooltip}
       >
         <ChevronRight size={16} />
       </button>

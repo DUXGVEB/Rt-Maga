@@ -8,6 +8,7 @@
     Sparkles,
     X,
   } from "lucide-svelte";
+  import { backdropFade, createOverlayGuard, modalScale } from "../motion";
   import { appReleaseStore } from "../stores/appRelease.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import LatticeLoader from "./LatticeLoader.svelte";
@@ -15,6 +16,13 @@
   const t = $derived(settingsStore.t);
   const release = $derived(appReleaseStore.release);
   const progress = $derived(appReleaseStore.progress);
+  const modalGuard = createOverlayGuard(180);
+
+  function dismissSafely() {
+    if (appReleaseStore.installing || !modalGuard.canAct()) return;
+    modalGuard.lock();
+    appReleaseStore.dismissPrompt();
+  }
 
   function formatMb(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -53,16 +61,26 @@
 
 {#if release}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
-    style="background-color: rgba(0, 0, 0, 0.56);"
+    class="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
+    style="padding-top: max(1rem, var(--safe-top)); padding-left: var(--safe-left); padding-right: var(--safe-right);"
     role="dialog"
     aria-modal="true"
     aria-labelledby="update-modal-title"
   >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="flex max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-2xl border p-5 shadow-2xl"
-      style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+      transition:backdropFade|local
+      onclick={dismissSafely}
+      class="fixed inset-0 bg-black/55 backdrop-blur-sm"
+    ></div>
+
+    <div
+      transition:modalScale|local
+      class="modal-cq relative z-10 flex max-h-[calc(100dvh-1.5rem-var(--safe-top))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 sm:max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
+      style="background-color: var(--surface); border-color: var(--border); color: var(--text); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >
+      <div class="sheet-handle -mt-2 sm:hidden" aria-hidden="true"></div>
       <!-- Header -->
       <div class="flex items-start justify-between gap-3">
         <div class="flex items-center gap-2.5">
@@ -89,8 +107,8 @@
         {#if !appReleaseStore.installing}
           <button
             type="button"
-            onclick={() => appReleaseStore.dismissPrompt()}
-            class="rounded-lg p-1 opacity-65 transition-opacity hover:opacity-100"
+            onclick={dismissSafely}
+            class="gpu-press flex h-8 w-8 items-center justify-center rounded-xl opacity-65 hover:opacity-100"
             aria-label={t.dismissUpdate}
           >
             <X size={16} />
@@ -137,8 +155,8 @@
             style="background-color: var(--surface-hover);"
           >
             <div
-              class="h-full rounded-full transition-all duration-150"
-              style="width: {percent()}%; background-color: var(--accent);"
+              class="h-full w-full origin-left rounded-full transition-transform duration-150 ease-out"
+              style="transform: scaleX({Math.max(0, Math.min(1, percent() / 100))}); background-color: var(--accent);"
             ></div>
           </div>
         </div>

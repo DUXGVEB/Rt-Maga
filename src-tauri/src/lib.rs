@@ -148,6 +148,11 @@ pub fn run() {
             commands::begin_cbz_upload,
             commands::append_cbz_chunk,
             commands::finish_cbz_upload,
+            commands::detect_tachibk_paths,
+            commands::preview_tachibk_backup,
+            commands::preview_tachibk_upload,
+            commands::discard_tachibk_upload,
+            commands::import_tachibk_backup,
             commands::build_feedback_report,
             commands::save_feedback_report_file,
         ]);

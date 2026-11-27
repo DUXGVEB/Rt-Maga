@@ -3800,6 +3800,39 @@ export interface V7Dictionary {
   errEncryptedArchiveTitle: string;
   errUnsupportedFormatTitle: string;
 
+  // Mihon / Tachiyomi (.tachibk / .proto.gz) Backup Import
+  tachibkModalTitle: string;
+  tachibkMetadataNote: string;
+  tachibkStatTitles: string;
+  tachibkStatMatched: string;
+  tachibkStatCategories: string;
+  tachibkStatReadChapters: string;
+  tachibkOptSyncProgress: string;
+  tachibkOptImportCatalog: string;
+  tachibkOptImportCategories: string;
+  tachibkOptImportBookmarks: string;
+  tachibkSearchPlaceholder: string;
+  tachibkFilterAll: string;
+  tachibkFilterMatched: string;
+  tachibkFilterUnmatched: string;
+  tachibkSelectVisible: string;
+  tachibkClearVisible: string;
+  tachibkMatchLocalBadge: string;
+  tachibkMatchLibraryBadge: string;
+  tachibkMatchCatalogBadge: string;
+  tachibkMetadataOnlyBadge: string;
+  tachibkSkippedHint: string;
+  tachibkChaptersReadProgress: (read: number, total: number) => string;
+  tachibkImportBtn: (count: number) => string;
+  tachibkImportingBtn: string;
+  tachibkImportSummary: (matched: number, catalog: number) => string;
+  tachibkImportedToast: (linked: number, catalog: number, chaptersRead: number) => string;
+  tachibkEmptyEntries: string;
+  tachibkCatalogSiteBadge: string;
+  tachibkCatalogShortBadge: string;
+  tachibkCatalogBanner: string;
+  tachibkCatalogChapterNoFilesToast: string;
+
   // Per-Website Multi-Tag & Dynamic Filter Engine
   webFilterTitle: string;
   webFilterTagsLabel: string;
@@ -3899,18 +3932,55 @@ const V7_EN: V7Dictionary = {
   sourcesResultsHeading: (query: string, count: number) => `Search "${query}" · ${count} results`,
   sourcesClearSearchBtn: "Back to sources",
 
-  cbzDropTitle: "Import local comics, ebooks, or image folders",
+  cbzDropTitle: "Import local comics, ebooks, folders, or .tachibk backups",
   cbzDropSubtitle:
-    "Drop archives (.cbz/.cbr/.cb7/.cbt/.epub/.pdf), folders, or images here — stored offline inside RtMaga.",
+    "Drop archives (.cbz/.cbr/.cb7/.cbt/.epub/.pdf), folders, images, or Mihon/Tachiyomi backups (.tachibk/.proto.gz).",
   cbzPickBtn: "Choose files",
   cbzPickFolderBtn: "Folder",
   cbzImporting: "Importing...",
   cbzImportedToast: (title: string, chapters: number) => `Imported "${title}" (${chapters} chapter(s)).`,
   cbzAddChaptersBtn: "Add local chapters",
   cbzLocalBadge: "Local",
-  cbzNoSupportedFilesToast: "No supported comic archives, documents, or images were found.",
+  cbzNoSupportedFilesToast: "No supported comic archives, documents, images, or .tachibk backups were found.",
   errEncryptedArchiveTitle: "Encrypted or password-protected file",
   errUnsupportedFormatTitle: "Unsupported file format",
+
+  tachibkModalTitle: "Mihon / Tachiyomi Backup Import",
+  tachibkMetadataNote:
+    ".tachibk backups import library metadata, categories, and reading progress (auto-linking to matching local files in RtMaga) rather than offline page images.",
+  tachibkStatTitles: "Titles",
+  tachibkStatMatched: "Matched local / library",
+  tachibkStatCategories: "Categories",
+  tachibkStatReadChapters: "Chapters read",
+  tachibkOptSyncProgress: "Sync reading progress",
+  tachibkOptImportCatalog: "Import metadata-only entries",
+  tachibkOptImportCategories: "Import categories as tags",
+  tachibkOptImportBookmarks: "Import library bookmarks",
+  tachibkSearchPlaceholder: "Search title, author, source, or category...",
+  tachibkFilterAll: "All",
+  tachibkFilterMatched: "Matched",
+  tachibkFilterUnmatched: "Metadata-only",
+  tachibkSelectVisible: "Select visible",
+  tachibkClearVisible: "Clear visible",
+  tachibkMatchLocalBadge: "Linked · Local",
+  tachibkMatchLibraryBadge: "Matched · Library",
+  tachibkMatchCatalogBadge: "Matched · Catalog",
+  tachibkMetadataOnlyBadge: "Metadata only",
+  tachibkSkippedHint: "Skipped (metadata-only off)",
+  tachibkChaptersReadProgress: (read: number, total: number) => `${read}/${total} read`,
+  tachibkImportBtn: (count: number) => `Import ${count} title${count === 1 ? "" : "s"}`,
+  tachibkImportingBtn: "Importing backup...",
+  tachibkImportSummary: (matched: number, catalog: number) =>
+    `${matched} matched · ${catalog} metadata-only`,
+  tachibkImportedToast: (linked: number, catalog: number, chaptersRead: number) =>
+    `Backup imported: ${linked} matched, ${catalog} catalog added, ${chaptersRead} chapters synced.`,
+  tachibkEmptyEntries: "No matching titles in this backup.",
+  tachibkCatalogSiteBadge: "Catalog · No local files",
+  tachibkCatalogShortBadge: "Metadata",
+  tachibkCatalogBanner:
+    "Imported as metadata & reading progress from a .tachibk backup. Attach local comic files (CBZ, CBR, PDF, or folders) using 'Add local chapters' to read offline.",
+  tachibkCatalogChapterNoFilesToast:
+    "Metadata-only chapter — attach local comic files on this page to read offline.",
 
   webFilterTitle: "Site Filters",
   webFilterTagsLabel: "Tags / Genres",
@@ -4014,18 +4084,55 @@ const V7_VI: V7Dictionary = {
   sourcesResultsHeading: (query: string, count: number) => `Kết quả "${query}" · ${count} truyện`,
   sourcesClearSearchBtn: "Quay lại danh sách nguồn",
 
-  cbzDropTitle: "Nhập truyện cục bộ (nén, ebook, PDF, ảnh/thư mục)",
+  cbzDropTitle: "Nhập truyện cục bộ hoặc sao lưu .tachibk",
   cbzDropSubtitle:
-    "Kéo thả file (.cbz/.cbr/.cb7/.cbt/.epub/.pdf), thư mục hoặc ảnh vào đây — lưu offline trong RtMaga.",
+    "Kéo thả file (.cbz/.cbr/.cb7/.cbt/.epub/.pdf), thư mục, ảnh hoặc bản sao lưu Mihon/Tachiyomi (.tachibk/.proto.gz).",
   cbzPickBtn: "Chọn file",
   cbzPickFolderBtn: "Thư mục",
   cbzImporting: "Đang nhập...",
   cbzImportedToast: (title: string, chapters: number) => `Đã nhập "${title}" (${chapters} chương).`,
   cbzAddChaptersBtn: "Thêm chương cục bộ",
   cbzLocalBadge: "Truyện nội bộ",
-  cbzNoSupportedFilesToast: "Không tìm thấy file truyện, PDF/EPUB hoặc ảnh hợp lệ nào.",
+  cbzNoSupportedFilesToast: "Không tìm thấy file truyện, PDF/EPUB, ảnh hoặc bản sao lưu .tachibk hợp lệ nào.",
   errEncryptedArchiveTitle: "File được mã hóa hoặc đặt mật khẩu",
   errUnsupportedFormatTitle: "Định dạng file không được hỗ trợ",
+
+  tachibkModalTitle: "Nhập bản sao lưu Mihon / Tachiyomi",
+  tachibkMetadataNote:
+    "File .tachibk nhập thông tin truyện, danh mục và tiến độ đọc (tự liên kết với truyện cục bộ trùng tên trong RtMaga), không chứa ảnh trang truyện offline.",
+  tachibkStatTitles: "Tổng truyện",
+  tachibkStatMatched: "Khớp thư viện",
+  tachibkStatCategories: "Danh mục",
+  tachibkStatReadChapters: "Chương đã đọc",
+  tachibkOptSyncProgress: "Đồng bộ tiến độ đọc",
+  tachibkOptImportCatalog: "Nhập mục chỉ có metadata",
+  tachibkOptImportCategories: "Nhập danh mục thành thẻ",
+  tachibkOptImportBookmarks: "Nhập dấu trang thư viện",
+  tachibkSearchPlaceholder: "Tìm tên truyện, tác giả, nguồn hoặc danh mục...",
+  tachibkFilterAll: "Tất cả",
+  tachibkFilterMatched: "Đã khớp",
+  tachibkFilterUnmatched: "Chỉ metadata",
+  tachibkSelectVisible: "Chọn đang hiện",
+  tachibkClearVisible: "Bỏ chọn",
+  tachibkMatchLocalBadge: "Liên kết · Cục bộ",
+  tachibkMatchLibraryBadge: "Khớp · Thư viện",
+  tachibkMatchCatalogBadge: "Khớp · Danh mục",
+  tachibkMetadataOnlyBadge: "Chỉ metadata",
+  tachibkSkippedHint: "Bỏ qua (tắt nhập metadata)",
+  tachibkChaptersReadProgress: (read: number, total: number) => `Đã đọc ${read}/${total}`,
+  tachibkImportBtn: (count: number) => `Nhập ${count} truyện`,
+  tachibkImportingBtn: "Đang nhập sao lưu...",
+  tachibkImportSummary: (matched: number, catalog: number) =>
+    `${matched} khớp sẵn · ${catalog} chỉ metadata`,
+  tachibkImportedToast: (linked: number, catalog: number, chaptersRead: number) =>
+    `Đã nhập sao lưu: ${linked} liên kết, ${catalog} mục danh mục mới, ${chaptersRead} chương đã đồng bộ.`,
+  tachibkEmptyEntries: "Không có truyện nào khớp bộ lọc trong bản sao lưu.",
+  tachibkCatalogSiteBadge: "Danh mục · Chưa có file",
+  tachibkCatalogShortBadge: "Metadata",
+  tachibkCatalogBanner:
+    "Mục này chỉ lưu thông tin & tiến độ đọc từ file .tachibk. Hãy bấm 'Thêm chương cục bộ' để gắn file CBZ, CBR, PDF hoặc thư mục ảnh để đọc offline.",
+  tachibkCatalogChapterNoFilesToast:
+    "Chương chỉ có metadata — hãy gắn file truyện cục bộ tại trang này để đọc offline.",
 
   webFilterTitle: "Bộ lọc theo web",
   webFilterTagsLabel: "Thể loại / Tag",
@@ -4099,12 +4206,35 @@ const V7_DICTIONARIES: Record<Language, V7Dictionary> = {
   th: V7_EN,
 };
 
+interface V8Dictionary {
+  landscapeAutoSpreadLabel: string;
+}
+
+const V8_EN: V8Dictionary = {
+  landscapeAutoSpreadLabel: "Auto 2-page spread in landscape",
+};
+
+const V8_VI: V8Dictionary = {
+  landscapeAutoSpreadLabel: "Tự động ghép 2 trang khi xoay ngang",
+};
+
+const V8_DICTIONARIES: Record<Language, V8Dictionary> = {
+  en: V8_EN,
+  vi: V8_VI,
+  zh: V8_EN,
+  ja: V8_EN,
+  ru: V8_EN,
+  ko: V8_EN,
+  th: V8_EN,
+};
+
 export type FullDictionary = Dictionary &
   V3Dictionary &
   V4Dictionary &
   V5Dictionary &
   V6Dictionary &
-  V7Dictionary;
+  V7Dictionary &
+  V8Dictionary;
 
 const DICTIONARIES: Record<Language, Dictionary> = { en, vi, zh, ja, ru, ko, th };
 
@@ -4116,6 +4246,7 @@ export function getDict(lang: Language): FullDictionary {
     ...(V5_DICTIONARIES[lang] ?? V5_EN),
     ...(V6_DICTIONARIES[lang] ?? V6_EN),
     ...(V7_DICTIONARIES[lang] ?? V7_EN),
+    ...(V8_DICTIONARIES[lang] ?? V8_EN),
   };
 }
 

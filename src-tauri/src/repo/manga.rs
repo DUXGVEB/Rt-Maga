@@ -51,6 +51,17 @@ pub(crate) struct MangaRow {
     pub(crate) created_at: Option<i64>,
 }
 
+/// Lightweight manga projection used for title/alias matching during `.tachibk` backup imports.
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct MangaMatchCandidate {
+    pub(crate) id: i64,
+    pub(crate) site: String,
+    pub(crate) title: String,
+    pub(crate) original_title: Option<String>,
+    pub(crate) alt_titles_json: Option<String>,
+    pub(crate) has_local_files: i64,
+}
+
 /// Persisted chapter record belonging to a manga.
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct ChapterRow {
@@ -594,6 +605,32 @@ impl Database {
              ORDER BY
                 CASE WHEN b.manga_id IS NOT NULL THEN 0 ELSE 1 END ASC,
                 COALESCE(h.read_at, b.created_at, m.updated_at) DESC",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows)
+    }
+
+    /// Lists all non-hidden manga with local-file presence flags for title/alias reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn list_manga_match_candidates(
+        &self,
+    ) -> Result<Vec<MangaMatchCandidate>, AppError> {
+        let rows = sqlx::query_as::<_, MangaMatchCandidate>(
+            "SELECT
+                m.id,
+                m.site,
+                m.title,
+                m.original_title,
+                m.alt_titles_json,
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM local_comic_chapter lcc WHERE lcc.manga_id = m.id
+                ) THEN 1 ELSE 0 END AS has_local_files
+             FROM manga m
+             WHERE m.hidden = 0",
         )
         .fetch_all(self.pool())
         .await?;

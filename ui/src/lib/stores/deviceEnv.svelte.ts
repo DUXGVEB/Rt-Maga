@@ -35,7 +35,12 @@ class DeviceEnvStore {
   isAndroid = $derived(this.info.platform === "android");
   isMobile = $derived(this.info.platform === "android" || this.viewportWidth < 768);
   isLandscape = $derived(
-    this.info.orientation === "landscape" || this.viewportWidth > this.viewportHeight
+    this.viewportWidth !== this.viewportHeight
+      ? this.viewportWidth > this.viewportHeight
+      : this.info.orientation === "landscape"
+  );
+  layoutTier = $derived<"compact" | "rail" | "desktop">(
+    this.viewportWidth < 768 ? "compact" : this.viewportWidth <= 1024 ? "rail" : "desktop"
   );
 
   private initialized = false;
@@ -76,6 +81,7 @@ class DeviceEnvStore {
       this.viewportWidth = w > 0 ? w : window.innerWidth;
       this.viewportHeight = h > 0 ? h : window.innerHeight;
       document.documentElement.style.setProperty("--app-height", `${this.viewportHeight}px`);
+      document.documentElement.style.setProperty("--app-width", `${this.viewportWidth}px`);
       if (!this.isAndroid) {
         void this.syncDesktopFullscreen();
       }

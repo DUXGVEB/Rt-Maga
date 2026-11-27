@@ -25,6 +25,7 @@ hmac.workspace = true
 http.workspace = true
 infer.workspace = true
 moka.workspace = true
+prost.workspace = true
 qrcode.workspace = true
 quick-xml.workspace = true
 rand.workspace = true

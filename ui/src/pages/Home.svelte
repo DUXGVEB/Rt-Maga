@@ -1,10 +1,12 @@
 <script lang="ts">
   import { ArrowDown, ArrowUp, BookOpen, CheckCircle2, Play, RotateCcw, Sparkles, X } from "lucide-svelte";
   import { onMount } from "svelte";
+  import { flip } from "svelte/animate";
   import { api } from "../lib/api";
   import CbzDropZone from "../lib/components/CbzDropZone.svelte";
   import LinkInput from "../lib/components/LinkInput.svelte";
   import MangaCard from "../lib/components/MangaCard.svelte";
+  import { flipDuration, popoverPop, staggerDelay } from "../lib/motion";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -97,10 +99,11 @@
   const completedItems = $derived(sortItems(history.filter((h) => !h.hasNew && h.isCompleted)));
 </script>
 
-<div class="mx-auto flex w-full max-w-5xl flex-col gap-10 px-5 py-8 sm:px-8 sm:py-10">
+<div class="mx-auto flex w-full max-w-6xl flex-col gap-9 px-4 py-6 sm:px-8 sm:py-9">
   <!-- Non-blocking Crash Recovery Banner -->
   {#if crashSession}
     <div
+      transition:popoverPop|local={{ duration: 190, y: -6 }}
       class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-xs shadow-sm"
       style="background-color: color-mix(in srgb, var(--surface) 88%, var(--accent-soft)); border-color: var(--accent);"
     >
@@ -118,7 +121,7 @@
         <button
           type="button"
           onclick={resumeCrashSession}
-          class="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-semibold transition-opacity hover:opacity-90"
+          class="gpu-press inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 font-semibold hover:opacity-90"
           style="background-color: var(--accent); color: var(--accent-fg);"
         >
           <Play size={12} fill="currentColor" />
@@ -127,7 +130,7 @@
         <button
           type="button"
           onclick={dismissCrashSession}
-          class="rounded-lg p-1.5 opacity-75 transition-opacity hover:opacity-100"
+          class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
           style="color: var(--text-muted);"
           title={t.dismissUpdate}
           aria-label={t.dismissUpdate}
@@ -138,25 +141,25 @@
     </div>
   {/if}
 
-  <!-- Hero Paste Box + User-Designated CBZ Importer -->
-  <section class="flex flex-col items-center gap-3.5 pt-2 text-center">
-    <h1 class="text-2xl font-bold tracking-tight">{t.homeTitle}</h1>
+  <!-- Hero Paste Box + Drag-and-Drop Multi-Format Importer (#032) -->
+  <section class="flex flex-col items-center gap-3.5 pt-1 text-center">
+    <h1 class="text-2xl font-bold tracking-tight sm:text-[1.75rem]">{t.homeTitle}</h1>
     <div class="mt-1 flex w-full justify-center">
       <LinkInput />
     </div>
     <div class="flex w-full justify-center">
-      <CbzDropZone />
+      <CbzDropZone onBackupImported={() => void loadHistory(false)} />
     </div>
   </section>
 
   <!-- Unified Sort Bar -->
   {#if !loading && history.length > 0}
     <div class="flex flex-wrap items-center justify-end gap-2">
-      <span class="text-xs" style="color: var(--text-muted);">{t.sortByLabel}</span>
+      <span class="text-xs font-medium" style="color: var(--text-muted);">{t.sortByLabel}</span>
       <select
         bind:value={sortField}
-        class="rounded-lg border px-2.5 py-1.5 text-xs font-medium outline-none"
-        style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+        class="surface-card min-h-[36px] rounded-xl px-3 py-1.5 text-xs font-medium outline-none"
+        style="color: var(--text);"
       >
         <option value="added">{t.sortDateAdded}</option>
         <option value="title">{t.sortTitleName}</option>
@@ -166,8 +169,8 @@
         onclick={() => {
           sortDir = sortDir === "desc" ? "asc" : "desc";
         }}
-        class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
-        style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+        class="surface-card gpu-press inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
+        style="color: var(--text);"
         title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
       >
         {#if sortDir === "desc"}
@@ -185,17 +188,23 @@
     <section class="flex flex-col gap-4">
       <div class="flex items-center gap-2">
         <Sparkles size={17} style="color: var(--accent);" />
-        <h2 class="text-base font-semibold">{t.newChapters}</h2>
+        <h2 class="text-base font-bold tracking-tight">{t.newChapters}</h2>
         <span
-          class="rounded-full px-2 py-0.5 text-xs font-medium"
+          class="rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums"
           style="background-color: var(--accent-soft); color: var(--accent);"
         >
           {updatedItems.length}
         </span>
       </div>
-      <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        {#each updatedItems as item (item.mangaId)}
-          <MangaCard {item} />
+      <div class="fluid-manga-grid">
+        {#each updatedItems as item, idx (item.mangaId)}
+          <div
+            animate:flip={{ duration: flipDuration(220) }}
+            class="stagger-item"
+            style="--stagger-delay: {staggerDelay(idx, 20, 240)}ms;"
+          >
+            <MangaCard {item} />
+          </div>
         {/each}
       </div>
     </section>
@@ -204,12 +213,12 @@
   <!-- Continue reading (Active Library) -->
   {#if loading || history.length === 0 || activeItems.length > 0}
     <section class="flex flex-col gap-4">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-2">
         <div class="flex items-center gap-2">
-          <h2 class="text-base font-semibold">{t.continueReading}</h2>
+          <h2 class="text-base font-bold tracking-tight">{t.continueReading}</h2>
           {#if activeItems.length > 0}
             <span
-              class="rounded-full px-2 py-0.5 text-xs font-medium"
+              class="rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums"
               style="background-color: var(--surface-hover); color: var(--text-muted);"
             >
               {activeItems.length}
@@ -220,7 +229,7 @@
           <button
             type="button"
             onclick={() => router.goHistory()}
-            class="text-xs font-medium transition-opacity hover:opacity-80"
+            class="gpu-press rounded-lg px-2 py-1 text-xs font-semibold hover:opacity-80"
             style="color: var(--accent);"
           >
             {t.viewAllHistory}
@@ -229,10 +238,10 @@
       </div>
 
       {#if loading}
-        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {#each Array(5) as _, i (i)}
+        <div class="fluid-manga-grid">
+          {#each Array(6) as _, i (i)}
             <div
-              class="aspect-[3/4] animate-pulse rounded-xl"
+              class="aspect-[3/4] animate-pulse rounded-2xl"
               style="background-color: var(--surface-hover);"
             ></div>
           {/each}
@@ -240,22 +249,28 @@
       {:else if history.length === 0}
         <div
           class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-14 text-center"
-          style="border-color: var(--border); color: var(--text-muted);"
+          style="border-color: var(--border-strong); color: var(--text-muted);"
         >
           <BookOpen size={30} strokeWidth={1.5} />
           <div class="text-sm font-medium" style="color: var(--text);">{t.noRecentTitle}</div>
         </div>
       {:else}
-        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {#each activeItems as item (item.mangaId)}
-            <MangaCard {item} />
+        <div class="fluid-manga-grid">
+          {#each activeItems as item, idx (item.mangaId)}
+            <div
+              animate:flip={{ duration: flipDuration(220) }}
+              class="stagger-item"
+              style="--stagger-delay: {staggerDelay(idx, 18, 260)}ms;"
+            >
+              <MangaCard {item} />
+            </div>
           {/each}
         </div>
       {/if}
     </section>
   {/if}
 
-  <!-- Completed Section at the bottom with long horizontal underscore/line separator -->
+  <!-- Completed Section at the bottom with editorial dashed divider -->
   {#if !loading && completedItems.length > 0}
     <section class="flex flex-col gap-4 pt-2">
       <div class="flex items-center gap-3">
@@ -265,13 +280,13 @@
           aria-hidden="true"
         ></div>
         <div
-          class="flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold"
-          style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
+          class="surface-card flex items-center gap-2 rounded-full px-3.5 py-1 text-xs font-semibold"
+          style="color: var(--text-muted);"
         >
           <CheckCircle2 size={14} style="color: #10b981;" />
           <span>{t.completedSection}</span>
           <span
-            class="rounded-full px-1.5 py-0.5 text-[11px]"
+            class="rounded-full px-1.5 py-0.5 text-[11px] tabular-nums"
             style="background-color: var(--surface-hover); color: var(--text);"
           >
             {completedItems.length}
@@ -284,9 +299,11 @@
         ></div>
       </div>
 
-      <div class="grid grid-cols-2 gap-4 opacity-90 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+      <div class="fluid-manga-grid opacity-90">
         {#each completedItems as item (item.mangaId)}
-          <MangaCard {item} />
+          <div animate:flip={{ duration: flipDuration(220) }}>
+            <MangaCard {item} />
+          </div>
         {/each}
       </div>
     </section>

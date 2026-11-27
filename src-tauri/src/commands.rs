@@ -23,6 +23,7 @@ use crate::repo::manga::HideAction;
 use crate::repo::session::CrashRecoverySession;
 use crate::repo::sources::{SourcePlacement, VisibilityFilter, VisibilityPatch};
 use crate::services::app_release::{AppReleaseInfo, CURRENT_APP_VERSION, InstallUpdateOutcome};
+use crate::services::comics::{TachibkBackupPreview, TachibkImportReport, TachibkImportRequest};
 use crate::services::library::{
     BookmarkItemView, CatalogPageView, FetchMode, HiddenMangaView, HistoryItemView, MangaView,
     NotificationItemView, ResolveResponse,
@@ -1096,6 +1097,52 @@ pub(crate) async fn finish_cbz_upload(
     target_manga_id: Option<i64>,
 ) -> Result<MangaView, AppError> {
     comics::finish_comic_staging_import(&state.data_dir, &state, &upload_ids, target_manga_id).await
+}
+
+/// Inspects dropped or selected paths via binary magic-byte + protobuf probing and returns
+/// only those that are valid Mihon/Tachiyomi `.tachibk` / `.proto.gz` backups.
+#[tauri::command]
+pub(crate) async fn detect_tachibk_paths(paths: Vec<String>) -> Result<Vec<String>, AppError> {
+    let buf_paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    Ok(comics::detect_tachibk_paths(&buf_paths).await)
+}
+
+/// Decodes a `.tachibk` / `.proto.gz` backup file on disk and returns a structured preview
+/// reconciled against existing `RtMaga` library entries.
+#[tauri::command]
+pub(crate) async fn preview_tachibk_backup(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<TachibkBackupPreview, AppError> {
+    comics::preview_tachibk_from_path(&state, &PathBuf::from(path)).await
+}
+
+/// Decodes a staged `WebView` `.tachibk` / `.proto.gz` upload and returns a structured preview.
+#[tauri::command]
+pub(crate) async fn preview_tachibk_upload(
+    state: State<'_, Arc<AppState>>,
+    upload_id: String,
+) -> Result<TachibkBackupPreview, AppError> {
+    comics::preview_tachibk_from_upload(&state.data_dir, &state, &upload_id).await
+}
+
+/// Removes a staged `WebView` `.tachibk` upload file if the user cancels the import preview modal.
+#[tauri::command]
+pub(crate) async fn discard_tachibk_upload(
+    state: State<'_, Arc<AppState>>,
+    upload_id: String,
+) -> Result<(), AppError> {
+    comics::discard_tachibk_upload(&state.data_dir, &upload_id).await
+}
+
+/// Imports user-selected entries from a `.tachibk` / `.proto.gz` backup into `RtMaga`'s library,
+/// auto-linking local matches and optionally creating metadata-only catalog entries.
+#[tauri::command]
+pub(crate) async fn import_tachibk_backup(
+    state: State<'_, Arc<AppState>>,
+    request: TachibkImportRequest,
+) -> Result<TachibkImportReport, AppError> {
+    comics::import_tachibk_backup(&state.data_dir, &state, &request).await
 }
 
 /// Category of user feedback / issue report.

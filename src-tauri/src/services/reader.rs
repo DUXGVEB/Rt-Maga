@@ -49,6 +49,12 @@ pub(crate) async fn get_chapter(
     known_manga_id: Option<i64>,
     priority: ChapterLoadPriority,
 ) -> Result<ChapterView, AppError> {
+    if crate::services::comics::is_tachibk_url(raw_url.trim()) {
+        return Err(AppError::NotFound {
+            message: "This chapter is a metadata-only entry imported from a .tachibk backup with no local comic files linked yet. Attach local CBZ/CBR/PDF/folder files on the manga page to read offline.".to_owned(),
+        });
+    }
+
     if crate::services::comics::is_local_comic_url(raw_url.trim()) {
         let local_url = url::Url::parse(raw_url.trim()).map_err(|e| AppError::InvalidUrl {
             message: format!("invalid local comic chapter URL: {e}"),

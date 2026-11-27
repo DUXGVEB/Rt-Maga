@@ -7,23 +7,27 @@
   import {
     BROWSER_FILE_ACCEPT,
     COMIC_DIALOG_FILTERS,
+    isBackupFilename,
     shouldUploadBrowserFile,
   } from "../comicFormats";
   import { libraryCache } from "../stores/libraryCache.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
-  import type { MangaView } from "../types";
+  import type { MangaView, TachibkBackupPreview, TachibkImportReport } from "../types";
   import LatticeLoader, { type LatticeStatus } from "./LatticeLoader.svelte";
+  import TachibkImportModal from "./TachibkImportModal.svelte";
 
   let {
     targetMangaId = null,
     compact = false,
     onImported,
+    onBackupImported,
   }: {
     targetMangaId?: number | null;
     compact?: boolean;
     onImported?: (manga: MangaView) => void;
+    onBackupImported?: (report: TachibkImportReport) => void;
   } = $props();
 
   let importing = $state(false);
@@ -32,6 +36,7 @@
   let platform = $state<"windows" | "android" | "other">("windows");
   let fileInputEl = $state<HTMLInputElement | null>(null);
   let folderInputEl = $state<HTMLInputElement | null>(null);
+  let backupPreview = $state<TachibkBackupPreview | null>(null);
   let statusResetTimer: number | null = null;
 
   const t = $derived(settingsStore.t);
@@ -118,13 +123,48 @@
     importing = true;
     uploadStatus = "loading";
     try {
-      const manga = await api.importCbzPaths(paths, targetMangaId);
-      await finishImport(manga);
+      let backupPaths: string[] = [];
+      if (!compact) {
+        backupPaths = await api.detectTachibkPaths(paths).catch(() => []);
+      }
+
+      const backupSet = new Set(backupPaths);
+      const comicPaths = paths.filter((p) => !backupSet.has(p));
+
+      if (comicPaths.length > 0) {
+        const manga = await api.importCbzPaths(comicPaths, targetMangaId);
+        if (backupPaths.length > 0) {
+          libraryCache.invalidate();
+          toasts.push(t.cbzImportedToast(manga.title, manga.chapters.length), "success", 3000);
+        } else {
+          await finishImport(manga);
+        }
+      }
+
+      if (backupPaths.length > 0) {
+        const preview = await api.previewTachibkBackup(backupPaths[0]);
+        uploadStatus = "idle";
+        backupPreview = preview;
+      }
     } catch (err) {
       showImportError(err);
     } finally {
       importing = false;
     }
+  }
+
+  function handleBackupImportComplete(report: TachibkImportReport) {
+    backupPreview = null;
+    libraryCache.invalidate();
+    uploadStatus = "success";
+    scheduleStatusReset(1400);
+    const matchedTotal = report.linkedLocalCount + report.updatedExistingCount;
+    toasts.push(
+      t.tachibkImportedToast(matchedTotal, report.createdCatalogCount, report.syncedChaptersRead),
+      "success",
+      4200
+    );
+    onBackupImported?.(report);
   }
 
   function normalizeDialogSelection(selected: string | string[] | null): string[] {
@@ -206,8 +246,27 @@
     importing = true;
     uploadStatus = "loading";
     try {
-      const manga = await api.importCbzBrowserFiles(files, targetMangaId);
-      await finishImport(manga);
+      const backupFile =
+        !compact && !isFolderInput
+          ? files.find((f) => isBackupFilename(f.name) || (files.length === 1 && f.name.toLowerCase().endsWith(".gz")))
+          : undefined;
+      const comicFiles = backupFile ? files.filter((f) => f !== backupFile) : files;
+
+      if (comicFiles.length > 0) {
+        const manga = await api.importCbzBrowserFiles(comicFiles, targetMangaId);
+        if (backupFile) {
+          libraryCache.invalidate();
+          toasts.push(t.cbzImportedToast(manga.title, manga.chapters.length), "success", 3000);
+        } else {
+          await finishImport(manga);
+        }
+      }
+
+      if (backupFile) {
+        const preview = await api.uploadTachibkBrowserFile(backupFile);
+        uploadStatus = "idle";
+        backupPreview = preview;
+      }
     } catch (err) {
       showImportError(err);
     } finally {
@@ -278,7 +337,7 @@
         void handlePickFilesClick();
       }
     }}
-    class="dropzone-032 group relative w-full max-w-2xl cursor-pointer overflow-hidden rounded-2xl border-2 border-dashed px-5 py-4 text-left transition-all duration-200 focus-visible:outline-2 focus-visible:outline-offset-2"
+    class="dropzone-032 group relative w-full max-w-2xl cursor-pointer overflow-hidden rounded-2xl border-2 border-dashed px-5 py-4 text-left focus-visible:outline-2 focus-visible:outline-offset-2"
     class:dropzone-032-active={dragOver}
     class:dropzone-032-busy={importing}
   >
@@ -288,7 +347,7 @@
     <span class="dz-corner dz-bl" aria-hidden="true"></span>
     <span class="dz-corner dz-br" aria-hidden="true"></span>
 
-    <div class="relative z-10 flex flex-wrap items-center justify-between gap-4">
+    <div class="relative z-10 flex flex-col gap-3.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4">
       <div class="flex min-w-0 flex-1 items-center gap-3.5">
         <!-- Layered tactile archive badge -->
         <div class="dz-icon-stage" aria-hidden="true">
@@ -319,32 +378,33 @@
             <span class="dz-ext-pill">.CBT</span>
             <span class="dz-ext-pill">.EPUB</span>
             <span class="dz-ext-pill">.PDF</span>
+            <span class="dz-ext-pill">.TACHIBK</span>
             <span class="dz-ext-pill dz-ext-pill-subtle">IMG / DIR</span>
           </div>
         </div>
       </div>
 
-      <div class="flex shrink-0 items-center gap-2">
+      <div class="flex w-full shrink-0 items-center gap-2 sm:w-auto">
         {#if !importing}
           <button
             type="button"
             onclick={(e) => void handlePickFolderClick(e)}
-            class="dz-cta-secondary inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors hover:brightness-95"
+            class="dz-cta-secondary gpu-press inline-flex min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold hover:opacity-90 sm:min-h-[38px] sm:flex-initial"
             title={t.cbzPickFolderBtn}
           >
-            <FolderOpen size={13} />
+            <FolderOpen size={14} />
             <span>{t.cbzPickFolderBtn}</span>
           </button>
         {/if}
 
         <span
-          class="dz-cta inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition-transform duration-200 group-hover:scale-[1.02]"
+          class="dz-cta gpu-press inline-flex min-h-[42px] flex-1 shrink-0 items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold group-hover:scale-[1.02] sm:min-h-[38px] sm:flex-initial"
         >
           {#if importing}
             <LatticeLoader size="xs" status="loading" tone="inherit" inline />
             <span>{t.cbzImporting}</span>
           {:else}
-            <Upload size={13} />
+            <Upload size={14} />
             <span>{t.cbzPickBtn}</span>
           {/if}
         </span>
@@ -353,12 +413,24 @@
   </div>
 {/if}
 
+<TachibkImportModal
+  preview={backupPreview}
+  onClose={() => {
+    backupPreview = null;
+    uploadStatus = "idle";
+  }}
+  onImported={handleBackupImportComplete}
+/>
+
 <style>
   .dropzone-032 {
     background-color: var(--surface);
-    border-color: var(--border);
+    border-color: var(--border-strong);
     box-shadow: var(--shadow-sm);
     outline-color: var(--accent);
+    transition:
+      transform var(--dur-base, 210ms) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)),
+      opacity var(--dur-fast, 150ms) ease;
   }
 
   .dropzone-032:hover:not(.dropzone-032-busy),
@@ -368,7 +440,7 @@
   }
 
   .dropzone-032-active {
-    transform: translateY(-1px) scale(1.006);
+    transform: translate3d(0, -1px, 0) scale(1.006);
   }
 
   .dropzone-032-busy {
@@ -380,9 +452,9 @@
     position: absolute;
     width: 10px;
     height: 10px;
-    border-color: var(--border);
+    border-color: var(--border-strong);
     pointer-events: none;
-    transition: border-color 180ms ease, transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    transition: transform 220ms var(--ease-spring, cubic-bezier(0.34, 1.4, 0.64, 1));
   }
 
   .dz-tl {

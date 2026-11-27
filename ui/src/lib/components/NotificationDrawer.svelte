@@ -1,15 +1,26 @@
 <script lang="ts">
   import { Bell, BookOpen, CheckCheck, Sparkles, Trash2, X } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
+  import { backdropFade, createOverlayGuard, drawerSlide } from "../motion";
+  import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { notificationsStore } from "../stores/notifications.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import type { NotificationItemView } from "../types";
 
   const t = $derived(settingsStore.t);
+  const isCompactMobile = $derived(deviceEnv.layoutTier === "compact");
+  const drawerGuard = createOverlayGuard(180);
+
+  function closeDrawerSafely() {
+    if (!drawerGuard.canAct()) return;
+    drawerGuard.lock();
+    notificationsStore.closeDrawer();
+  }
 
   $effect(() => {
     if (!notificationsStore.drawerOpen) return;
+    drawerGuard.lock(140);
     return router.registerBackInterceptor(() => {
       if (notificationsStore.drawerOpen) {
         notificationsStore.closeDrawer();
@@ -36,29 +47,43 @@
 </script>
 
 {#if notificationsStore.drawerOpen}
-  <!-- Backdrop -->
+  <!-- Backdrop (Svelte transition only — no competing CSS transition) -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    onclick={() => notificationsStore.closeDrawer()}
-    class="fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px] transition-opacity"
+    transition:backdropFade|local
+    onclick={closeDrawerSafely}
+    class="fixed inset-0 z-40 bg-black/48 backdrop-blur-[2px]"
   ></div>
 
-  <!-- Slide-over Panel -->
+  <!-- Adaptive Panel: Ergonomic Bottom Sheet on Compact Mobile (<768px), Right Slide-Over Drawer on Tablet/Desktop (>=768px) -->
   <aside
-    class="fixed top-0 right-0 bottom-0 z-50 flex w-full max-w-md flex-col border-l shadow-2xl"
-    style="padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); background-color: var(--surface); border-color: var(--border);"
+    transition:drawerSlide|local={{
+      side: isCompactMobile ? "bottom" : "right",
+      distance: isCompactMobile ? 56 : 48,
+      duration: 220,
+    }}
+    class={isCompactMobile
+      ? "glass-chrome fixed right-0 bottom-0 left-0 z-50 flex max-h-[84dvh] w-full flex-col rounded-t-3xl border-t shadow-2xl"
+      : "glass-chrome fixed top-0 right-0 bottom-0 z-50 flex w-full max-w-md flex-col border-l shadow-2xl"}
+    style={isCompactMobile
+      ? "padding-bottom: max(0.75rem, var(--safe-bottom)); padding-left: var(--safe-left); padding-right: var(--safe-right); border-color: var(--border); box-shadow: var(--shadow-lg);"
+      : "padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); padding-right: var(--safe-right); border-color: var(--border); box-shadow: var(--shadow-lg);"}
   >
+    {#if isCompactMobile}
+      <div class="sheet-handle" aria-hidden="true"></div>
+    {/if}
+
     <div
-      class="flex items-center justify-between gap-2 border-b px-4 py-3.5"
+      class="flex items-center justify-between gap-2 border-b px-4 py-3"
       style="border-color: var(--border);"
     >
       <div class="flex items-center gap-2">
         <Bell size={18} style="color: var(--accent);" />
-        <h2 class="text-base font-semibold">{t.notifCenterTitle}</h2>
+        <h2 class="text-base font-bold tracking-tight">{t.notifCenterTitle}</h2>
         {#if notificationsStore.unreadCount > 0}
           <span
-            class="rounded-full px-2 py-0.5 text-[11px] font-semibold"
+            class="rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
             {notificationsStore.unreadCount}
@@ -71,11 +96,11 @@
           <button
             type="button"
             onclick={() => notificationsStore.markAllRead()}
-            class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium hover:opacity-80"
+            class="gpu-press inline-flex min-h-[40px] items-center gap-1 rounded-xl px-2.5 py-1 text-xs font-semibold hover:opacity-80"
             style="color: var(--accent);"
             title={t.notifMarkAllRead}
           >
-            <CheckCheck size={14} />
+            <CheckCheck size={15} />
             <span class="hidden sm:inline">{t.notifMarkAllRead}</span>
           </button>
         {/if}
@@ -83,28 +108,29 @@
           <button
             type="button"
             onclick={() => notificationsStore.clearAll()}
-            class="rounded-lg p-1.5 opacity-70 hover:opacity-100"
+            class="gpu-press flex h-10 w-10 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
             style="color: var(--danger);"
             title={t.clearAll}
+            aria-label={t.clearAll}
           >
-            <Trash2 size={15} />
+            <Trash2 size={16} />
           </button>
         {/if}
         <button
           type="button"
-          onclick={() => notificationsStore.closeDrawer()}
-          class="rounded-lg p-1.5 opacity-70 hover:opacity-100"
+          onclick={closeDrawerSafely}
+          class="gpu-press flex h-10 w-10 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
           aria-label={t.cancel}
         >
-          <X size={17} />
+          <X size={18} />
         </button>
       </div>
     </div>
 
-    <div class="flex-1 overflow-y-auto p-3">
+    <div class="flex-1 overflow-y-auto overscroll-contain p-3">
       {#if notificationsStore.items.length === 0}
         <div
-          class="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"
+          class="flex h-full min-h-44 flex-col items-center justify-center gap-3 px-6 text-center"
           style="color: var(--text-muted);"
         >
           <Bell size={28} strokeWidth={1.5} />
@@ -123,7 +149,7 @@
                   openItem(item);
                 }
               }}
-              class="flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-colors hover:brightness-95"
+              class="gpu-press flex min-h-[64px] cursor-pointer items-center gap-3 rounded-2xl border p-3 hover:opacity-95"
               style="background-color: {item.read
                 ? 'var(--surface-subtle)'
                 : 'color-mix(in srgb, var(--surface) 92%, var(--accent-soft))'}; border-color: {item.read
@@ -131,7 +157,7 @@
                 : 'color-mix(in srgb, var(--accent) 35%, var(--border))'};"
             >
               <div
-                class="h-14 w-10 shrink-0 overflow-hidden rounded-lg"
+                class="h-14 w-10 shrink-0 overflow-hidden rounded-xl"
                 style="background-color: var(--surface-hover);"
               >
                 {#if item.coverToken}
@@ -163,7 +189,7 @@
                 </div>
                 <div class="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
                   <span
-                    class="inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-medium"
+                    class="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-medium"
                     style="background-color: var(--accent-soft); color: var(--accent);"
                   >
                     <Sparkles size={11} />
@@ -181,11 +207,12 @@
                   e.stopPropagation();
                   void notificationsStore.remove(item.id);
                 }}
-                class="rounded-lg p-1.5 opacity-55 transition-opacity hover:opacity-100"
+                class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl opacity-60 hover:opacity-100"
                 style="color: var(--text-muted);"
                 title={t.dismissNotification}
+                aria-label={t.dismissNotification}
               >
-                <X size={14} />
+                <X size={15} />
               </button>
             </div>
           {/each}

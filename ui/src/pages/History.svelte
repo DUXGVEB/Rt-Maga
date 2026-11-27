@@ -1,6 +1,8 @@
 <script lang="ts">
   import { BookOpen, CheckCircle2, Clock, Sparkles, Trash2 } from "lucide-svelte";
   import { api, imgProxyUrl } from "../lib/api";
+  import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../lib/comicFormats";
+  import { popoverPop, staggerDelay } from "../lib/motion";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -42,6 +44,10 @@
   });
 
   function resumeFromCover(item: HistoryItemView) {
+    if (isTachibkCatalogSite(item.site) || isMetadataOnlyChapterUrl(item.chapterUrl)) {
+      router.goManga(item.mangaId);
+      return;
+    }
     if (item.isCompleted && !item.hasNew) {
       toasts.push(t.toastMangaCompletedNoResume, "info", 2800);
       return;
@@ -114,19 +120,27 @@
   });
 </script>
 
-<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 px-5 py-6 sm:px-8 sm:py-8">
-  <div class="flex items-center justify-between gap-4">
-    <div>
+<div class="mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 py-6 sm:px-8 sm:py-8">
+  <div class="flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-2.5">
       <h1 class="text-2xl font-bold tracking-tight">{t.historyTitle}</h1>
+      {#if items.length > 0}
+        <span
+          class="rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums"
+          style="background-color: var(--surface-hover); color: var(--text-muted);"
+        >
+          {items.length}
+        </span>
+      {/if}
     </div>
 
     {#if items.length > 0}
       {#if confirmingClear}
-        <div class="flex items-center gap-2">
+        <div in:popoverPop|local={{ duration: 150, y: 0 }} class="flex items-center gap-2">
           <button
             type="button"
             onclick={clearAll}
-            class="rounded-lg px-3 py-1.5 text-xs font-semibold text-white"
+            class="gpu-press min-h-[38px] rounded-xl px-3.5 py-1.5 text-xs font-semibold text-white"
             style="background-color: var(--danger);"
           >
             {t.confirmClear}
@@ -136,8 +150,8 @@
             onclick={() => {
               confirmingClear = false;
             }}
-            class="rounded-lg border px-3 py-1.5 text-xs"
-            style="border-color: var(--border);"
+            class="gpu-press min-h-[38px] rounded-xl border px-3.5 py-1.5 text-xs font-medium"
+            style="border-color: var(--border); background-color: var(--surface);"
           >
             {t.cancel}
           </button>
@@ -148,8 +162,8 @@
           onclick={() => {
             confirmingClear = true;
           }}
-          class="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors"
-          style="background-color: var(--surface); border-color: var(--border); color: var(--danger);"
+          class="surface-card gpu-press inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium"
+          style="color: var(--danger);"
         >
           <Trash2 size={14} />
           <span>{t.clearAll}</span>
@@ -162,7 +176,7 @@
     <div class="flex flex-col gap-3">
       {#each Array(4) as _, i (i)}
         <div
-          class="h-20 animate-pulse rounded-xl"
+          class="h-20 animate-pulse rounded-2xl"
           style="background-color: var(--surface-hover);"
         ></div>
       {/each}
@@ -170,7 +184,7 @@
   {:else if items.length === 0}
     <div
       class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed py-16 text-center"
-      style="border-color: var(--border); color: var(--text-muted);"
+      style="border-color: var(--border-strong); color: var(--text-muted);"
     >
       <Clock size={30} strokeWidth={1.5} />
       <div class="text-sm font-medium" style="color: var(--text);">{t.historyEmptyTitle}</div>
@@ -182,17 +196,17 @@
           {group.label}
         </h2>
         <div class="flex flex-col gap-2">
-          {#each group.list as item (item.mangaId)}
+          {#each group.list as item, idx (item.mangaId)}
             {@const completedOnly = item.isCompleted && !item.hasNew}
             <div
-              class="flex items-center gap-4 rounded-xl border p-3 transition-colors"
-              style="background-color: var(--surface); border-color: var(--border);"
+              class="stagger-item surface-card flex items-center gap-3.5 rounded-2xl p-3 sm:gap-4"
+              style="--stagger-delay: {staggerDelay(idx, 18, 220)}ms;"
             >
               <button
                 type="button"
                 onclick={() => resumeFromCover(item)}
                 title={completedOnly ? t.toastMangaCompletedNoResume : t.coverTapResumeHint}
-                class="h-16 w-12 shrink-0 cursor-pointer overflow-hidden rounded-lg transition-transform hover:scale-[1.03]"
+                class="gpu-press h-16 w-12 shrink-0 cursor-pointer overflow-hidden rounded-xl hover:scale-[1.04]"
                 style="background-color: var(--surface-subtle);"
               >
                 {#if item.coverToken && !failedCovers[item.mangaId]}
@@ -238,6 +252,14 @@
                       {t.badgeCompleted}
                     </span>
                   {/if}
+                  {#if isTachibkCatalogSite(item.site)}
+                    <span
+                      class="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                      style="background-color: var(--accent-soft); color: var(--accent);"
+                    >
+                      {t.tachibkCatalogShortBadge}
+                    </span>
+                  {/if}
                   {#if item.unreadCount > 0}
                     <span
                       class="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold"
@@ -258,7 +280,7 @@
                 <button
                   type="button"
                   onclick={() => router.goManga(item.mangaId)}
-                  class="rounded-lg border px-2.5 py-1.5 text-xs font-medium"
+                  class="gpu-press min-h-[38px] rounded-xl border px-3 py-1.5 text-xs font-medium"
                   style="border-color: var(--border); background-color: var(--surface-subtle);"
                 >
                   {t.chaptersBtn}
@@ -266,9 +288,10 @@
                 <button
                   type="button"
                   onclick={(e) => removeOne(item.mangaId, e)}
-                  class="rounded-lg p-1.5 opacity-60 transition-opacity hover:opacity-100"
+                  class="gpu-press flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl opacity-70 hover:opacity-100"
                   style="color: var(--danger);"
                   title={t.removeHistoryTooltip}
+                  aria-label={t.removeHistoryTooltip}
                 >
                   <Trash2 size={15} />
                 </button>
