@@ -4,6 +4,7 @@
     Bookmark,
     Clock,
     Compass,
+    Dices,
     Home,
     Maximize,
     Minimize,
@@ -18,6 +19,7 @@
   import { appReleaseStore } from "../stores/appRelease.svelte";
   import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { notificationsStore } from "../stores/notifications.svelte";
+  import { randomMangaStore } from "../stores/randomManga.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { updatesStore } from "../stores/updates.svelte";
@@ -239,6 +241,24 @@
           </button>
         {/if}
       {/each}
+
+      <!-- Random Manga 3D Depth Carousel quick launcher -->
+      <div class="my-1 border-t" style="border-color: var(--border);"></div>
+      <button
+        type="button"
+        onclick={() => randomMangaStore.open(router.current.name === "bookmarks" ? "bookmarks" : "all")}
+        class="nav-item gpu-press"
+        class:nav-item-rail={isRailMode}
+        class:active={randomMangaStore.isOpen}
+        title={t.randomMangaTrigger}
+        aria-label={t.randomMangaTrigger}
+      >
+        <span class="nav-indicator" aria-hidden="true"></span>
+        <Dices size={19} strokeWidth={randomMangaStore.isOpen ? 2.2 : 1.85} />
+        {#if !isRailMode}
+          <span class="truncate">{t.randomMangaTrigger}</span>
+        {/if}
+      </button>
     </nav>
   </div>
 

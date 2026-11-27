@@ -330,9 +330,8 @@
 
 <style>
   .floating-slot {
-    will-change: transform, opacity;
     transition:
-      transform var(--dur-base, 210ms) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)),
-      opacity var(--dur-base, 210ms) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+      transform var(--dur-base, 175ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
+      opacity var(--dur-base, 175ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 </style>

@@ -804,6 +804,22 @@ impl Settings {
         })
     }
 
+    /// Produces a sanitized clone safe for `.rtmaga` backup export by stripping all
+    /// unencrypted authentication credentials, proxy passwords, and custom `DoH` account IDs.
+    pub(crate) fn sanitized_for_backup(&self) -> Self {
+        let mut clean = self.clone().sanitized();
+        clean.proxy.default_proxy.username = None;
+        clean.proxy.default_proxy.password = None;
+        for rule in &mut clean.proxy.domain_rules {
+            if let Some(ref mut custom) = rule.custom_proxy {
+                custom.username = None;
+                custom.password = None;
+            }
+        }
+        clean.doh.custom_profile_id = None;
+        clean
+    }
+
     /// Converts the headless setting into a [`HeadlessPolicy`] for `mangacore`.
     pub(crate) fn headless_policy(&self) -> HeadlessPolicy {
         if self.sources.headless_enabled {

@@ -100,6 +100,24 @@ test("detectWebtoonFromDimensions distinguishes tall webtoons from standard mang
   ]);
   assert.equal(standard.decided, true);
   assert.equal(standard.isWebtoon, false);
+
+  // Tall strip >= 2.2 with matching width continuity classifies as Webtoon.
+  const stripContinuity = detectWebtoonFromDimensions([
+    { index: 0, width: 800, height: 1200 },
+    { index: 1, width: 800, height: 1300 },
+    { index: 2, width: 800, height: 2400 },
+  ]);
+  assert.equal(stripContinuity.decided, true);
+  assert.equal(stripContinuity.isWebtoon, true);
+
+  // Mismatched-width tall credits banner inside standard manga stays Manga.
+  const mangaWithBanner = detectWebtoonFromDimensions([
+    { index: 0, width: 1000, height: 1450 },
+    { index: 1, width: 1000, height: 1420 },
+    { index: 2, width: 520, height: 1500 },
+  ]);
+  assert.equal(mangaWithBanner.decided, true);
+  assert.equal(mangaWithBanner.isWebtoon, false);
 });
 
 test("computeHorizontalTrackMetrics preserves center fit and visible side peeks across viewports", () => {

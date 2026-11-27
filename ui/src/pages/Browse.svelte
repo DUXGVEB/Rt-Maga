@@ -12,6 +12,7 @@
   import LatticeLoader from "../lib/components/LatticeLoader.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import WebFilterBar from "../lib/components/WebFilterBar.svelte";
+  import { pressable, shouldStaggerItem, staggerDelay } from "../lib/motion";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
@@ -502,13 +503,17 @@
     </div>
   {:else}
     <div class="fluid-manga-grid">
-      {#each catalog.entries as entry (entry.url)}
+      {#each catalog.entries as entry, idx (entry.url)}
         {@const isOpening = openingEntryUrl === entry.url}
+        {@const animateStagger = shouldStaggerItem(idx, catalog.entries.length)}
         <button
           type="button"
+          use:pressable
           disabled={openingEntryUrl !== null}
           onclick={() => void openEntry(entry)}
-          class="card-cq surface-card group flex flex-col overflow-hidden rounded-2xl text-left transition-transform duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.985] disabled:opacity-70"
+          class="card-cq card-contain card-press surface-card group flex flex-col overflow-hidden rounded-2xl text-left disabled:opacity-70"
+          class:stagger-item={animateStagger}
+          style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, catalog.entries.length)}ms;` : undefined}
         >
           <div
             class="relative aspect-[3/4] w-full overflow-hidden"
@@ -519,10 +524,11 @@
                 src={imgProxyUrl(entry.coverToken)}
                 alt={entry.title}
                 loading="lazy"
+                decoding="async"
                 onerror={() => {
                   failedCovers = { ...failedCovers, [entry.url]: true };
                 }}
-                class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
+                class="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03]"
               />
             {:else}
               <div

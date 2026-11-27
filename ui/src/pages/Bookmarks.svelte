@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { ArrowDown, ArrowUp, Bookmark, BookOpen, CheckCircle2, Play, Sparkles, Trash2 } from "lucide-svelte";
+  import { ArrowDown, ArrowUp, Bookmark, BookOpen, CheckCircle2, Dices, Play, Sparkles, Trash2 } from "lucide-svelte";
   import { flip } from "svelte/animate";
   import { api, imgProxyUrl } from "../lib/api";
   import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../lib/comicFormats";
-  import { flipDuration, staggerDelay } from "../lib/motion";
+  import { flipDuration, pressable, shouldStaggerItem, staggerDelay } from "../lib/motion";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
+  import { randomMangaStore } from "../lib/stores/randomManga.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
@@ -116,7 +117,17 @@
     </div>
 
     {#if items().length > 0}
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          use:pressable
+          onclick={() => randomMangaStore.open("bookmarks")}
+          class="gpu-press inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold shadow-sm hover:opacity-95"
+          style="background-color: var(--accent); color: var(--accent-fg);"
+        >
+          <Dices size={14} />
+          <span>{t.randomMangaTrigger}</span>
+        </button>
         <span class="text-xs font-medium" style="color: var(--text-muted);">{t.sortByLabel}</span>
         <select
           bind:value={sortField}
@@ -164,16 +175,19 @@
       <div class="text-sm font-medium" style="color: var(--text);">{t.bookmarksEmptyTitle}</div>
     </div>
   {:else}
+    {@const list = items()}
     <div class="fluid-manga-grid">
-      {#each items() as item, idx (item.mangaId)}
+      {#each list as item, idx (item.mangaId)}
         {@const completedOnly = item.isCompleted && !item.hasNew}
+        {@const animateStagger = shouldStaggerItem(idx, list.length)}
         <div
-          animate:flip={{ duration: flipDuration(220) }}
-          class="stagger-item"
-          style="--stagger-delay: {staggerDelay(idx, 18, 260)}ms;"
+          animate:flip={{ duration: flipDuration(180, list.length) }}
+          class:stagger-item={animateStagger}
+          style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, list.length)}ms;` : undefined}
         >
           <article
-            class="card-cq surface-card group relative flex h-full flex-col overflow-hidden rounded-2xl transition-transform duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.985]"
+            use:pressable
+            class="card-cq card-contain card-press surface-card group relative flex h-full flex-col overflow-hidden rounded-2xl"
           >
             <div
               class="relative aspect-[3/4] w-full overflow-hidden"
@@ -190,10 +204,11 @@
                     src={imgProxyUrl(item.coverToken)}
                     alt={item.title}
                     loading="lazy"
+                    decoding="async"
                     onerror={() => {
                       failedCovers = { ...failedCovers, [item.mangaId]: true };
                     }}
-                    class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
+                    class="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03]"
                   />
                 {:else}
                   <div

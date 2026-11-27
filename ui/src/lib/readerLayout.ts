@@ -58,53 +58,58 @@ export function focusBrightness(
 }
 
 /**
- * Passively classifies whether a chapter is a Webtoon / Long-Strip format using only the natural
- * dimensions of already-loaded images (zero extra network requests).
+ * Passively classifies whether a chapter is a Webtoon / Long-Strip format using natural
+ * image dimensions (zero extra network requests), matching the Rust header-sniffing heuristic.
  *
  * Safeguards against false positives:
  * - Ignores tiny icons/banners (`width < 200` or `height < 300`).
  * - Ignores landscape double-page spreads (`width > height * 1.15`).
- * - Requires at least 3 qualifying images before deciding so a single tall cover/strip never
- *   falsely triggers Webtoon mode on standard Japanese manga chapters.
+ * - Requires at least 2 qualifying images from the leading pages before deciding.
+ * - Triggers Vertical Webtoon mode if median aspect ratio `>= 1.8` OR a tall strip (`>= 2.2`)
+ *   shares matching width continuity (`±8%`) with another qualifying page; otherwise defaults to Manga.
  */
 export function detectWebtoonFromDimensions(
   samples: PageDimensionSample[]
 ): WebtoonDetectionResult {
-  const qualifyingRatios: number[] = [];
+  const qualifying: { width: number; ratio: number }[] = [];
 
   for (const s of samples) {
     if (s.width < 200 || s.height < 300) continue;
     if (s.width > s.height * 1.15) continue;
-    qualifyingRatios.push(s.height / s.width);
+    qualifying.push({ width: s.width, ratio: s.height / s.width });
   }
 
-  if (qualifyingRatios.length < 3) {
+  if (qualifying.length < 2) {
     return {
       decided: false,
       isWebtoon: false,
-      qualifyingCount: qualifyingRatios.length,
+      qualifyingCount: qualifying.length,
       tallCount: 0,
       medianRatio: 0,
     };
   }
 
-  const sorted = [...qualifyingRatios].sort((a, b) => a - b);
+  const sorted = qualifying.map((q) => q.ratio).sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   const medianRatio =
     sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 
-  const tallCount = qualifyingRatios.filter((r) => r >= 2.2).length;
-  const veryTallCount = qualifyingRatios.filter((r) => r >= 2.8).length;
-  const tallFraction = tallCount / qualifyingRatios.length;
+  const tallCount = qualifying.filter((q) => q.ratio >= 2.2).length;
+  const hasTallWithWidthContinuity = qualifying.some((a, i) => {
+    if (a.ratio < 2.2) return false;
+    return qualifying.some((b, j) => {
+      if (i === j) return false;
+      const maxW = Math.max(a.width, b.width);
+      return Math.abs(a.width - b.width) <= maxW * 0.08;
+    });
+  });
 
-  const isWebtoon =
-    (medianRatio >= 2.0 && tallFraction >= 0.6) ||
-    (veryTallCount >= 2 && medianRatio >= 1.9);
+  const isWebtoon = medianRatio >= 1.8 || hasTallWithWidthContinuity;
 
   return {
     decided: true,
     isWebtoon,
-    qualifyingCount: qualifyingRatios.length,
+    qualifyingCount: qualifying.length,
     tallCount,
     medianRatio: Number(medianRatio.toFixed(2)),
   };

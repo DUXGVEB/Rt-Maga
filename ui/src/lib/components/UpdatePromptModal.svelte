@@ -8,8 +8,9 @@
     Sparkles,
     X,
   } from "lucide-svelte";
-  import { backdropFade, createOverlayGuard, modalScale } from "../motion";
+  import { adaptiveOverlay, backdropFade, createOverlayGuard } from "../motion";
   import { appReleaseStore } from "../stores/appRelease.svelte";
+  import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import LatticeLoader from "./LatticeLoader.svelte";
 
@@ -72,11 +73,11 @@
     <div
       transition:backdropFade|local
       onclick={dismissSafely}
-      class="fixed inset-0 bg-black/55 backdrop-blur-sm"
+      class="modal-backdrop fixed inset-0"
     ></div>
 
     <div
-      transition:modalScale|local
+      transition:adaptiveOverlay|local={{ isMobile: deviceEnv.layoutTier === "compact" }}
       class="modal-cq relative z-10 flex max-h-[calc(100dvh-1.5rem-var(--safe-top))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 sm:max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
       style="background-color: var(--surface); border-color: var(--border); color: var(--text); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >

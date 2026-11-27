@@ -1,13 +1,14 @@
 <script lang="ts">
-  import { ArrowDown, ArrowUp, BookOpen, CheckCircle2, Play, RotateCcw, Sparkles, X } from "lucide-svelte";
+  import { ArrowDown, ArrowUp, BookOpen, CheckCircle2, Dices, Play, RotateCcw, Sparkles, X } from "lucide-svelte";
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { api } from "../lib/api";
   import CbzDropZone from "../lib/components/CbzDropZone.svelte";
   import LinkInput from "../lib/components/LinkInput.svelte";
   import MangaCard from "../lib/components/MangaCard.svelte";
-  import { flipDuration, popoverPop, staggerDelay } from "../lib/motion";
+  import { flipDuration, popoverPop, pressable, shouldStaggerItem, staggerDelay } from "../lib/motion";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
+  import { randomMangaStore } from "../lib/stores/randomManga.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
@@ -152,34 +153,47 @@
     </div>
   </section>
 
-  <!-- Unified Sort Bar -->
+  <!-- Unified Sort Bar + Random Manga 3D Carousel Launcher -->
   {#if !loading && history.length > 0}
-    <div class="flex flex-wrap items-center justify-end gap-2">
-      <span class="text-xs font-medium" style="color: var(--text-muted);">{t.sortByLabel}</span>
-      <select
-        bind:value={sortField}
-        class="surface-card min-h-[36px] rounded-xl px-3 py-1.5 text-xs font-medium outline-none"
-        style="color: var(--text);"
-      >
-        <option value="added">{t.sortDateAdded}</option>
-        <option value="title">{t.sortTitleName}</option>
-      </select>
+    <div class="flex flex-wrap items-center justify-between gap-2.5">
       <button
         type="button"
-        onclick={() => {
-          sortDir = sortDir === "desc" ? "asc" : "desc";
-        }}
-        class="surface-card gpu-press inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
-        style="color: var(--text);"
-        title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
+        use:pressable
+        onclick={() => randomMangaStore.open("all")}
+        class="gpu-press inline-flex min-h-[38px] items-center gap-2 rounded-xl px-3.5 py-1.5 text-xs font-semibold shadow-sm hover:opacity-95"
+        style="background-color: var(--accent); color: var(--accent-fg);"
       >
-        {#if sortDir === "desc"}
-          <ArrowDown size={13} />
-        {:else}
-          <ArrowUp size={13} />
-        {/if}
-        <span>{sortDir === "desc" ? t.sortDesc : t.sortAsc}</span>
+        <Dices size={15} />
+        <span>{t.randomMangaTrigger}</span>
       </button>
+
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        <span class="text-xs font-medium" style="color: var(--text-muted);">{t.sortByLabel}</span>
+        <select
+          bind:value={sortField}
+          class="surface-card min-h-[36px] rounded-xl px-3 py-1.5 text-xs font-medium outline-none"
+          style="color: var(--text);"
+        >
+          <option value="added">{t.sortDateAdded}</option>
+          <option value="title">{t.sortTitleName}</option>
+        </select>
+        <button
+          type="button"
+          onclick={() => {
+            sortDir = sortDir === "desc" ? "asc" : "desc";
+          }}
+          class="surface-card gpu-press inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
+          style="color: var(--text);"
+          title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
+        >
+          {#if sortDir === "desc"}
+            <ArrowDown size={13} />
+          {:else}
+            <ArrowUp size={13} />
+          {/if}
+          <span>{sortDir === "desc" ? t.sortDesc : t.sortAsc}</span>
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -198,10 +212,11 @@
       </div>
       <div class="fluid-manga-grid">
         {#each updatedItems as item, idx (item.mangaId)}
+          {@const animateStagger = shouldStaggerItem(idx, updatedItems.length)}
           <div
-            animate:flip={{ duration: flipDuration(220) }}
-            class="stagger-item"
-            style="--stagger-delay: {staggerDelay(idx, 20, 240)}ms;"
+            animate:flip={{ duration: flipDuration(180, updatedItems.length) }}
+            class:stagger-item={animateStagger}
+            style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 18, 180, updatedItems.length)}ms;` : undefined}
           >
             <MangaCard {item} />
           </div>
@@ -257,10 +272,11 @@
       {:else}
         <div class="fluid-manga-grid">
           {#each activeItems as item, idx (item.mangaId)}
+            {@const animateStagger = shouldStaggerItem(idx, activeItems.length)}
             <div
-              animate:flip={{ duration: flipDuration(220) }}
-              class="stagger-item"
-              style="--stagger-delay: {staggerDelay(idx, 18, 260)}ms;"
+              animate:flip={{ duration: flipDuration(180, activeItems.length) }}
+              class:stagger-item={animateStagger}
+              style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, activeItems.length)}ms;` : undefined}
             >
               <MangaCard {item} />
             </div>
@@ -301,7 +317,7 @@
 
       <div class="fluid-manga-grid opacity-90">
         {#each completedItems as item (item.mangaId)}
-          <div animate:flip={{ duration: flipDuration(220) }}>
+          <div animate:flip={{ duration: flipDuration(180, completedItems.length) }}>
             <MangaCard {item} />
           </div>
         {/each}

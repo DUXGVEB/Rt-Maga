@@ -8,6 +8,7 @@ use mangacore::{
     ProxyTestResult, SiteFilterSchema, network_provider_catalog, test_doh_config,
 };
 use serde::Serialize;
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -23,16 +24,26 @@ use crate::repo::manga::HideAction;
 use crate::repo::session::CrashRecoverySession;
 use crate::repo::sources::{SourcePlacement, VisibilityFilter, VisibilityPatch};
 use crate::services::app_release::{AppReleaseInfo, CURRENT_APP_VERSION, InstallUpdateOutcome};
+use crate::services::backup_service::{
+    BackupExportResult, BackupImportMode, BackupImportReport, BackupPreviewView,
+    BackupProgressEvent,
+};
 use crate::services::comics::{TachibkBackupPreview, TachibkImportReport, TachibkImportRequest};
+use crate::services::layout_detect::LayoutDetectionResult;
 use crate::services::library::{
     BookmarkItemView, CatalogPageView, FetchMode, HiddenMangaView, HistoryItemView, MangaView,
     NotificationItemView, ResolveResponse,
 };
-use crate::services::reader::{ChapterLoadPriority, ChapterView};
+use crate::services::reader::{
+    ChapterLoadPriority, ChapterView, SavedImageOutcome, SetCoverOutcome,
+};
+use crate::services::rtmaga_codec::BackupBlockSelection;
 use crate::services::sources::{MultiSourceSearchResponse, SavedSourceView};
 use crate::services::sync::{SyncDecision, SyncSenderMode, SyncStatusView};
 use crate::services::updater::{CheckScope, UpdateSummary};
-use crate::services::{app_release, comics, library, reader, sources, sync, updater};
+use crate::services::{
+    app_release, backup_service, comics, layout_detect, library, reader, sources, sync, updater,
+};
 use crate::settings::{ReaderSettings, Settings, SettingsSection};
 use crate::state::AppState;
 
@@ -213,6 +224,14 @@ pub(crate) fn read_clipboard_text(app: AppHandle) -> Result<Option<String>, AppE
 pub(crate) async fn open_external_url(app: AppHandle, url: String) -> Result<(), AppError> {
     let normalized = mangacore::normalize_url(&url).map_err(AppError::from)?;
     mangacore::http::validate_public_http_url(&normalized).map_err(AppError::from)?;
+
+    #[cfg(target_os = "android")]
+    {
+        if crate::android_env::open_external_url_android(&app, normalized.as_str()).is_ok() {
+            return Ok(());
+        }
+    }
+
     app.opener()
         .open_url(normalized.as_str(), None::<&str>)
         .map_err(|e| AppError::Internal {
@@ -1353,4 +1372,110 @@ pub(crate) async fn save_feedback_report_file(
         report.included_logs,
     )
     .await
+}
+
+/// Exports selected library/source/settings blocks into a compressed, checksummed `.rtmaga`
+/// binary backup using native OS file dialogs (Windows) or Android SAF, streaming progress via `Channel`.
+#[tauri::command]
+pub(crate) async fn rtmaga_backup_export(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    selection: BackupBlockSelection,
+    on_progress: Channel<BackupProgressEvent>,
+) -> Result<BackupExportResult, AppError> {
+    backup_service::export_rtmaga_interactive(&app, &state, selection, on_progress).await
+}
+
+/// Opens the native OS picker (Windows) or Android SAF picker (`*/*`) for a `.rtmaga` backup,
+/// runs 3-stage pre-flight validation off the main thread, and returns its metadata preview.
+#[tauri::command]
+pub(crate) async fn rtmaga_backup_pick_preview(
+    app: AppHandle,
+) -> Result<Option<BackupPreviewView>, AppError> {
+    backup_service::pick_and_preview_rtmaga(&app).await
+}
+
+/// Validates and previews a `.rtmaga` backup file at `file_path` without mutating SQLite.
+#[tauri::command]
+pub(crate) async fn rtmaga_backup_preview_path(
+    file_path: String,
+) -> Result<BackupPreviewView, AppError> {
+    backup_service::preview_rtmaga_file(
+        PathBuf::from(file_path),
+        None,
+        backup_service::BackupFileOrigin::UserFile,
+    )
+    .await
+}
+
+/// Removes a temporary Android SAF `.rtmaga` staging file if the user cancels the import modal.
+#[tauri::command]
+pub(crate) async fn rtmaga_backup_discard_temp(app: AppHandle, file_path: String) {
+    backup_service::discard_temp_backup_file(&app, &file_path).await;
+}
+
+/// Imports a pre-validated `.rtmaga` backup atomically inside a single `BEGIN IMMEDIATE`
+/// SQLite transaction using Smart Merge (default) or Overwrite, streaming progress via `Channel`.
+#[tauri::command]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "Tauri IPC command boundary maps directly to frontend boolean flag"
+)]
+pub(crate) async fn rtmaga_backup_import(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    file_path: String,
+    mode: BackupImportMode,
+    is_temp_file: bool,
+    on_progress: Channel<BackupProgressEvent>,
+) -> Result<BackupImportReport, AppError> {
+    let origin = if is_temp_file {
+        backup_service::BackupFileOrigin::TempStaging
+    } else {
+        backup_service::BackupFileOrigin::UserFile
+    };
+    backup_service::import_rtmaga_file(
+        &app,
+        &state,
+        &PathBuf::from(file_path),
+        mode,
+        origin,
+        on_progress,
+    )
+    .await
+}
+
+/// Saves a reader page image directly to Android `MediaStore` Gallery or Windows Pictures/RtMaga,
+/// reusing any locally cached bytes without re-fetching.
+#[tauri::command]
+pub(crate) async fn download_reader_image(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    token: String,
+    manga_title: Option<String>,
+    page_index: Option<u32>,
+) -> Result<SavedImageOutcome, AppError> {
+    reader::download_reader_image(&app, &state, &token, manga_title.as_deref(), page_index).await
+}
+
+/// Persists a reader page image as the manga's cover in SQLite and persistent cover cache,
+/// returning a fresh signed cover token for immediate reactive UI refresh.
+#[tauri::command]
+pub(crate) async fn set_manga_cover_from_page(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+    token: String,
+) -> Result<SetCoverOutcome, AppError> {
+    reader::set_manga_cover_from_page(&state, manga_id, &token).await
+}
+
+/// Runs non-blocking Rust-assisted Webtoon vs. Manga classification using manual override priority,
+/// metadata hints, and header-only `imagesize` dimension sniffing on the first 2–4 chapter pages.
+#[tauri::command]
+pub(crate) async fn detect_chapter_layout(
+    state: State<'_, Arc<AppState>>,
+    manga_id: i64,
+    page_tokens: Vec<String>,
+) -> Result<LayoutDetectionResult, AppError> {
+    layout_detect::detect_chapter_layout(&state, manga_id, &page_tokens).await
 }

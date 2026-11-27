@@ -120,6 +120,125 @@ fn decode_and_verify(token: &str, key: &[u8; 32]) -> Option<TokenPayload> {
     serde_json::from_slice(&json_bytes).ok()
 }
 
+/// Verified contents extracted from an HMAC-signed `img://` token.
+#[derive(Debug, Clone)]
+pub(crate) struct VerifiedImageToken {
+    pub url: String,
+    pub fallbacks: Vec<String>,
+    pub referer: String,
+    pub manga_id: Option<i64>,
+    pub site: Option<String>,
+    pub chapter_url: Option<String>,
+}
+
+/// Verifies an HMAC-signed `img://` token and returns its trusted metadata.
+pub(crate) fn verify_image_token(token: &str, key: &[u8; 32]) -> Option<VerifiedImageToken> {
+    let payload = decode_and_verify(token, key)?;
+    Some(VerifiedImageToken {
+        url: payload.u,
+        fallbacks: payload.f,
+        referer: payload.r,
+        manga_id: payload.m,
+        site: payload.s,
+        chapter_url: payload.ch,
+    })
+}
+
+/// Resolves raw image bytes and MIME content-type for a verified `img://` page token without
+/// re-fetching from the network when already cached locally or stored in a local comic archive.
+///
+/// # Errors
+///
+/// Returns [`crate::error::AppError`] if the token is invalid or fetching the image fails.
+pub(crate) async fn resolve_image_bytes(
+    state: &AppState,
+    token: &str,
+) -> Result<(Vec<u8>, String, VerifiedImageToken), crate::error::AppError> {
+    let verified = verify_image_token(token, &state.proxy_key).ok_or_else(|| {
+        crate::error::AppError::InvalidUrl {
+            message: "invalid or expired image token".to_owned(),
+        }
+    })?;
+
+    if crate::services::comics::is_local_comic_url(&verified.url)
+        && let Ok(local_url) = Url::parse(&verified.url)
+        && local_url.path().starts_with("/page/")
+    {
+        let (bytes, mime) =
+            crate::services::comics::read_local_page_bytes(&state.data_dir, state, &local_url)
+                .await?;
+        return Ok((bytes, mime, verified));
+    }
+
+    let cache_key = ImageCache::key_for_url(&verified.url);
+    let meta = CacheEntryMeta {
+        site: verified.site.as_deref(),
+        manga_id: verified.manga_id,
+        is_cover: false,
+        chapter_url: verified.chapter_url.as_deref(),
+    };
+
+    if let Some(hit) = state.images.get(&cache_key, meta.clone()).await {
+        return Ok((hit.bytes.to_vec(), hit.content_type, verified));
+    }
+
+    if crate::services::comics::is_local_comic_url(&verified.url) {
+        return Err(crate::error::AppError::NotFound {
+            message: "local comic image not found".to_owned(),
+        });
+    }
+
+    let referer = Url::parse(&verified.referer).ok();
+    let max_mb = state.current_settings().await.cache.max_mb;
+
+    let mut urls_to_try = Vec::with_capacity(1 + verified.fallbacks.len());
+    urls_to_try.push(verified.url.as_str());
+    for fb in &verified.fallbacks {
+        urls_to_try.push(fb.as_str());
+    }
+
+    let mut last_err: Option<crate::error::AppError> = None;
+    for candidate_str in urls_to_try {
+        let Ok(candidate_url) = Url::parse(candidate_str) else {
+            continue;
+        };
+        match state
+            .registry
+            .http()
+            .fetch_image(&candidate_url, referer.as_ref())
+            .await
+        {
+            Ok(fetched) if !fetched.bytes.is_empty() => {
+                state
+                    .images
+                    .put(
+                        &cache_key,
+                        &fetched.bytes,
+                        &fetched.content_type,
+                        max_mb,
+                        meta.clone(),
+                    )
+                    .await;
+                return Ok((fetched.bytes.to_vec(), fetched.content_type, verified));
+            }
+            Ok(_) => {
+                last_err = Some(crate::error::AppError::CorruptedData {
+                    message: "upstream returned an empty image".to_owned(),
+                });
+            }
+            Err(err) => {
+                last_err = Some(crate::error::AppError::from(err));
+            }
+        }
+    }
+
+    Err(
+        last_err.unwrap_or_else(|| crate::error::AppError::NotFound {
+            message: "unable to load image bytes".to_owned(),
+        }),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResponseCachePolicy {
     Cover,

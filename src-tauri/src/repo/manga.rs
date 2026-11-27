@@ -586,6 +586,26 @@ impl Database {
         Ok(())
     }
 
+    /// Updates the persisted cover URL reference for a manga (e.g. when set from a reader page).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn set_manga_cover_url(
+        &self,
+        manga_id: i64,
+        cover_url: &str,
+    ) -> Result<(), AppError> {
+        let now = now_unix_secs();
+        sqlx::query("UPDATE manga SET cover_url = ?, updated_at = ? WHERE id = ?")
+            .bind(cover_url.trim())
+            .bind(now)
+            .bind(manga_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+
     /// Lists manga eligible for background update checks: **bookmarked manga first**,
     /// followed by remaining reading-history manga, deduplicated by manga ID.
     /// Local comic imports (`site LIKE 'local:%'`) are excluded from remote polling.

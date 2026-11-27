@@ -88,6 +88,35 @@ pub(crate) struct OrientationLockReply {
     pub mode: String,
 }
 
+/// Result returned by Android SAF backup export (`ACTION_CREATE_DOCUMENT`).
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SafExportReply {
+    pub cancelled: bool,
+    pub uri: Option<String>,
+    pub bytes: u64,
+}
+
+/// Result returned by Android SAF backup picker (`ACTION_OPEN_DOCUMENT`).
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct SafPickReply {
+    pub cancelled: bool,
+    pub path: Option<String>,
+    pub display_name: Option<String>,
+}
+
+/// Result returned by Android MediaStore Gallery image save.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct GallerySaveReply {
+    pub saved_path: String,
+    pub uri: Option<String>,
+}
+
 /// Returns the best-effort real OS/hardware device name (without custom user override).
 pub(crate) fn detect_os_device_name() -> String {
     let from_env = std::env::var("COMPUTERNAME")
@@ -126,11 +155,16 @@ pub(crate) fn resolve_display_device_name(
 
 #[cfg(target_os = "android")]
 mod imp {
+    use std::path::Path;
+
     use serde::Deserialize;
     use tauri::plugin::{Builder as PluginBuilder, PluginHandle, TauriPlugin};
     use tauri::{AppHandle, Manager, Runtime};
 
-    use super::{DeviceEnvInfo, NotificationPermissionInfo, OrientationLockReply};
+    use super::{
+        DeviceEnvInfo, GallerySaveReply, NotificationPermissionInfo, OrientationLockReply,
+        SafExportReply, SafPickReply,
+    };
     use crate::error::AppError;
 
     struct DeviceEnvState<R: Runtime>(PluginHandle<R>);
@@ -269,13 +303,79 @@ mod imp {
             }
         }))
     }
+
+    pub(crate) fn export_backup_saf(
+        app: &AppHandle,
+        temp_path: &Path,
+        file_name: &str,
+        mime_type: &str,
+    ) -> Result<SafExportReply, AppError> {
+        let state = app.state::<DeviceEnvState<tauri::Wry>>();
+        state
+            .0
+            .run_mobile_plugin(
+                "exportBackupSaf",
+                serde_json::json!({
+                    "tempPath": temp_path.to_string_lossy(),
+                    "fileName": file_name,
+                    "mimeType": mime_type,
+                }),
+            )
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to export backup via Android SAF: {e}"),
+            })
+    }
+
+    pub(crate) fn pick_backup_saf(app: &AppHandle) -> Result<SafPickReply, AppError> {
+        let state = app.state::<DeviceEnvState<tauri::Wry>>();
+        state
+            .0
+            .run_mobile_plugin("pickBackupSaf", serde_json::json!({}))
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to pick backup via Android SAF: {e}"),
+            })
+    }
+
+    pub(crate) fn save_image_to_gallery(
+        app: &AppHandle,
+        temp_path: &Path,
+        file_name: &str,
+        mime_type: &str,
+    ) -> Result<GallerySaveReply, AppError> {
+        let state = app.state::<DeviceEnvState<tauri::Wry>>();
+        state
+            .0
+            .run_mobile_plugin(
+                "saveImageToGallery",
+                serde_json::json!({
+                    "tempPath": temp_path.to_string_lossy(),
+                    "fileName": file_name,
+                    "mimeType": mime_type,
+                }),
+            )
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to save image to Android Gallery: {e}"),
+            })
+    }
+
+    pub(crate) fn open_external_url_android(app: &AppHandle, url: &str) -> Result<(), AppError> {
+        let state = app.state::<DeviceEnvState<tauri::Wry>>();
+        let _: serde_json::Value = state
+            .0
+            .run_mobile_plugin("openExternalUrl", serde_json::json!({ "url": url }))
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to open external browser intent: {e}"),
+            })?;
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "android")]
 pub(crate) use imp::{
-    check_notification_permission, get_device_env, init_plugin, read_clipboard_text,
-    request_notification_permission, send_android_notification, set_immersive, set_keep_screen_on,
-    set_orientation_lock,
+    check_notification_permission, export_backup_saf, get_device_env, init_plugin,
+    open_external_url_android, pick_backup_saf, read_clipboard_text,
+    request_notification_permission, save_image_to_gallery, send_android_notification,
+    set_immersive, set_keep_screen_on, set_orientation_lock,
 };
 
 #[cfg(not(target_os = "android"))]

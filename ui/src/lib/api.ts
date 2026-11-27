@@ -1,9 +1,15 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getDict } from "./i18n";
 import type {
   AppError,
   AppReleaseInfo,
+  BackupBlockSelection,
+  BackupExportResult,
+  BackupImportMode,
+  BackupImportReport,
+  BackupPreviewView,
+  BackupProgressEvent,
   BookmarkItemView,
   BookmarkSort,
   BrowserAuthOutcome,
@@ -29,6 +35,7 @@ import type {
   InstallUpdateOutcome,
   Language,
   LastReadingDestination,
+  LayoutDetectionResult,
   MangaView,
   MultiSourceSearchResponse,
   NetworkProviderInfo,
@@ -43,7 +50,9 @@ import type {
   ReaderSettings,
   ResolveResponse,
   SavedDiagnosticFile,
+  SavedImageOutcome,
   SavedSourceView,
+  SetCoverOutcome,
   Settings,
   SettingsSection,
   SiteFilterSchema,
@@ -561,6 +570,53 @@ export const api = {
     invoke<FormattedFeedbackReport>("build_feedback_report", { request }),
   saveFeedbackReportFile: (request: FeedbackReportRequest) =>
     invoke<SavedDiagnosticFile>("save_feedback_report_file", { request }),
+
+  rtmagaBackupExport: (
+    selection: BackupBlockSelection,
+    onProgress?: (ev: BackupProgressEvent) => void
+  ) => {
+    const channel = new Channel<BackupProgressEvent>();
+    if (onProgress) {
+      channel.onmessage = onProgress;
+    }
+    return invoke<BackupExportResult>("rtmaga_backup_export", {
+      selection,
+      onProgress: channel,
+    });
+  },
+  rtmagaBackupPickPreview: () => invoke<BackupPreviewView | null>("rtmaga_backup_pick_preview"),
+  rtmagaBackupPreviewPath: (filePath: string) =>
+    invoke<BackupPreviewView>("rtmaga_backup_preview_path", { filePath }),
+  rtmagaBackupDiscardTemp: (filePath: string) =>
+    invoke<void>("rtmaga_backup_discard_temp", { filePath }),
+  rtmagaBackupImport: (
+    filePath: string,
+    mode: BackupImportMode,
+    isTempFile: boolean,
+    onProgress?: (ev: BackupProgressEvent) => void
+  ) => {
+    const channel = new Channel<BackupProgressEvent>();
+    if (onProgress) {
+      channel.onmessage = onProgress;
+    }
+    return invoke<BackupImportReport>("rtmaga_backup_import", {
+      filePath,
+      mode,
+      isTempFile,
+      onProgress: channel,
+    });
+  },
+
+  downloadReaderImage: (token: string, mangaTitle?: string | null, pageIndex?: number | null) =>
+    invoke<SavedImageOutcome>("download_reader_image", {
+      token,
+      mangaTitle: mangaTitle ?? null,
+      pageIndex: pageIndex ?? null,
+    }),
+  setMangaCoverFromPage: (mangaId: number, token: string) =>
+    invoke<SetCoverOutcome>("set_manga_cover_from_page", { mangaId, token }),
+  detectChapterLayout: (mangaId: number, pageTokens: string[]) =>
+    invoke<LayoutDetectionResult>("detect_chapter_layout", { mangaId, pageTokens }),
 
   onUpdatesFound: (cb: (found: FoundUpdate[]) => void): Promise<UnlistenFn> =>
     listen<FoundUpdate[]>("updates://found", (e) => cb(e.payload)),

@@ -66,6 +66,7 @@
   import FeedbackComposer from "../lib/components/FeedbackComposer.svelte";
   import LanSyncPanel from "../lib/components/LanSyncPanel.svelte";
   import NetworkProtectionPanel from "../lib/components/NetworkProtectionPanel.svelte";
+  import RtmagaBackupPanel from "../lib/components/RtmagaBackupPanel.svelte";
   import SettingsVisualPreview from "../lib/components/SettingsVisualPreview.svelte";
   import SourceManagerPanel from "../lib/components/SourceManagerPanel.svelte";
   import ToggleSwitch from "../lib/components/ToggleSwitch.svelte";
@@ -395,6 +396,13 @@
       title: t.suppSourcesTitle,
       subtitle: t.suppSourcesDesc,
       keywords: `${t.suppSourcesTitle} ${t.suppSourcesDesc} ${t.navSources} supplemental nguon bo sung`,
+    },
+    {
+      id: "rtmaga-backup",
+      tab: "storage",
+      title: t.rtmagaBackupTitle,
+      subtitle: ".rtmaga · LZ4 · CRC32",
+      keywords: `${t.rtmagaBackupTitle} ${t.rtmagaBackupDesc} rtmaga backup export import restore smart merge overwrite sao luu khoi phuc`,
     },
     {
       id: "cache",
@@ -2581,7 +2589,15 @@
 
       <!-- ==================== TAB 5: STORAGE & HIDDEN MANGA (Tabbed Scoped View) ==================== -->
       {#if activeTab === "storage"}
-        <section id="settings-cache" class="bento-card">
+        <div class="flex flex-col gap-3.5">
+          <RtmagaBackupPanel
+            onImported={() => {
+              void loadHiddenManga();
+              void loadCacheInfo();
+            }}
+          />
+
+          <section id="settings-cache" class="bento-card">
           <div class="card-head">
             <div class="flex items-center gap-2.5">
               <span class="card-icon" style="background-color: var(--accent-soft); color: var(--accent);">
@@ -2863,6 +2879,7 @@
             {/if}
           {/if}
         </section>
+        </div>
       {/if}
 
       <!-- ==================== TAB 6: SYSTEM (Feedback + Diagnostics + Reset All) ==================== -->

@@ -4,6 +4,7 @@
     Bookmark,
     Clock,
     Compass,
+    Dices,
     Download,
     ExternalLink,
     Home as HomeIcon,
@@ -19,6 +20,7 @@
   import { api } from "./lib/api";
   import FloatingControls from "./lib/components/FloatingControls.svelte";
   import NotificationDrawer from "./lib/components/NotificationDrawer.svelte";
+  import RandomMangaModal from "./lib/components/RandomMangaModal.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import ToastContainer from "./lib/components/ToastContainer.svelte";
   import UpdatePromptModal from "./lib/components/UpdatePromptModal.svelte";
@@ -26,6 +28,7 @@
   import { appReleaseStore } from "./lib/stores/appRelease.svelte";
   import { deviceEnv } from "./lib/stores/deviceEnv.svelte";
   import { notificationsStore } from "./lib/stores/notifications.svelte";
+  import { randomMangaStore } from "./lib/stores/randomManga.svelte";
   import { router } from "./lib/stores/router.svelte";
   import { settingsStore } from "./lib/stores/settings.svelte";
   import { updatesStore } from "./lib/stores/updates.svelte";
@@ -177,6 +180,19 @@
         <div class="flex items-center gap-0.5">
           <button
             type="button"
+            onclick={() => randomMangaStore.open(router.current.name === "bookmarks" ? "bookmarks" : "all")}
+            class="gpu-press flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl"
+            style="color: {randomMangaStore.isOpen ? 'var(--accent)' : 'var(--text-muted)'}; background-color: {randomMangaStore.isOpen
+              ? 'var(--accent-soft)'
+              : 'transparent'};"
+            title={t.randomMangaTrigger}
+            aria-label={t.randomMangaTrigger}
+          >
+            <Dices size={19} />
+          </button>
+
+          <button
+            type="button"
             onclick={() => updatesStore.checkNow()}
             disabled={checkingAny}
             class="gpu-press flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl disabled:opacity-55"
@@ -287,7 +303,7 @@
         />
       {:else}
         {#key routeViewKey()}
-          <div in:viewReveal|local={{ duration: 170, y: 6 }} class="min-h-full w-full">
+          <div in:viewReveal|local={{ duration: 160, y: 6 }} class="min-h-full w-full">
             {#if router.current.name === "home"}
               <Home />
             {:else if router.current.name === "sources"}
@@ -430,6 +446,10 @@
   {/if}
 
   <NotificationDrawer />
+
+  {#if !isReader}
+    <RandomMangaModal />
+  {/if}
 
   {#if !isReader && appReleaseStore.promptOpen && appReleaseStore.release}
     <UpdatePromptModal />

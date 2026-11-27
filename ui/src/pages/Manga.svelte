@@ -7,13 +7,17 @@
     BookOpen,
     Check,
     CheckCircle2,
+    ChevronDown,
+    Copy,
     CornerDownLeft,
+    ExternalLink,
     EyeOff,
     Play,
     RefreshCw,
     Search,
     Trash2,
   } from "lucide-svelte";
+  import { onMount } from "svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
   import {
     isLocalComicSite,
@@ -23,7 +27,8 @@
   import CbzDropZone from "../lib/components/CbzDropZone.svelte";
   import LatticeLoader from "../lib/components/LatticeLoader.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
-  import { backdropFade, createOverlayGuard, modalScale } from "../lib/motion";
+  import { adaptiveOverlay, backdropFade, createOverlayGuard, popoverPop } from "../lib/motion";
+  import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -49,8 +54,69 @@
   let selectedChapterLang = $state<string>("auto");
   let descExpanded = $state(false);
   let tagsExpanded = $state(false);
+  let titleMenuOpen = $state(false);
   let loadSeq = 0;
   const deleteModalGuard = createOverlayGuard(200);
+
+  onMount(() => {
+    const unregisterBack = router.registerBackInterceptor(() => {
+      if (titleMenuOpen) {
+        titleMenuOpen = false;
+        return true;
+      }
+      if (showDeleteModal && !deleting) {
+        showDeleteModal = false;
+        return true;
+      }
+      return false;
+    });
+    const onDocPointerDown = (e: PointerEvent) => {
+      if (!titleMenuOpen) return;
+      if (e.target instanceof HTMLElement && e.target.closest("[data-title-menu-root]")) {
+        return;
+      }
+      titleMenuOpen = false;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && titleMenuOpen) {
+        titleMenuOpen = false;
+      }
+    };
+    document.addEventListener("pointerdown", onDocPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      unregisterBack();
+      document.removeEventListener("pointerdown", onDocPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  });
+
+  function searchMangaInSources() {
+    if (!manga) return;
+    const title = manga.title.trim();
+    titleMenuOpen = false;
+    if (!title) return;
+    router.goSources(title);
+  }
+
+  async function copyMangaTitle() {
+    if (!manga) return;
+    const title = manga.title.trim();
+    titleMenuOpen = false;
+    if (!title) return;
+    try {
+      await navigator.clipboard.writeText(title);
+      toasts.push(t.mangaTitleCopiedToast, "success", 2000);
+    } catch {
+      toasts.push(t.mangaTitleCopiedToast, "info", 2000);
+    }
+  }
+
+  const externalSourceUrl = $derived(() => {
+    if (!manga || isLocalComicSite(manga.site)) return null;
+    const raw = (manga.canonicalUrl ?? manga.url ?? "").trim();
+    return /^https?:\/\//i.test(raw) ? raw : null;
+  });
 
   function openDeleteModal() {
     if (!deleteModalGuard.canAct()) return;
@@ -446,11 +512,12 @@
     <section
       class="surface-card relative flex flex-col gap-5 overflow-hidden rounded-2xl p-4 sm:flex-row sm:gap-6 sm:p-6"
     >
-      {#if manga.coverToken && !coverError}
+      {#if manga.coverToken && !coverError && !deviceEnv.isAndroid}
         <img
           src={imgProxyUrl(manga.coverToken)}
           alt=""
           aria-hidden="true"
+          decoding="async"
           class="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover opacity-[0.07] blur-2xl"
         />
       {/if}
@@ -465,6 +532,7 @@
             <img
               src={imgProxyUrl(manga.coverToken)}
               alt={manga.title}
+              decoding="async"
               onerror={() => {
                 coverError = true;
               }}
@@ -512,7 +580,55 @@
             {/if}
           </div>
 
-          <h1 class="text-lg font-bold leading-snug tracking-tight">{manga.title}</h1>
+          <div class="relative" data-title-menu-root>
+            <button
+              type="button"
+              onclick={() => {
+                titleMenuOpen = !titleMenuOpen;
+              }}
+              aria-expanded={titleMenuOpen}
+              title={t.mangaTitleMenuHint}
+              class="group inline-flex max-w-full items-start gap-1 rounded-lg text-left transition-opacity hover:opacity-85"
+            >
+              <h1 class="text-lg font-bold leading-snug tracking-tight group-hover:underline">
+                {manga.title}
+              </h1>
+              <ChevronDown
+                size={15}
+                class="mt-1 shrink-0 opacity-60 transition-transform duration-150 {titleMenuOpen ? 'rotate-180' : ''}"
+              />
+            </button>
+
+            {#if titleMenuOpen}
+              <div
+                transition:popoverPop|local={{ duration: 150, y: -4 }}
+                role="menu"
+                class="glass-chrome absolute top-full left-0 z-30 mt-1.5 flex w-56 flex-col gap-1 rounded-xl border p-1.5 shadow-lg"
+                style="border-color: var(--border);"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={searchMangaInSources}
+                  class="gpu-press flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold hover:opacity-90"
+                  style="background-color: var(--accent-soft); color: var(--accent);"
+                >
+                  <Search size={14} class="shrink-0" />
+                  <span>{t.mangaTitleSearchInSources}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => void copyMangaTitle()}
+                  class="gpu-press flex min-h-[38px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium hover:opacity-85"
+                  style="color: var(--text);"
+                >
+                  <Copy size={13} class="shrink-0" style="color: var(--text-muted);" />
+                  <span>{t.mangaTitleCopyTitle}</span>
+                </button>
+              </div>
+            {/if}
+          </div>
           {#if manga.originalTitle && manga.originalTitle.toLowerCase() !== manga.title.toLowerCase()}
             <div class="line-clamp-1 text-[11px] font-medium" style="color: var(--text-muted);">
               {manga.originalTitle}
@@ -567,7 +683,55 @@
               {/if}
             </div>
 
-            <h1 class="text-2xl font-bold leading-tight tracking-tight">{manga.title}</h1>
+            <div class="relative inline-block max-w-full" data-title-menu-root>
+              <button
+                type="button"
+                onclick={() => {
+                  titleMenuOpen = !titleMenuOpen;
+                }}
+                aria-expanded={titleMenuOpen}
+                title={t.mangaTitleMenuHint}
+                class="group inline-flex max-w-full items-center gap-1.5 rounded-lg text-left transition-opacity hover:opacity-85"
+              >
+                <h1 class="text-2xl font-bold leading-tight tracking-tight group-hover:underline">
+                  {manga.title}
+                </h1>
+                <ChevronDown
+                  size={17}
+                  class="mt-0.5 shrink-0 opacity-60 transition-transform duration-150 {titleMenuOpen ? 'rotate-180' : ''}"
+                />
+              </button>
+
+              {#if titleMenuOpen}
+                <div
+                  transition:popoverPop|local={{ duration: 150, y: -4 }}
+                  role="menu"
+                  class="glass-chrome absolute top-full left-0 z-30 mt-1.5 flex w-60 flex-col gap-1 rounded-xl border p-1.5 shadow-lg"
+                  style="border-color: var(--border);"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={searchMangaInSources}
+                    class="gpu-press flex min-h-[38px] w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold hover:opacity-90"
+                    style="background-color: var(--accent-soft); color: var(--accent);"
+                  >
+                    <Search size={14} class="shrink-0" />
+                    <span>{t.mangaTitleSearchInSources}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => void copyMangaTitle()}
+                    class="gpu-press flex min-h-[36px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium hover:opacity-85"
+                    style="color: var(--text);"
+                  >
+                    <Copy size={13} class="shrink-0" style="color: var(--text-muted);" />
+                    <span>{t.mangaTitleCopyTitle}</span>
+                  </button>
+                </div>
+              {/if}
+            </div>
             {#if manga.originalTitle && manga.originalTitle.toLowerCase() !== manga.title.toLowerCase()}
               <div class="text-xs font-medium" style="color: var(--text-muted);">
                 {manga.originalTitle}
@@ -658,9 +822,23 @@
             </div>
           {/if}
 
-          <div class="truncate text-[11px] opacity-75" style="color: var(--text-muted);">
-            {manga.canonicalUrl ?? manga.url}
-          </div>
+          {#if externalSourceUrl()}
+            {@const extUrl = externalSourceUrl()!}
+            <button
+              type="button"
+              onclick={() => void handleOpenExternal(extUrl)}
+              title={t.mangaOpenExternalSourceTooltip}
+              class="inline-flex max-w-full items-center gap-1.5 self-start rounded-lg px-1.5 py-1 text-left text-[11px] font-medium transition-opacity hover:underline hover:opacity-100"
+              style="color: var(--accent);"
+            >
+              <ExternalLink size={12} class="shrink-0" />
+              <span class="truncate">{extUrl}</span>
+            </button>
+          {:else}
+            <div class="truncate text-[11px] opacity-75" style="color: var(--text-muted);">
+              {manga.canonicalUrl ?? manga.url}
+            </div>
+          {/if}
 
           {#if isTachibkCatalogSite(manga.site)}
             <div
@@ -918,10 +1096,10 @@
     <div
       transition:backdropFade|local
       onclick={closeDeleteModal}
-      class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+      class="modal-backdrop fixed inset-0"
     ></div>
     <div
-      transition:modalScale|local
+      transition:adaptiveOverlay|local={{ isMobile: deviceEnv.layoutTier === "compact" }}
       class="modal-cq relative z-10 flex max-h-[calc(100dvh-1.5rem-var(--safe-top))] w-full max-w-md flex-col gap-4 overflow-y-auto overscroll-contain rounded-t-3xl border-t p-5 shadow-2xl sm:max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
       style="background-color: var(--surface); border-color: var(--border); box-shadow: var(--shadow-lg); padding-bottom: max(1.25rem, var(--safe-bottom));"
     >

@@ -9,8 +9,11 @@
     ChevronLeft,
     ChevronRight,
     ChevronUp,
+    Download,
     ExternalLink,
+    Image as ImageIcon,
     List,
+    Loader2,
     Maximize,
     Minimize,
     RotateCcw,
@@ -27,7 +30,7 @@
   import PageImage from "../lib/components/PageImage.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import SquishSwitch from "../lib/components/SquishSwitch.svelte";
-  import { backdropFade, createOverlayGuard, drawerSlide } from "../lib/motion";
+  import { backdropFade, createOverlayGuard, drawerSlide, popoverPop } from "../lib/motion";
   import {
     clampZoomPan,
     computeAnchoredZoom,
@@ -44,6 +47,7 @@
     type RectBox,
   } from "../lib/readerLayout";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
+  import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
@@ -88,6 +92,15 @@
   let quickFloatConfig = $state<"scrollToTop" | "orientationLock" | null>(null);
   let chapterJumpOpen = $state(false);
   let chapterJumpQuery = $state("");
+  let imageMenuTarget = $state<{
+    token: string;
+    pageIndex: number;
+    chapterUrl: string;
+    clientX: number;
+    clientY: number;
+    isContextMenu: boolean;
+  } | null>(null);
+  let imageActionBusy = $state<"download" | "cover" | null>(null);
   const LANDSCAPE_AUTO_SPREAD_KEY = "rtmaga.reader.landscapeAutoSpread.v1";
   let landscapeAutoSpread = $state(
     typeof window !== "undefined" &&
@@ -103,6 +116,7 @@
     quickSettingsOpen = false;
     openQuickCat = null;
     quickFloatConfig = null;
+    imageMenuTarget = null;
   }
 
   function setLandscapeAutoSpread(next: boolean) {
@@ -178,6 +192,12 @@
   let pointerDownY = 0;
   let pointerDownAt = 0;
   let activePointerId: number | null = null;
+  let activeViewportPointers = new Set<number>();
+  let longPressTimer: number | null = null;
+  let longPressPointerId: number | null = null;
+  let longPressStartX = 0;
+  let longPressStartY = 0;
+  let suppressNextClickUntil = 0;
   let panStartX = 0;
   let panStartY = 0;
   let panOriginTx = 0;
@@ -297,7 +317,8 @@
   );
 
   const isAutoWebtoonActive = $derived(
-    effectiveOverride === null &&
+    !hasCustomMangaSettings &&
+      effectiveOverride === null &&
       readerSettings.autoWebtoonDetect &&
       Boolean(manga?.detectedWebtoon || chapterDetectedWebtoon)
   );
@@ -699,12 +720,13 @@
 
     if (
       !webtoonDecidedForChapter &&
+      !hasCustomMangaSettings &&
       readerSettings.autoWebtoonDetect &&
       effectiveOverride === null &&
-      info.index < 8
+      info.index < 6
     ) {
       dimensionSamples.set(info.index, info);
-      if (dimensionSamples.size >= 3) {
+      if (dimensionSamples.size >= 2) {
         const result = detectWebtoonFromDimensions(Array.from(dimensionSamples.values()));
         if (result.decided) {
           webtoonDecidedForChapter = true;
@@ -857,6 +879,7 @@
       orientationRestoreTimer,
       wheelResetTimer,
       zoomFocusSettleTimer,
+      longPressTimer,
     ]) {
       if (timer !== null) window.clearTimeout(timer);
     }
@@ -867,6 +890,8 @@
     orientationRestoreTimer = null;
     wheelResetTimer = null;
     zoomFocusSettleTimer = null;
+    longPressTimer = null;
+    longPressPointerId = null;
     if (focusRaf !== null) {
       window.cancelAnimationFrame(focusRaf);
       focusRaf = null;
@@ -1066,6 +1091,44 @@
       if (behavior.autoMarkReadOnOpen || chapterData.images.length <= 2) {
         markChapterReadLocalAndRemote(chapterData.url);
       }
+
+      // Non-blocking Rust-assisted Webtoon vs. Manga classification (metadata + header-only imagesize).
+      // Manual per-manga overrides always take precedence and skip auto-switching.
+      if (
+        !hasCustomMangaSettings &&
+        effectiveOverride === null &&
+        readerSettings.autoWebtoonDetect &&
+        !mangaData?.detectedWebtoon &&
+        chapterData.images.length > 0
+      ) {
+        const probeTokens = chapterData.images.slice(0, 4);
+        void api
+          .detectChapterLayout(mangaId, probeTokens)
+          .then((verdict) => {
+            if (seq !== loadSeq || !verdict.decided) return;
+            if (verdict.layout === "manual_override") {
+              webtoonDecidedForChapter = true;
+              return;
+            }
+            webtoonDecidedForChapter = true;
+            if (
+              verdict.isWebtoon &&
+              !hasCustomMangaSettings &&
+              effectiveOverride === null &&
+              !manga?.detectedWebtoon
+            ) {
+              chapterDetectedWebtoon = true;
+              if (manga) {
+                manga = { ...manga, detectedWebtoon: true };
+              }
+              toasts.push(t.toastWebtoonDetected, "info", 2600);
+            }
+          })
+          .catch(() => {
+            // Non-fatal; natural image onload fallback remains active.
+          });
+      }
+
       wakeFloatingControls();
       scheduleToolbarAutoHide();
     } catch (err) {
@@ -1086,6 +1149,10 @@
     }
 
     const unregisterBack = router.registerBackInterceptor(() => {
+      if (imageMenuTarget !== null) {
+        if (!imageActionBusy) imageMenuTarget = null;
+        return true;
+      }
       if (chapterJumpOpen) {
         chapterJumpOpen = false;
         return true;
@@ -1707,15 +1774,191 @@
     return null;
   }
 
+  function cancelLongPress() {
+    if (longPressTimer !== null) {
+      window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+    longPressPointerId = null;
+  }
+
+  function findImageTargetAtPoint(
+    clientX: number,
+    clientY: number,
+    rawTarget: EventTarget | null
+  ): { token: string; pageIndex: number; chapterUrl: string } | null {
+    const extractFromEl = (
+      el: HTMLElement
+    ): { token: string; pageIndex: number; chapterUrl: string } | null => {
+      const token = el.dataset.pageToken;
+      if (!token) return null;
+      const pageIndex = Number(el.dataset.pageIdx) || 0;
+      const chapEl = el.closest<HTMLElement>("[data-chapter-url]");
+      const chapUrl = chapEl?.dataset.chapterUrl ?? activeChapter?.url ?? chapterUrl;
+      return { token, pageIndex, chapterUrl: chapUrl };
+    };
+
+    if (rawTarget instanceof HTMLElement) {
+      const direct = rawTarget.closest<HTMLElement>("[data-page-token]");
+      if (direct) {
+        const extracted = extractFromEl(direct);
+        if (extracted) return extracted;
+      }
+    }
+
+    if (!scrollEl) return null;
+    const selector = isHorizontal
+      ? '[data-hslide-active="true"] [data-page-token]'
+      : "[data-page-token]";
+    const candidates = Array.from(scrollEl.querySelectorAll<HTMLElement>(selector));
+    for (const el of candidates) {
+      const img = el.querySelector<HTMLImageElement>("img");
+      const box = (img && img.offsetWidth > 0 ? img : el).getBoundingClientRect();
+      if (
+        box.width > 12 &&
+        box.height > 12 &&
+        clientX >= box.left - 8 &&
+        clientX <= box.right + 8 &&
+        clientY >= box.top - 8 &&
+        clientY <= box.bottom + 8
+      ) {
+        const extracted = extractFromEl(el);
+        if (extracted) return extracted;
+      }
+    }
+
+    if (isHorizontal && candidates.length === 1) {
+      return extractFromEl(candidates[0]);
+    }
+    return null;
+  }
+
+  function handleViewportContextMenu(e: MouseEvent) {
+    if (loadingInitial || errorState) return;
+    if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
+      return;
+    }
+    e.preventDefault();
+    // On Android touch devices, unified 450ms PointerEvents long-press owns the action sheet;
+    // suppressing native WebView contextmenu prevents browser popups and duplicate menus.
+    if (deviceEnv.isAndroid) return;
+
+    cancelLongPress();
+    if (singleTapTimer !== null) {
+      window.clearTimeout(singleTapTimer);
+      singleTapTimer = null;
+    }
+    const hit = findImageTargetAtPoint(e.clientX, e.clientY, e.target);
+    if (!hit) {
+      imageMenuTarget = null;
+      return;
+    }
+    quickSettingsOpen = false;
+    chapterJumpOpen = false;
+    quickFloatConfig = null;
+    imageMenuTarget = {
+      ...hit,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      isContextMenu: true,
+    };
+  }
+
+  async function handleDownloadImageAction() {
+    if (!imageMenuTarget || imageActionBusy) return;
+    const target = imageMenuTarget;
+    imageActionBusy = "download";
+    try {
+      const res = await api.downloadReaderImage(
+        target.token,
+        manga?.title ?? null,
+        target.pageIndex
+      );
+      imageMenuTarget = null;
+      toasts.push(t.readerImgSavedToast(res.savedPath), "success", 3200);
+    } catch (err) {
+      const f = formatAppError(err, settingsStore.value.language);
+      toasts.push(f.detail || f.title, "error", 3600);
+    } finally {
+      imageActionBusy = null;
+    }
+  }
+
+  async function handleSetCoverAction() {
+    if (!imageMenuTarget || imageActionBusy) return;
+    const target = imageMenuTarget;
+    imageActionBusy = "cover";
+    try {
+      const res = await api.setMangaCoverFromPage(mangaId, target.token);
+      if (manga) {
+        manga = { ...manga, coverToken: res.coverToken };
+      }
+      libraryCache.updateMangaCover(mangaId, res.coverToken);
+      libraryCache.invalidate();
+      imageMenuTarget = null;
+      toasts.push(t.readerImgCoverUpdatedToast, "success", 2600);
+    } catch (err) {
+      const f = formatAppError(err, settingsStore.value.language);
+      toasts.push(f.detail || f.title, "error", 3600);
+    } finally {
+      imageActionBusy = null;
+    }
+  }
+
   function handlePointerDown(e: PointerEvent) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
       return;
     }
 
+    activeViewportPointers.add(e.pointerId);
+    if (activeViewportPointers.size >= 2) {
+      // Multi-touch pinch-zoom immediately cancels any pending long-press gesture.
+      cancelLongPress();
+    } else if (
+      e.pointerType !== "mouse" &&
+      !loadingInitial &&
+      !errorState &&
+      !horizontalAtEnd &&
+      !quickSettingsOpen &&
+      !chapterJumpOpen &&
+      quickFloatConfig === null &&
+      imageMenuTarget === null
+    ) {
+      const hit = findImageTargetAtPoint(e.clientX, e.clientY, e.target);
+      if (hit) {
+        cancelLongPress();
+        longPressPointerId = e.pointerId;
+        longPressStartX = e.clientX;
+        longPressStartY = e.clientY;
+        longPressTimer = window.setTimeout(() => {
+          longPressTimer = null;
+          longPressPointerId = null;
+          if (activeViewportPointers.size !== 1 || horizontalDragging || didPanDrag) {
+            return;
+          }
+          if (singleTapTimer !== null) {
+            window.clearTimeout(singleTapTimer);
+            singleTapTimer = null;
+          }
+          suppressNextClickUntil = Date.now() + 650;
+          imageMenuTarget = {
+            ...hit,
+            clientX: longPressStartX,
+            clientY: longPressStartY,
+            isContextMenu: false,
+          };
+          if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+            navigator.vibrate(16);
+          }
+        }, 450);
+      }
+    }
+
     if (isHorizontal) {
       horizontalPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (horizontalPointers.size >= 2) {
+        cancelLongPress();
         // 2-finger pinch-to-zoom: immediately release any horizontal swipe drag.
         horizontalDragging = false;
         horizontalDragOffsetPx = 0;
@@ -1767,6 +2010,16 @@
   }
 
   function handlePointerMove(e: PointerEvent) {
+    if (longPressTimer !== null) {
+      if (
+        activeViewportPointers.size >= 2 ||
+        (longPressPointerId === e.pointerId &&
+          Math.hypot(e.clientX - longPressStartX, e.clientY - longPressStartY) > 8)
+      ) {
+        cancelLongPress();
+      }
+    }
+
     if (isHorizontal && horizontalPointers.has(e.pointerId)) {
       horizontalPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (horizontalPointers.size >= 2 && scrollEl) {
@@ -1868,6 +2121,10 @@
   }
 
   function handlePointerUp(e: PointerEvent) {
+    activeViewportPointers.delete(e.pointerId);
+    if (longPressPointerId === e.pointerId || activeViewportPointers.size === 0) {
+      cancelLongPress();
+    }
     if (isHorizontal) {
       horizontalPointers.delete(e.pointerId);
     }
@@ -1915,6 +2172,10 @@
   }
 
   function dismissHorizontalOverlayIfOpen(): boolean {
+    if (imageMenuTarget !== null) {
+      if (!imageActionBusy) imageMenuTarget = null;
+      return true;
+    }
     if (quickFloatConfig !== null) {
       quickFloatConfig = null;
       return true;
@@ -1934,6 +2195,9 @@
   function handleHorizontalZoneTap(zone: "left" | "center" | "right", e: MouseEvent) {
     e.stopPropagation();
     wakeFloatingControls();
+    if (Date.now() < suppressNextClickUntil) {
+      return;
+    }
     if (
       horizontalDragDidMove ||
       Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 14
@@ -2138,8 +2402,15 @@
 
   function handleViewportClick(e: MouseEvent) {
     wakeFloatingControls();
+    if (Date.now() < suppressNextClickUntil) {
+      return;
+    }
     if (didPanDrag) {
       didPanDrag = false;
+      return;
+    }
+    if (imageMenuTarget !== null) {
+      if (!imageActionBusy) imageMenuTarget = null;
       return;
     }
     if (quickFloatConfig !== null) {
@@ -2302,6 +2573,7 @@
   }
 
   function handleScroll() {
+    cancelLongPress();
     if (isHorizontal || !scrollEl || strip.length === 0 || loadingInitial) return;
 
     wakeFloatingControls();
@@ -2563,7 +2835,9 @@
 
     if (e.key === "Escape") {
       e.preventDefault();
-      if (chapterJumpOpen) chapterJumpOpen = false;
+      if (imageMenuTarget !== null) {
+        if (!imageActionBusy) imageMenuTarget = null;
+      } else if (chapterJumpOpen) chapterJumpOpen = false;
       else if (quickFloatConfig !== null) quickFloatConfig = null;
       else if (quickSettingsOpen) {
         quickSettingsOpen = false;
@@ -3556,6 +3830,7 @@
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
     onpointercancel={handlePointerUp}
+    oncontextmenu={handleViewportContextMenu}
     onclick={handleViewportClick}
     ontouchstart={wakeFloatingControls}
     class={isHorizontal
@@ -3986,6 +4261,157 @@
       </div>
     {/if}
   </div>
+
+  <!-- Reader Page Image Action Sheet (Touch Long-Press) / Context Menu (Desktop Right-Click) -->
+  {#if imageMenuTarget}
+    {@const menu = imageMenuTarget}
+    {@const useBottomSheet = isCompactMobile || !menu.isContextMenu}
+    {@const clampedLeft =
+      typeof window !== "undefined"
+        ? Math.max(12, Math.min(window.innerWidth - 268, menu.clientX))
+        : menu.clientX}
+    {@const clampedTop =
+      typeof window !== "undefined"
+        ? Math.max(12, Math.min(window.innerHeight - 168, menu.clientY))
+        : menu.clientY}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      transition:backdropFade|local
+      onclick={() => {
+        if (!imageActionBusy) imageMenuTarget = null;
+      }}
+      oncontextmenu={(e) => {
+        e.preventDefault();
+        if (!imageActionBusy) imageMenuTarget = null;
+      }}
+      class="fixed inset-0 z-50 {useBottomSheet ? 'bg-black/52 backdrop-blur-[2px]' : 'bg-transparent'}"
+    ></div>
+
+    {#if useBottomSheet}
+      <div
+        transition:drawerSlide|local={{ side: "bottom", distance: 48, duration: 200 }}
+        role="menu"
+        tabindex="-1"
+        onpointerdown={(e) => e.stopPropagation()}
+        class="glass-chrome fixed right-0 bottom-0 left-0 z-50 flex w-full flex-col gap-2.5 rounded-t-3xl border-t px-4 pt-1 pb-4"
+        style="padding-bottom: max(1.1rem, var(--safe-bottom)); padding-left: max(1rem, var(--safe-left)); padding-right: max(1rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg);"
+      >
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="flex items-center justify-between gap-2 pb-0.5">
+          <span class="text-sm font-bold">{t.readerImgActionTitle(menu.pageIndex + 1)}</span>
+          <button
+            type="button"
+            disabled={imageActionBusy !== null}
+            onclick={() => (imageMenuTarget = null)}
+            class="flex h-8 w-8 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
+            aria-label={t.cancel}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <button
+          type="button"
+          role="menuitem"
+          disabled={imageActionBusy !== null}
+          onclick={() => void handleDownloadImageAction()}
+          class="gpu-press flex min-h-[52px] w-full items-center gap-3 rounded-2xl border px-3.5 py-2.5 text-left disabled:opacity-55"
+          style="border-color: var(--border); background-color: var(--surface-subtle);"
+        >
+          <span
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
+            style="background-color: var(--accent-soft); color: var(--accent);"
+          >
+            {#if imageActionBusy === "download"}
+              <Loader2 size={17} class="animate-spin" />
+            {:else}
+              <Download size={17} />
+            {/if}
+          </span>
+          <div class="min-w-0">
+            <div class="text-sm font-semibold">{t.readerImgDownloadBtn}</div>
+            <div class="truncate text-[11px]" style="color: var(--text-muted);">
+              {t.readerImgDownloadDesc}
+            </div>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          role="menuitem"
+          disabled={imageActionBusy !== null}
+          onclick={() => void handleSetCoverAction()}
+          class="gpu-press flex min-h-[52px] w-full items-center gap-3 rounded-2xl border px-3.5 py-2.5 text-left disabled:opacity-55"
+          style="border-color: var(--border); background-color: var(--surface-subtle);"
+        >
+          <span
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
+            style="background-color: var(--accent-soft); color: var(--accent);"
+          >
+            {#if imageActionBusy === "cover"}
+              <Loader2 size={17} class="animate-spin" />
+            {:else}
+              <ImageIcon size={17} />
+            {/if}
+          </span>
+          <div class="min-w-0">
+            <div class="text-sm font-semibold">{t.readerImgSetCoverBtn}</div>
+            <div class="truncate text-[11px]" style="color: var(--text-muted);">
+              {t.readerImgSetCoverDesc}
+            </div>
+          </div>
+        </button>
+      </div>
+    {:else}
+      <div
+        transition:popoverPop|local={{ duration: 140, y: -4 }}
+        role="menu"
+        tabindex="-1"
+        onpointerdown={(e) => e.stopPropagation()}
+        oncontextmenu={(e) => e.preventDefault()}
+        class="glass-chrome fixed z-50 flex w-64 flex-col gap-1 rounded-2xl border p-1.5 shadow-xl"
+        style="left: {clampedLeft}px; top: {clampedTop}px; border-color: var(--border); box-shadow: var(--shadow-lg);"
+      >
+        <div
+          class="px-2.5 py-1 text-[11px] font-semibold"
+          style="color: var(--text-muted);"
+        >
+          {t.readerImgActionTitle(menu.pageIndex + 1)}
+        </div>
+        <button
+          type="button"
+          role="menuitem"
+          disabled={imageActionBusy !== null}
+          onclick={() => void handleDownloadImageAction()}
+          class="gpu-press flex min-h-[38px] w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-semibold hover:opacity-90 disabled:opacity-55"
+          style="background-color: var(--surface-subtle); color: var(--text);"
+        >
+          {#if imageActionBusy === "download"}
+            <Loader2 size={14} class="shrink-0 animate-spin" style="color: var(--accent);" />
+          {:else}
+            <Download size={14} class="shrink-0" style="color: var(--accent);" />
+          {/if}
+          <span>{t.readerImgDownloadBtn}</span>
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          disabled={imageActionBusy !== null}
+          onclick={() => void handleSetCoverAction()}
+          class="gpu-press flex min-h-[38px] w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-semibold hover:opacity-90 disabled:opacity-55"
+          style="background-color: var(--surface-subtle); color: var(--text);"
+        >
+          {#if imageActionBusy === "cover"}
+            <Loader2 size={14} class="shrink-0 animate-spin" style="color: var(--accent);" />
+          {:else}
+            <ImageIcon size={14} class="shrink-0" style="color: var(--accent);" />
+          {/if}
+          <span>{t.readerImgSetCoverBtn}</span>
+        </button>
+      </div>
+    {/if}
+  {/if}
 
   <!-- Bottom Reading Progress Bar with Seek Support (frosted glass, GPU transform/opacity only) -->
   {#if !loadingInitial && !errorState && activeChapter && totalPages > 0}

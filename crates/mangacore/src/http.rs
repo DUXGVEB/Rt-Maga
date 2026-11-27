@@ -971,6 +971,79 @@ impl HttpClient {
         fetch_image_with_client(&direct, url, referer, None, ctx).await
     }
 
+    /// Fetches only the leading `max_bytes` (e.g. 64 KiB) of an image via HTTP `Range` request,
+    /// respecting all SSRF, `DoH`, fail-closed proxy, and concurrency rules. Stops reading
+    /// immediately once `max_bytes` are buffered so full multi-MB images are never downloaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScrapeError`] on invalid/disallowed URL, proxy failure, or network timeout.
+    pub async fn fetch_image_header_bytes(
+        &self,
+        url: &Url,
+        referer: Option<&Url>,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ScrapeError> {
+        validate_public_http_url(url)?;
+        let cap = max_bytes.clamp(1024, 256 * 1024);
+        let _permit = self.acquire_img_permit(url).await;
+        let route = self.proxy_config().resolve_for_image(url, referer);
+
+        let client = if let Some((endpoint, allow_fallback)) = route {
+            match self.client_for_proxy(&endpoint) {
+                Ok(c) => c,
+                Err(_err) if allow_fallback => self.direct_client()?,
+                Err(err) => return Err(err),
+            }
+        } else {
+            self.direct_client()?
+        };
+
+        let mut req = client
+            .get(url.as_str())
+            .timeout(Duration::from_secs(4))
+            .header(
+                reqwest::header::ACCEPT,
+                "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            )
+            .header(reqwest::header::RANGE, format!("bytes=0-{}", cap - 1));
+        if let Some(ref_url) = referer {
+            req = req.header(reqwest::header::REFERER, ref_url.as_str());
+        }
+
+        let mut resp = req.send().await.map_err(ScrapeError::Network)?;
+        let status = resp.status();
+        if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(ScrapeError::HttpStatus {
+                status: status.as_u16(),
+                url: url.clone(),
+            });
+        }
+
+        let mut buf = Vec::with_capacity(cap.min(64 * 1024));
+        while buf.len() < cap {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    let remaining = cap - buf.len();
+                    let take = chunk.len().min(remaining);
+                    buf.extend_from_slice(&chunk[..take]);
+                    if take < chunk.len() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    if buf.len() >= 1024 {
+                        break;
+                    }
+                    return Err(ScrapeError::Network(err));
+                }
+            }
+        }
+
+        Ok(buf)
+    }
+
     fn fetch_ctx(&self) -> FetchCtx<'_> {
         FetchCtx {
             limiter: &self.inner.limiter,

@@ -2,6 +2,7 @@
   import { Bookmark, BookOpen, CheckCircle2, Sparkles } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
   import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../comicFormats";
+  import { pressable } from "../motion";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -45,7 +46,8 @@
 </script>
 
 <article
-  class="card-cq surface-card group relative flex flex-col overflow-hidden rounded-2xl transition-transform duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.985]"
+  use:pressable
+  class="card-cq card-contain card-press surface-card group relative flex flex-col overflow-hidden rounded-2xl"
 >
   <div class="relative aspect-[3/4] w-full overflow-hidden" style="background-color: var(--surface-subtle);">
     <button
@@ -59,10 +61,11 @@
           src={imgProxyUrl(item.coverToken)}
           alt={item.title}
           loading="lazy"
+          decoding="async"
           onerror={() => {
             coverError = true;
           }}
-          class="h-full w-full object-cover transition-transform duration-300 ease-out group-hover:scale-[1.04]"
+          class="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03]"
         />
       {:else}
         <div class="flex h-full w-full items-center justify-center" style="color: var(--text-muted);">

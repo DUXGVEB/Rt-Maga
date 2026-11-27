@@ -4228,13 +4228,274 @@ const V8_DICTIONARIES: Record<Language, V8Dictionary> = {
   th: V8_EN,
 };
 
+interface V9Dictionary {
+  // Native .rtmaga Backup (Settings -> Storage)
+  rtmagaBackupTitle: string;
+  rtmagaBackupDesc: string;
+  rtmagaBackupBlockManga: string;
+  rtmagaBackupBlockMangaDesc: string;
+  rtmagaBackupBlockTrackers: string;
+  rtmagaBackupBlockTrackersDesc: string;
+  rtmagaBackupBlockPrefs: string;
+  rtmagaBackupBlockPrefsDesc: string;
+  rtmagaBackupExportBtn: string;
+  rtmagaBackupExportingBtn: string;
+  rtmagaBackupImportBtn: string;
+  rtmagaBackupImportingBtn: string;
+  rtmagaBackupSelectBlockWarn: string;
+  rtmagaBackupExportedToast: (fileName: string, sizeLabel: string) => string;
+  rtmagaBackupPreviewTitle: string;
+  rtmagaBackupChecksumVerified: string;
+  rtmagaBackupCreatedAtLabel: string;
+  rtmagaBackupDeviceLabel: string;
+  rtmagaBackupArchiveSizeLabel: string;
+  rtmagaBackupModeHeading: string;
+  rtmagaBackupModeSmartMerge: string;
+  rtmagaBackupModeSmartMergeDesc: string;
+  rtmagaBackupModeOverwrite: string;
+  rtmagaBackupModeOverwriteDesc: string;
+  rtmagaBackupOverwriteWarning: string;
+  rtmagaBackupConfirmImportBtn: string;
+  rtmagaBackupImportedToast: (added: number, merged: number, chapters: number) => string;
+  rtmagaBackupStatManga: string;
+  rtmagaBackupStatChapters: string;
+  rtmagaBackupStatSources: string;
+  rtmagaBackupStatPrefsIncluded: string;
+  rtmagaBackupStatPrefsOmitted: string;
+
+  // Reader Image Actions (Long-Press / Right-Click)
+  readerImgActionTitle: (pageNum: number) => string;
+  readerImgDownloadBtn: string;
+  readerImgDownloadDesc: string;
+  readerImgSetCoverBtn: string;
+  readerImgSetCoverDesc: string;
+  readerImgDownloadingToast: string;
+  readerImgSavedToast: (location: string) => string;
+  readerImgCoverUpdatedToast: string;
+
+  // Manga Details Interactive Title & External Source Link
+  mangaTitleSearchInSources: string;
+  mangaTitleCopyTitle: string;
+  mangaTitleCopiedToast: string;
+  mangaTitleMenuHint: string;
+  mangaOpenExternalSourceTooltip: string;
+}
+
+const V9_EN: V9Dictionary = {
+  rtmagaBackupTitle: "Native .rtmaga Binary Backup",
+  rtmagaBackupDesc:
+    "Fast LZ4-compressed, CRC32-verified snapshots of your library, reading progress, sources, and settings (auth tokens excluded).",
+  rtmagaBackupBlockManga: "Library & Reading Progress",
+  rtmagaBackupBlockMangaDesc: "Manga metadata, bookmarks, and delta interacted chapters",
+  rtmagaBackupBlockTrackers: "Saved Sources & Trackers",
+  rtmagaBackupBlockTrackersDesc: "Configured sites, mirror URLs, and visibility rules",
+  rtmagaBackupBlockPrefs: "App & Reader Preferences",
+  rtmagaBackupBlockPrefsDesc: "Theme, reader layouts, and network settings (credentials stripped)",
+  rtmagaBackupExportBtn: "Export .rtmaga",
+  rtmagaBackupExportingBtn: "Exporting…",
+  rtmagaBackupImportBtn: "Import .rtmaga",
+  rtmagaBackupImportingBtn: "Importing…",
+  rtmagaBackupSelectBlockWarn: "Select at least one block to export.",
+  rtmagaBackupExportedToast: (fileName: string, sizeLabel: string) =>
+    `Backup saved: ${fileName} (${sizeLabel})`,
+  rtmagaBackupPreviewTitle: "Restore .rtmaga Backup",
+  rtmagaBackupChecksumVerified: "CRC32 Verified",
+  rtmagaBackupCreatedAtLabel: "Created",
+  rtmagaBackupDeviceLabel: "Device",
+  rtmagaBackupArchiveSizeLabel: "Archive Size",
+  rtmagaBackupModeHeading: "Restore Strategy",
+  rtmagaBackupModeSmartMerge: "Smart Merge (Recommended)",
+  rtmagaBackupModeSmartMergeDesc:
+    "Matches titles by source & URL, keeps all read flags, and preserves the furthest page read.",
+  rtmagaBackupModeOverwrite: "Overwrite",
+  rtmagaBackupModeOverwriteDesc:
+    "Atomically replaces existing records in the included backup blocks.",
+  rtmagaBackupOverwriteWarning:
+    "Overwrite replaces existing library or source rows in the selected backup blocks inside one transaction.",
+  rtmagaBackupConfirmImportBtn: "Restore Backup",
+  rtmagaBackupImportedToast: (added: number, merged: number, chapters: number) =>
+    `Backup restored: ${added} added, ${merged} merged, ${chapters} chapters synced.`,
+  rtmagaBackupStatManga: "Titles",
+  rtmagaBackupStatChapters: "Interacted Ch.",
+  rtmagaBackupStatSources: "Sources",
+  rtmagaBackupStatPrefsIncluded: "Settings Included",
+  rtmagaBackupStatPrefsOmitted: "Settings Not Included",
+
+  readerImgActionTitle: (pageNum: number) => `Page ${pageNum} Actions`,
+  readerImgDownloadBtn: "Download Image",
+  readerImgDownloadDesc: "Save directly to Gallery / Pictures without re-fetching",
+  readerImgSetCoverBtn: "Set as Manga Cover",
+  readerImgSetCoverDesc: "Use this page as the cover across your library",
+  readerImgDownloadingToast: "Saving image…",
+  readerImgSavedToast: (location: string) => `Image saved to ${location}`,
+  readerImgCoverUpdatedToast: "Manga cover updated",
+
+  mangaTitleSearchInSources: "Search in Sources",
+  mangaTitleCopyTitle: "Copy Title",
+  mangaTitleCopiedToast: "Title copied to clipboard",
+  mangaTitleMenuHint: "Tap title to search in sources or copy",
+  mangaOpenExternalSourceTooltip: "Open original source in external browser",
+};
+
+const V9_VI: V9Dictionary = {
+  rtmagaBackupTitle: "Sao lưu nhị phân .rtmaga",
+  rtmagaBackupDesc:
+    "Sao lưu nén LZ4 siêu gọn, kiểm tra toàn vẹn CRC32 cho thư viện, tiến độ đọc, nguồn và cài đặt (tự ẩn mật khẩu/token).",
+  rtmagaBackupBlockManga: "Thư viện & Tiến độ đọc",
+  rtmagaBackupBlockMangaDesc: "Thông tin truyện, dấu trang và các chương đã tương tác (delta)",
+  rtmagaBackupBlockTrackers: "Nguồn đã lưu & Theo dõi",
+  rtmagaBackupBlockTrackersDesc: "Danh sách nguồn truyện, tên miền phụ và chế độ hiển thị",
+  rtmagaBackupBlockPrefs: "Cài đặt ứng dụng & Trình đọc",
+  rtmagaBackupBlockPrefsDesc: "Giao diện, bố cục đọc và cấu hình mạng (không xuất mật khẩu/cookie)",
+  rtmagaBackupExportBtn: "Xuất .rtmaga",
+  rtmagaBackupExportingBtn: "Đang xuất…",
+  rtmagaBackupImportBtn: "Nhập .rtmaga",
+  rtmagaBackupImportingBtn: "Đang nhập…",
+  rtmagaBackupSelectBlockWarn: "Hãy chọn ít nhất một mục để sao lưu.",
+  rtmagaBackupExportedToast: (fileName: string, sizeLabel: string) =>
+    `Đã xuất sao lưu: ${fileName} (${sizeLabel})`,
+  rtmagaBackupPreviewTitle: "Khôi phục sao lưu .rtmaga",
+  rtmagaBackupChecksumVerified: "Đã xác thực CRC32",
+  rtmagaBackupCreatedAtLabel: "Thời gian tạo",
+  rtmagaBackupDeviceLabel: "Thiết bị",
+  rtmagaBackupArchiveSizeLabel: "Dung lượng tệp",
+  rtmagaBackupModeHeading: "Chế độ khôi phục",
+  rtmagaBackupModeSmartMerge: "Gộp thông minh (Mặc định)",
+  rtmagaBackupModeSmartMergeDesc:
+    "Khớp truyện theo (nguồn, URL), giữ nguyên trạng thái đã đọc và trang đọc xa nhất.",
+  rtmagaBackupModeOverwrite: "Ghi đè toàn bộ",
+  rtmagaBackupModeOverwriteDesc:
+    "Thay thế hoàn toàn dữ liệu hiện có trong các khối sao lưu tương ứng.",
+  rtmagaBackupOverwriteWarning:
+    "Ghi đè sẽ xóa và thay thế các mục hiện tại thuộc khối dữ liệu có trong bản sao lưu (an toàn trong 1 giao dịch SQLite).",
+  rtmagaBackupConfirmImportBtn: "Khôi phục ngay",
+  rtmagaBackupImportedToast: (added: number, merged: number, chapters: number) =>
+    `Đã khôi phục: ${added} truyện mới, ${merged} truyện gộp, ${chapters} chương đồng bộ.`,
+  rtmagaBackupStatManga: "Truyện",
+  rtmagaBackupStatChapters: "Chương đã lưu",
+  rtmagaBackupStatSources: "Nguồn",
+  rtmagaBackupStatPrefsIncluded: "Có cài đặt",
+  rtmagaBackupStatPrefsOmitted: "Không có cài đặt",
+
+  readerImgActionTitle: (pageNum: number) => `Tùy chọn Trang ${pageNum}`,
+  readerImgDownloadBtn: "Tải ảnh xuống",
+  readerImgDownloadDesc: "Lưu trực tiếp vào Thư viện ảnh / Pictures từ bộ nhớ đệm",
+  readerImgSetCoverBtn: "Đặt làm ảnh bìa",
+  readerImgSetCoverDesc: "Dùng trang này làm ảnh bìa truyện trong thư viện",
+  readerImgDownloadingToast: "Đang lưu ảnh…",
+  readerImgSavedToast: (location: string) => `Đã lưu ảnh tại ${location}`,
+  readerImgCoverUpdatedToast: "Đã cập nhật ảnh bìa truyện",
+
+  mangaTitleSearchInSources: "Tìm trong Nguồn",
+  mangaTitleCopyTitle: "Sao chép tên truyện",
+  mangaTitleCopiedToast: "Đã sao chép tên truyện",
+  mangaTitleMenuHint: "Bấm vào tên truyện để tìm trong nguồn hoặc sao chép",
+  mangaOpenExternalSourceTooltip: "Mở liên kết nguồn gốc bằng trình duyệt ngoài",
+};
+
+const V9_DICTIONARIES: Record<Language, V9Dictionary> = {
+  en: V9_EN,
+  vi: V9_VI,
+  zh: V9_EN,
+  ja: V9_EN,
+  ru: V9_EN,
+  ko: V9_EN,
+  th: V9_EN,
+};
+
+interface V10Dictionary {
+  randomMangaTrigger: string;
+  randomMangaTitle: string;
+  randomMangaSubtitle: string;
+  randomMangaSpinBtn: string;
+  randomMangaSpinningBtn: string;
+  randomMangaPickingLabel: string;
+  randomMangaPickingSub: string;
+  randomMangaReadNowBtn: string;
+  randomMangaViewDetailsBtn: string;
+  randomMangaScopeAll: string;
+  randomMangaScopeBookmarks: string;
+  randomMangaGenreAll: string;
+  randomMangaGenreFilterLabel: string;
+  randomMangaReshufflePool: string;
+  randomMangaPoolBadge: (poolSize: number, totalSize: number) => string;
+  randomMangaEmptyTitle: string;
+  randomMangaEmptyDesc: string;
+  randomMangaNoSummary: string;
+  randomMangaGestureHint: string;
+  randomMangaClickCenterHint: string;
+  randomMangaStatusOngoing: string;
+}
+
+const V10_EN: V10Dictionary = {
+  randomMangaTrigger: "Random Manga",
+  randomMangaTitle: "Random Manga",
+  randomMangaSubtitle: "Spin the 3D deck to pick your next read",
+  randomMangaSpinBtn: "Random manga",
+  randomMangaSpinningBtn: "Spinning…",
+  randomMangaPickingLabel: "Picking a manga…",
+  randomMangaPickingSub: "Shuffling through your library",
+  randomMangaReadNowBtn: "Read now",
+  randomMangaViewDetailsBtn: "View details",
+  randomMangaScopeAll: "All library",
+  randomMangaScopeBookmarks: "Bookmarks",
+  randomMangaGenreAll: "All genres",
+  randomMangaGenreFilterLabel: "Genre",
+  randomMangaReshufflePool: "New deck",
+  randomMangaPoolBadge: (poolSize: number, totalSize: number) =>
+    poolSize < totalSize ? `${poolSize} / ${totalSize} in deck` : `${totalSize} titles`,
+  randomMangaEmptyTitle: "No manga available to spin",
+  randomMangaEmptyDesc: "Add a manga to your library or clear the genre filter to try again.",
+  randomMangaNoSummary: "Open details to load full synopsis and chapter list.",
+  randomMangaGestureHint: "Drag, scroll, or use ← → keys",
+  randomMangaClickCenterHint: "Tap center cover to open details",
+  randomMangaStatusOngoing: "Reading",
+};
+
+const V10_VI: V10Dictionary = {
+  randomMangaTrigger: "Random truyện",
+  randomMangaTitle: "Random truyện",
+  randomMangaSubtitle: "Quay vòng 3D để chọn bộ truyện đọc tiếp",
+  randomMangaSpinBtn: "Random truyện",
+  randomMangaSpinningBtn: "Đang quay…",
+  randomMangaPickingLabel: "Đang chọn truyện…",
+  randomMangaPickingSub: "Đang xáo trộn thư viện của bạn",
+  randomMangaReadNowBtn: "Đọc ngay",
+  randomMangaViewDetailsBtn: "Xem chi tiết",
+  randomMangaScopeAll: "Tất cả thư viện",
+  randomMangaScopeBookmarks: "Đánh dấu",
+  randomMangaGenreAll: "Tất cả thể loại",
+  randomMangaGenreFilterLabel: "Thể loại",
+  randomMangaReshufflePool: "Đổi bộ bài",
+  randomMangaPoolBadge: (poolSize: number, totalSize: number) =>
+    poolSize < totalSize ? `${poolSize} / ${totalSize} truyện` : `${totalSize} truyện`,
+  randomMangaEmptyTitle: "Chưa có truyện để quay",
+  randomMangaEmptyDesc: "Hãy thêm truyện vào thư viện hoặc đổi bộ lọc thể loại để thử lại.",
+  randomMangaNoSummary: "Mở chi tiết truyện để xem tóm tắt đầy đủ và danh sách chương.",
+  randomMangaGestureHint: "Vuốt, cuộn chuột hoặc nhấn phím ← →",
+  randomMangaClickCenterHint: "Chạm bìa giữa để mở chi tiết",
+  randomMangaStatusOngoing: "Đang đọc",
+};
+
+const V10_DICTIONARIES: Record<Language, V10Dictionary> = {
+  en: V10_EN,
+  vi: V10_VI,
+  zh: V10_EN,
+  ja: V10_EN,
+  ru: V10_EN,
+  ko: V10_EN,
+  th: V10_EN,
+};
+
 export type FullDictionary = Dictionary &
   V3Dictionary &
   V4Dictionary &
   V5Dictionary &
   V6Dictionary &
   V7Dictionary &
-  V8Dictionary;
+  V8Dictionary &
+  V9Dictionary &
+  V10Dictionary;
 
 const DICTIONARIES: Record<Language, Dictionary> = { en, vi, zh, ja, ru, ko, th };
 
@@ -4247,6 +4508,8 @@ export function getDict(lang: Language): FullDictionary {
     ...(V6_DICTIONARIES[lang] ?? V6_EN),
     ...(V7_DICTIONARIES[lang] ?? V7_EN),
     ...(V8_DICTIONARIES[lang] ?? V8_EN),
+    ...(V9_DICTIONARIES[lang] ?? V9_EN),
+    ...(V10_DICTIONARIES[lang] ?? V10_EN),
   };
 }
 

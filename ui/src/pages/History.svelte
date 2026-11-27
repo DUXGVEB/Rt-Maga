@@ -2,7 +2,7 @@
   import { BookOpen, CheckCircle2, Clock, Sparkles, Trash2 } from "lucide-svelte";
   import { api, imgProxyUrl } from "../lib/api";
   import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../lib/comicFormats";
-  import { popoverPop, staggerDelay } from "../lib/motion";
+  import { popoverPop, pressable, shouldStaggerItem, staggerDelay } from "../lib/motion";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -195,18 +195,21 @@
         <h2 class="text-xs font-semibold tracking-wider uppercase" style="color: var(--text-muted);">
           {group.label}
         </h2>
-        <div class="flex flex-col gap-2">
+        <div class="list-contain flex flex-col gap-2">
           {#each group.list as item, idx (item.mangaId)}
             {@const completedOnly = item.isCompleted && !item.hasNew}
+            {@const animateStagger = shouldStaggerItem(idx, group.list.length)}
             <div
-              class="stagger-item surface-card flex items-center gap-3.5 rounded-2xl p-3 sm:gap-4"
-              style="--stagger-delay: {staggerDelay(idx, 18, 220)}ms;"
+              class="card-contain surface-card flex items-center gap-3.5 rounded-2xl p-3 sm:gap-4"
+              class:stagger-item={animateStagger}
+              style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 18, 180, group.list.length)}ms;` : undefined}
             >
               <button
                 type="button"
+                use:pressable
                 onclick={() => resumeFromCover(item)}
                 title={completedOnly ? t.toastMangaCompletedNoResume : t.coverTapResumeHint}
-                class="gpu-press h-16 w-12 shrink-0 cursor-pointer overflow-hidden rounded-xl hover:scale-[1.04]"
+                class="gpu-press h-16 w-12 shrink-0 cursor-pointer overflow-hidden rounded-xl hover:scale-[1.03]"
                 style="background-color: var(--surface-subtle);"
               >
                 {#if item.coverToken && !failedCovers[item.mangaId]}
@@ -214,6 +217,7 @@
                     src={imgProxyUrl(item.coverToken)}
                     alt={item.title}
                     loading="lazy"
+                    decoding="async"
                     onerror={() => {
                       failedCovers = { ...failedCovers, [item.mangaId]: true };
                     }}

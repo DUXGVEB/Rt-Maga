@@ -45,6 +45,12 @@ class DeviceEnvStore {
 
   private initialized = false;
 
+  private syncPlatformDataset(platform: string) {
+    if (typeof document === "undefined") return;
+    const normalized = platform === "android" ? "android" : platform === "windows" ? "windows" : "other";
+    document.documentElement.dataset.platform = normalized;
+  }
+
   async syncDesktopFullscreen() {
     if (this.isAndroid) {
       this.desktopFullscreen = false;
@@ -74,6 +80,13 @@ class DeviceEnvStore {
   async init() {
     if (this.initialized) return;
     this.initialized = true;
+
+    // Set platform attribute synchronously from UA before Tauri IPC resolves so Android
+    // WebView skips expensive backdrop-filter passes from the very first paint.
+    if (typeof navigator !== "undefined" && /android/i.test(navigator.userAgent)) {
+      this.info = { ...this.info, platform: "android" };
+    }
+    this.syncPlatformDataset(this.info.platform);
 
     const updateViewport = () => {
       const h = Math.round(window.visualViewport?.height ?? window.innerHeight);
@@ -107,6 +120,7 @@ class DeviceEnvStore {
             ...(detail.insets ?? {}),
           },
         };
+        this.syncPlatformDataset(this.info.platform);
       }
       updateViewport();
     });
@@ -133,6 +147,7 @@ class DeviceEnvStore {
           ...(env.insets ?? {}),
         },
       };
+      this.syncPlatformDataset(this.info.platform);
       if (env.platform === "android") {
         void api.setImmersive(true).catch(() => {});
       } else {
@@ -144,6 +159,7 @@ class DeviceEnvStore {
       if (/android/i.test(ua)) {
         this.info = { ...this.info, platform: "android", skin: "aosp" };
       }
+      this.syncPlatformDataset(this.info.platform);
     }
   }
 

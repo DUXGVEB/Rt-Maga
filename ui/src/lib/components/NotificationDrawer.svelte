@@ -53,15 +53,15 @@
   <div
     transition:backdropFade|local
     onclick={closeDrawerSafely}
-    class="fixed inset-0 z-40 bg-black/48 backdrop-blur-[2px]"
+    class="modal-backdrop fixed inset-0 z-40"
   ></div>
 
   <!-- Adaptive Panel: Ergonomic Bottom Sheet on Compact Mobile (<768px), Right Slide-Over Drawer on Tablet/Desktop (>=768px) -->
   <aside
     transition:drawerSlide|local={{
       side: isCompactMobile ? "bottom" : "right",
-      distance: isCompactMobile ? 56 : 48,
-      duration: 220,
+      distance: isCompactMobile ? 48 : 40,
+      duration: 190,
     }}
     class={isCompactMobile
       ? "glass-chrome fixed right-0 bottom-0 left-0 z-50 flex max-h-[84dvh] w-full flex-col rounded-t-3xl border-t shadow-2xl"
@@ -137,7 +137,7 @@
           <div class="text-sm font-medium" style="color: var(--text);">{t.notifEmptyTitle}</div>
         </div>
       {:else}
-        <div class="flex flex-col gap-2">
+        <div class="list-contain flex flex-col gap-2">
           {#each notificationsStore.items as item (item.id)}
             <div
               role="button"
@@ -149,7 +149,7 @@
                   openItem(item);
                 }
               }}
-              class="gpu-press flex min-h-[64px] cursor-pointer items-center gap-3 rounded-2xl border p-3 hover:opacity-95"
+              class="card-contain gpu-press flex min-h-[64px] cursor-pointer items-center gap-3 rounded-2xl border p-3 hover:opacity-95"
               style="background-color: {item.read
                 ? 'var(--surface-subtle)'
                 : 'color-mix(in srgb, var(--surface) 92%, var(--accent-soft))'}; border-color: {item.read
@@ -165,6 +165,7 @@
                     src={imgProxyUrl(item.coverToken)}
                     alt={item.mangaTitle}
                     loading="lazy"
+                    decoding="async"
                     class="h-full w-full object-cover"
                   />
                 {:else}

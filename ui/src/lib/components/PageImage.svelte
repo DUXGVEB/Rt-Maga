@@ -196,6 +196,7 @@
   bind:this={containerEl}
   data-page-key={pageKey}
   data-page-idx={index}
+  data-page-token={token}
   class={horizontal
     ? "relative flex h-full shrink-0 items-center justify-center"
     : "relative flex w-full justify-center"}
@@ -265,7 +266,7 @@
       fetchpriority={loadMode === "high" ? "high" : "auto"}
       onload={handleLoad}
       onerror={handleError}
-      style="backface-visibility: hidden;"
+      style="backface-visibility: hidden; -webkit-touch-callout: none; -webkit-user-select: none;"
       class={horizontal
         ? "block max-h-full w-auto max-w-full object-contain select-none"
         : "block h-auto w-full select-none"}

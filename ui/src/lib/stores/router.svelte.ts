@@ -1,6 +1,7 @@
 import { api } from "../api";
 import type { CatalogPageView, SettingsSection } from "../types";
 import { notificationsStore } from "./notifications.svelte";
+import { randomMangaStore } from "./randomManga.svelte";
 import { settingsStore } from "./settings.svelte";
 import { toasts } from "./toast.svelte";
 
@@ -73,6 +74,9 @@ class RouterStore {
   private dismissOverlays() {
     if (notificationsStore.drawerOpen) {
       notificationsStore.closeDrawer();
+    }
+    if (randomMangaStore.isOpen) {
+      randomMangaStore.close();
     }
   }
 

@@ -13,7 +13,8 @@
   } from "lucide-svelte";
   import { api, formatAppError, imgProxyUrl } from "../api";
   import { getLocale } from "../i18n";
-  import { backdropFade, createOverlayGuard, modalScale } from "../motion";
+  import { adaptiveOverlay, backdropFade, createOverlayGuard } from "../motion";
+  import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
   import type { TachibkBackupPreview, TachibkImportReport, TachibkMangaPreview } from "../types";
@@ -218,11 +219,11 @@
     <div
       transition:backdropFade|local
       onclick={handleCancel}
-      class="fixed inset-0 bg-black/58 backdrop-blur-sm"
+      class="modal-backdrop fixed inset-0"
     ></div>
 
     <div
-      transition:modalScale|local
+      transition:adaptiveOverlay|local={{ isMobile: deviceEnv.layoutTier === "compact" }}
       class="modal-cq relative z-10 flex max-h-[calc(100dvh-1rem-var(--safe-top))] w-full max-w-3xl flex-col overflow-hidden rounded-t-3xl border-t sm:max-h-[calc(100dvh-2.5rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
       style="background-color: var(--surface); border-color: var(--border); color: var(--text); box-shadow: var(--shadow-lg); padding-bottom: var(--safe-bottom);"
     >
@@ -558,6 +559,7 @@
                       src={imgProxyUrl(entry.coverToken)}
                       alt={entry.title}
                       loading="lazy"
+                      decoding="async"
                       onerror={() => {
                         failedCovers = { ...failedCovers, [entry.index]: true };
                       }}

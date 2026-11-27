@@ -980,3 +980,88 @@ export interface TachibkImportReport {
   syncedHistory: number;
   importedMangaIds: number[];
 }
+
+export interface BackupBlockSelection {
+  manga: boolean;
+  trackers: boolean;
+  prefs: boolean;
+}
+
+export type BackupImportMode = "smart_merge" | "overwrite";
+
+export interface BackupProgressEvent {
+  stage: string;
+  percent: number;
+  current: number;
+  total: number;
+  detail: string;
+}
+
+export interface BackupExportResult {
+  saved: boolean;
+  cancelled: boolean;
+  fileName: string;
+  displayPath: string | null;
+  fileSizeBytes: number;
+  compressedBytes: number;
+  uncompressedBytes: number;
+  mangaCount: number;
+  trackerCount: number;
+  includedPrefs: boolean;
+  timestampMs: number;
+}
+
+export interface BackupPreviewView {
+  filePath: string;
+  fileName: string;
+  fileSizeBytes: number;
+  compressedBytes: number;
+  uncompressedBytes: number;
+  formatVersion: number;
+  timestampMs: number;
+  appVersion: string;
+  deviceName: string;
+  checksumHex: string;
+  mangaCount: number;
+  interactedChapterCount: number;
+  trackerCount: number;
+  sourceCount: number;
+  categoryCount: number;
+  hasManga: boolean;
+  hasTrackers: boolean;
+  hasPrefs: boolean;
+  isTempFile: boolean;
+}
+
+export interface BackupImportReport {
+  mode: BackupImportMode;
+  addedManga: number;
+  mergedManga: number;
+  mergedChapters: number;
+  restoredBookmarks: number;
+  restoredTrackers: number;
+  restoredPrefs: boolean;
+}
+
+export interface SavedImageOutcome {
+  savedPath: string;
+  fileName: string;
+  bytes: number;
+}
+
+export interface SetCoverOutcome {
+  mangaId: number;
+  coverToken: string;
+}
+
+export type DetectedLayout = "webtoon" | "manga" | "manual_override" | "undecided";
+export type DetectionSignal = "override" | "metadata" | "dimensions" | "none";
+
+export interface LayoutDetectionResult {
+  layout: DetectedLayout;
+  signal: DetectionSignal;
+  decided: boolean;
+  isWebtoon: boolean;
+  medianRatio: number;
+  sampledPages: number;
+}
