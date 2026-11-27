@@ -180,7 +180,7 @@
         type="button"
         onclick={handleApply}
         disabled={applying}
-        class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+        class="btn-3d btn-3d-accent gpu-press inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold hover:opacity-90 disabled:opacity-50"
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         {#if applying}

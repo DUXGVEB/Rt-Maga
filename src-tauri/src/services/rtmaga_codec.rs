@@ -14,10 +14,13 @@
 //! | `24..` | `N` | Payload bytes (MessagePack, LZ4-compressed when `FLAG_COMPRESSION_LZ4` is set) |
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{ErrorKind, Read, Write};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// Chunk size used when streaming `.rtmaga` payload bytes and computing rolling CRC32 (`64 KiB`).
+pub(crate) const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Fixed 4-byte `.rtmaga` file magic (`RTMG`).
 pub(crate) const RTMAGA_MAGIC: [u8; 4] = *b"RTMG";
@@ -92,6 +95,9 @@ pub(crate) enum CodecError {
 
     #[error("MessagePack decoding failed: {0}")]
     DecodeFailed(String),
+
+    #[error("backup stream I/O read failed: {0}")]
+    IoError(String),
 }
 
 /// Decoded 24-byte big-endian `.rtmaga` header.
@@ -300,6 +306,9 @@ pub(crate) struct BackupMangaEntry {
     /// Persisted auto-detected webtoon flag.
     #[serde(rename = "dw", default)]
     pub detected_webtoon: bool,
+    /// Persisted multi-signal layout classification (`"manga"` | `"webtoon"`), backward-compatible.
+    #[serde(rename = "dl", default, skip_serializing_if = "Option::is_none")]
+    pub detected_layout: Option<String>,
     /// Interned genre indices into `dict.categories`.
     #[serde(rename = "gi", default, skip_serializing_if = "Vec::is_empty")]
     pub genre_indices: Vec<u32>,
@@ -499,22 +508,18 @@ pub(crate) fn write_encoded_to<W: Write>(
     Ok((header, compressed.len(), raw_msgpack.len()))
 }
 
-/// Runs the strict 3-stage pre-flight validation on raw `.rtmaga` bytes **before** any
-/// decompression or database mutation:
+/// Parses and validates the fixed 24-byte big-endian `.rtmaga` header **before** allocating any
+/// payload buffer:
 /// 1. Magic === `RTMG`
 /// 2. Supported `Version` & `Flags`
-/// 3. Exact `Payload Size` & `Checksum` match
+/// 3. Declared payload size within [`MAX_COMPRESSED_PAYLOAD_BYTES`]
 ///
 /// # Errors
 ///
-/// Returns [`CodecError`] describing the exact stage that failed.
-pub(crate) fn preflight_validate(bytes: &[u8]) -> Result<(RtmagaHeader, &[u8]), CodecError> {
-    if bytes.len() < RTMAGA_HEADER_LEN {
-        return Err(CodecError::TruncatedHeader {
-            actual: bytes.len(),
-        });
-    }
-
+/// Returns [`CodecError`] on invalid magic, unsupported version/flags, or oversized payload length.
+pub(crate) fn parse_and_validate_header(
+    bytes: &[u8; RTMAGA_HEADER_LEN],
+) -> Result<RtmagaHeader, CodecError> {
     // Stage 1: Magic === RTMG
     if bytes[0..4] != RTMAGA_MAGIC {
         return Err(CodecError::InvalidMagic);
@@ -543,7 +548,7 @@ pub(crate) fn preflight_validate(bytes: &[u8]) -> Result<(RtmagaHeader, &[u8]), 
         return Err(CodecError::UnsupportedFlags { flags });
     }
 
-    // Stage 3: Exact Payload Size & Checksum match
+    // Stage 3a: Validate declared payload size ceiling BEFORE allocating any payload buffer.
     let declared = usize::try_from(payload_size).map_err(|_| CodecError::PayloadTooLarge {
         size: usize::MAX,
         limit: MAX_COMPRESSED_PAYLOAD_BYTES,
@@ -555,6 +560,51 @@ pub(crate) fn preflight_validate(bytes: &[u8]) -> Result<(RtmagaHeader, &[u8]), 
         });
     }
 
+    Ok(RtmagaHeader {
+        version,
+        flags,
+        timestamp_ms,
+        payload_size,
+        checksum,
+    })
+}
+
+/// Runs the strict 3-stage pre-flight validation on raw `.rtmaga` bytes **before** any
+/// decompression or database mutation:
+/// 1. Magic === `RTMG`
+/// 2. Supported `Version` & `Flags`
+/// 3. Exact `Payload Size` & `Checksum` match
+///
+/// # Errors
+///
+/// Returns [`CodecError`] describing the exact stage that failed.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "in-memory pre-flight companion to decode_backup_from_reader used in tests"
+    )
+)]
+pub(crate) fn preflight_validate(bytes: &[u8]) -> Result<(RtmagaHeader, &[u8]), CodecError> {
+    if bytes.len() < RTMAGA_HEADER_LEN {
+        return Err(CodecError::TruncatedHeader {
+            actual: bytes.len(),
+        });
+    }
+
+    let hdr_arr: &[u8; RTMAGA_HEADER_LEN] =
+        bytes[0..RTMAGA_HEADER_LEN]
+            .try_into()
+            .map_err(|_| CodecError::TruncatedHeader {
+                actual: bytes.len(),
+            })?;
+    let header = parse_and_validate_header(hdr_arr)?;
+    let declared =
+        usize::try_from(header.payload_size).map_err(|_| CodecError::PayloadTooLarge {
+            size: usize::MAX,
+            limit: MAX_COMPRESSED_PAYLOAD_BYTES,
+        })?;
+
     let payload_slice = &bytes[RTMAGA_HEADER_LEN..];
     if payload_slice.len() != declared {
         return Err(CodecError::PayloadSizeMismatch {
@@ -564,23 +614,117 @@ pub(crate) fn preflight_validate(bytes: &[u8]) -> Result<(RtmagaHeader, &[u8]), 
     }
 
     let computed = crc32fast::hash(payload_slice);
-    if computed != checksum {
+    if computed != header.checksum {
         return Err(CodecError::ChecksumMismatch {
-            expected: checksum,
+            expected: header.checksum,
             actual: computed,
         });
     }
 
-    Ok((
-        RtmagaHeader {
-            version,
-            flags,
-            timestamp_ms,
-            payload_size,
-            checksum,
-        },
-        payload_slice,
-    ))
+    Ok((header, payload_slice))
+}
+
+/// Fail-fast transactional streaming reader for `.rtmaga` archives:
+/// 1. Reads the exact 24-byte header FIRST (failing on short/truncated header without allocation).
+/// 2. Validates magic `RTMG`, format version, flags, and payload size ceiling BEFORE allocating.
+/// 3. Streams the exact declared payload bytes in 64 KiB chunks while updating a rolling CRC32.
+/// 4. Immediately rejects unexpected EOF, trailing garbage bytes, I/O errors, or CRC32 mismatches,
+///    dropping buffers immediately on failure.
+///
+/// # Errors
+///
+/// Returns [`CodecError`] on any header, size, EOF, trailing-data, I/O, CRC32, decompression,
+/// or `MessagePack` decoding failure.
+pub(crate) fn decode_backup_from_reader<R: Read>(
+    reader: &mut R,
+) -> Result<DecodedRtmagaBackup, CodecError> {
+    // Step 1: Read exact 24-byte header before any payload allocation.
+    let mut hdr_bytes = [0_u8; RTMAGA_HEADER_LEN];
+    let mut hdr_read = 0_usize;
+    while hdr_read < RTMAGA_HEADER_LEN {
+        match reader.read(&mut hdr_bytes[hdr_read..]) {
+            Ok(0) => {
+                return Err(CodecError::TruncatedHeader { actual: hdr_read });
+            }
+            Ok(n) => {
+                hdr_read += n;
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => {
+                return Err(CodecError::IoError(err.to_string()));
+            }
+        }
+    }
+
+    // Step 2: Validate header magic, version, flags, and payload size limit before allocation.
+    let header = parse_and_validate_header(&hdr_bytes)?;
+    let declared =
+        usize::try_from(header.payload_size).map_err(|_| CodecError::PayloadTooLarge {
+            size: usize::MAX,
+            limit: MAX_COMPRESSED_PAYLOAD_BYTES,
+        })?;
+
+    // Step 3: Stream-read exact declared payload bytes in 64 KiB chunks with rolling CRC32.
+    // Cap initial reservation to one chunk so forged large headers on truncated files never OOM.
+    let mut payload_buf = Vec::with_capacity(declared.min(STREAM_CHUNK_BYTES));
+    let mut chunk_buf = vec![0_u8; declared.clamp(1, STREAM_CHUNK_BYTES)];
+    let mut hasher = crc32fast::Hasher::new();
+
+    while payload_buf.len() < declared {
+        let remaining = declared - payload_buf.len();
+        let to_read = remaining.min(chunk_buf.len());
+        match reader.read(&mut chunk_buf[..to_read]) {
+            Ok(0) => {
+                let actual = payload_buf.len();
+                drop(payload_buf);
+                drop(chunk_buf);
+                return Err(CodecError::PayloadSizeMismatch { declared, actual });
+            }
+            Ok(n) => {
+                hasher.update(&chunk_buf[..n]);
+                payload_buf.extend_from_slice(&chunk_buf[..n]);
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => {
+                drop(payload_buf);
+                drop(chunk_buf);
+                return Err(CodecError::IoError(err.to_string()));
+            }
+        }
+    }
+    drop(chunk_buf);
+
+    // Step 4: Verify exact EOF (fail immediately on any trailing garbage bytes).
+    let mut trailing = [0_u8; 1];
+    loop {
+        match reader.read(&mut trailing) {
+            Ok(0) => break,
+            Ok(n) => {
+                drop(payload_buf);
+                return Err(CodecError::PayloadSizeMismatch {
+                    declared,
+                    actual: declared.saturating_add(n),
+                });
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => {
+                drop(payload_buf);
+                return Err(CodecError::IoError(err.to_string()));
+            }
+        }
+    }
+
+    // Step 5: Verify rolling CRC32 checksum before any decompression or MessagePack parsing.
+    let computed = hasher.finalize();
+    if computed != header.checksum {
+        drop(payload_buf);
+        return Err(CodecError::ChecksumMismatch {
+            expected: header.checksum,
+            actual: computed,
+        });
+    }
+
+    decode_verified_payload(header, &payload_buf)
 }
 
 /// Validates, decompresses (with decompression-bomb ceiling), and decodes a `.rtmaga` archive.
@@ -588,9 +732,22 @@ pub(crate) fn preflight_validate(bytes: &[u8]) -> Result<(RtmagaHeader, &[u8]), 
 /// # Errors
 ///
 /// Returns [`CodecError`] on any pre-flight failure, decompression bomb, or corrupt `MessagePack`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "in-memory decoder companion to decode_backup_from_reader used in tests"
+    )
+)]
 pub(crate) fn decode_backup(bytes: &[u8]) -> Result<DecodedRtmagaBackup, CodecError> {
     let (header, compressed_slice) = preflight_validate(bytes)?;
+    decode_verified_payload(header, compressed_slice)
+}
 
+fn decode_verified_payload(
+    header: RtmagaHeader,
+    compressed_slice: &[u8],
+) -> Result<DecodedRtmagaBackup, CodecError> {
     let raw_msgpack: Vec<u8> = match header.flags & FLAG_COMPRESSION_MASK {
         0 => {
             if compressed_slice.len() > MAX_DECOMPRESSED_PAYLOAD_BYTES {
@@ -721,6 +878,7 @@ mod tests {
                 reader_mode_override: None,
                 reader_settings_json: None,
                 detected_webtoon: true,
+                detected_layout: Some("webtoon".to_owned()),
                 genre_indices: vec![cat_action, cat_webtoon],
                 tag_indices: vec![],
                 authors: vec!["Author A".to_owned()],
@@ -854,6 +1012,253 @@ mod tests {
             format_backup_filename(1_773_561_900_000),
             "rtmaga_20260315_0805.rtmaga",
             "filename must follow rtmaga_YYYYMMDD_HHmm.rtmaga"
+        );
+    }
+
+    struct HeaderOnlyGuardReader {
+        data: Vec<u8>,
+        pos: usize,
+        max_allowed: usize,
+        exceeded_limit: bool,
+    }
+
+    impl Read for HeaderOnlyGuardReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.max_allowed {
+                self.exceeded_limit = true;
+                return Err(std::io::Error::other(
+                    "reader attempted to read past 24-byte header",
+                ));
+            }
+            let avail = self.data.len().saturating_sub(self.pos);
+            let allowed = self.max_allowed.saturating_sub(self.pos);
+            let n = buf.len().min(avail).min(allowed);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    struct FailAfterBytesReader {
+        data: Vec<u8>,
+        pos: usize,
+        fail_at: usize,
+    }
+
+    impl Read for FailAfterBytesReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.fail_at {
+                return Err(std::io::Error::new(
+                    ErrorKind::BrokenPipe,
+                    "simulated mid-stream I/O error",
+                ));
+            }
+            let remaining = self
+                .fail_at
+                .saturating_sub(self.pos)
+                .min(self.data.len() - self.pos);
+            let n = buf.len().min(remaining);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn streaming_reader_validates_header_first_and_fails_fast_on_eof_garbage_crc_and_io() {
+        let payload = sample_payload();
+        let (valid, hdr) = encode_backup(&payload).expect("encode succeeds");
+
+        // 1. Valid streaming round-trip (via small reads to exercise loop accumulation).
+        let mut cursor = std::io::Cursor::new(&valid);
+        let decoded = decode_backup_from_reader(&mut cursor).expect("stream decode must succeed");
+        assert_eq!(decoded.header, hdr, "stream header must match");
+        assert_eq!(decoded.payload, payload, "stream payload must match");
+
+        // 2. Truncated header (< 24 bytes) fails immediately with TruncatedHeader.
+        let mut short_hdr = std::io::Cursor::new(&valid[..10]);
+        assert!(
+            matches!(
+                decode_backup_from_reader(&mut short_hdr),
+                Err(CodecError::TruncatedHeader { actual: 10 })
+            ),
+            "10-byte file must fail with TruncatedHeader"
+        );
+
+        // 3. Invalid magic fails strictly after reading 24-byte header without touching payload.
+        let mut bad_magic = valid.clone();
+        bad_magic[0] = b'Z';
+        let mut guarded_magic = HeaderOnlyGuardReader {
+            data: bad_magic,
+            pos: 0,
+            max_allowed: RTMAGA_HEADER_LEN,
+            exceeded_limit: false,
+        };
+        assert!(
+            matches!(
+                decode_backup_from_reader(&mut guarded_magic),
+                Err(CodecError::InvalidMagic)
+            ),
+            "bad magic must fail before reading payload"
+        );
+        assert!(
+            !guarded_magic.exceeded_limit,
+            "bad magic must not read past 24-byte header"
+        );
+
+        // 4. Forged oversized payload length fails strictly after 24-byte header before allocation!
+        let mut oversized_hdr = valid.clone();
+        let too_big = u32::try_from(MAX_COMPRESSED_PAYLOAD_BYTES + 1).expect("fits u32");
+        oversized_hdr[16..20].copy_from_slice(&too_big.to_be_bytes());
+        let mut guarded_size = HeaderOnlyGuardReader {
+            data: oversized_hdr,
+            pos: 0,
+            max_allowed: RTMAGA_HEADER_LEN,
+            exceeded_limit: false,
+        };
+        assert!(
+            matches!(
+                decode_backup_from_reader(&mut guarded_size),
+                Err(CodecError::PayloadTooLarge { .. })
+            ),
+            "oversized payload header must fail before allocating payload buffer"
+        );
+        assert!(
+            !guarded_size.exceeded_limit,
+            "oversized header must not read past 24-byte header"
+        );
+
+        // 5. Unexpected EOF mid-payload fails immediately with PayloadSizeMismatch.
+        let mut eof_cursor = std::io::Cursor::new(&valid[..valid.len() - 5]);
+        assert!(
+            matches!(
+                decode_backup_from_reader(&mut eof_cursor),
+                Err(CodecError::PayloadSizeMismatch { .. })
+            ),
+            "unexpected EOF mid-payload must fail with PayloadSizeMismatch"
+        );
+
+        // 6. Trailing garbage bytes after valid payload fail immediately with PayloadSizeMismatch.
+        let mut with_garbage = valid.clone();
+        with_garbage.extend_from_slice(b"EXTRA");
+        let mut garbage_cursor = std::io::Cursor::new(&with_garbage);
+        assert!(
+            matches!(
+                decode_backup_from_reader(&mut garbage_cursor),
+                Err(CodecError::PayloadSizeMismatch { .. })
+            ),
+            "trailing garbage bytes must fail with PayloadSizeMismatch"
+        );
+
+        // 7. Single-bit payload corruption fails rolling CRC32 check.
+        let mut bad_crc = valid.clone();
+        let mid = RTMAGA_HEADER_LEN + (bad_crc.len() - RTMAGA_HEADER_LEN) / 2;
+        bad_crc[mid] ^= 0x40;
+        let mut crc_cursor = std::io::Cursor::new(&bad_crc);
+        assert!(
+            matches!(
+                decode_backup_from_reader(&mut crc_cursor),
+                Err(CodecError::ChecksumMismatch { .. })
+            ),
+            "corrupted payload byte must fail rolling CRC32"
+        );
+
+        // 8. Mid-stream I/O failure propagates IoError immediately.
+        let mut io_fail = FailAfterBytesReader {
+            data: valid,
+            pos: 0,
+            fail_at: RTMAGA_HEADER_LEN + 8,
+        };
+        assert!(
+            matches!(
+                decode_backup_from_reader(&mut io_fail),
+                Err(CodecError::IoError(_))
+            ),
+            "mid-stream I/O error must fail immediately with IoError"
+        );
+    }
+
+    #[test]
+    fn streaming_reader_handles_multi_chunk_payload_exceeding_64kib() {
+        let mut payload = sample_payload();
+        // Add enough distinct high-entropy entries so LZ4 compressed payload exceeds 64 KiB.
+        for i in 0..1800_u32 {
+            let mut entry = payload.manga[0].clone();
+            entry.url = format!(
+                "https://example.com/series/item-{i:04}-{:08x}",
+                i.wrapping_mul(2_654_435_761)
+            );
+            entry.title = format!("Series #{i:04} {:08x}", i.wrapping_mul(1_597_334_677));
+            entry.description = Some(format!(
+                "Unique chunk verification text {:08x} {:08x} {:08x} {:08x}",
+                i.wrapping_mul(73_856_093),
+                i.wrapping_mul(19_349_663),
+                i.wrapping_mul(83_492_791),
+                i.wrapping_mul(49_979_687),
+            ));
+            payload.manga.push(entry);
+        }
+
+        let (encoded, hdr) = encode_backup(&payload).expect("encode large payload");
+        assert!(
+            usize::try_from(hdr.payload_size).expect("fits usize") > STREAM_CHUNK_BYTES,
+            "test payload must exceed 64 KiB to exercise multi-chunk rolling CRC32"
+        );
+
+        let mut reader =
+            std::io::BufReader::with_capacity(STREAM_CHUNK_BYTES, std::io::Cursor::new(&encoded));
+        let decoded =
+            decode_backup_from_reader(&mut reader).expect("multi-chunk stream decode succeeds");
+        assert_eq!(
+            decoded.payload.manga.len(),
+            payload.manga.len(),
+            "all manga entries must round-trip across multiple 64 KiB chunks"
+        );
+    }
+
+    #[test]
+    fn legacy_backup_without_detected_layout_field_decodes_cleanly() {
+        // Construct a legacy v1 MessagePack payload omitting `"dl"` (`detected_layout`) completely.
+        let legacy_val = serde_json::json!({
+            "meta": {
+                "av": "3.2.1",
+                "dv": "LegacyRig",
+                "ts": 1_764_220_800_000_i64,
+                "bl": BLOCK_MANGA
+            },
+            "dict": { "s": ["example.com"], "c": ["Action"] },
+            "manga": [{
+                "si": 0,
+                "u": "https://example.com/series/legacy",
+                "t": "Legacy Title",
+                "dw": true,
+                "gi": [0]
+            }]
+        });
+        let raw_mp = rmp_serde::to_vec_named(&legacy_val).expect("legacy msgpack encodes");
+        let compressed = lz4_flex::compress_prepend_size(&raw_mp);
+        let hdr = RtmagaHeader {
+            version: RTMAGA_VERSION_V1,
+            flags: FLAG_COMPRESSION_LZ4,
+            timestamp_ms: 1_764_220_800_000,
+            payload_size: u32::try_from(compressed.len()).expect("fits u32"),
+            checksum: crc32fast::hash(&compressed),
+        };
+        let mut frame = Vec::with_capacity(RTMAGA_HEADER_LEN + compressed.len());
+        write_header_to_buf(&hdr, &mut frame);
+        frame.extend_from_slice(&compressed);
+
+        let mut reader = std::io::Cursor::new(&frame);
+        let decoded =
+            decode_backup_from_reader(&mut reader).expect("legacy backup without dl must decode");
+        assert_eq!(decoded.payload.manga.len(), 1, "legacy manga must decode");
+        assert!(
+            decoded.payload.manga[0].detected_webtoon,
+            "legacy detected_webtoon flag must survive"
+        );
+        assert_eq!(
+            decoded.payload.manga[0].detected_layout, None,
+            "absent legacy dl field must default to None"
         );
     }
 }

@@ -11,7 +11,7 @@
     Tag,
     X,
   } from "lucide-svelte";
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { api } from "../api";
   import {
     buildUnifiedLibraryItems,
@@ -58,6 +58,7 @@
   let activeItemId = $state<number | null>(null);
   let isSpinning = $state(false);
   let loadingLibrary = $state(false);
+  let initializedForOpen = $state(false);
 
   let hydrateVersion = 0;
 
@@ -87,26 +88,38 @@
     (activeItemId !== null ? itemById.get(activeItemId) : undefined) ?? poolItems[0] ?? null
   );
 
-  function rebuildPool(avoidId: number | null = randomMangaStore.lastPickedId) {
-    const sampled = sampleBoundedPool(filteredItems, RANDOM_POOL_DEFAULT_BOUND, avoidId);
+  function rebuildPool(
+    avoidId: number | null = randomMangaStore.lastPickedId,
+    sourceItems?: readonly RandomMangaItem[]
+  ) {
+    const candidates = sourceItems ?? filteredItems;
+    const sampled = sampleBoundedPool(candidates, RANDOM_POOL_DEFAULT_BOUND, avoidId);
     poolIds = sampled.map((it) => it.id);
     activeItemId = sampled[0]?.id ?? null;
   }
 
-  async function ensureLibraryDataLoaded(version: number) {
-    const needsHistory = !libraryCache.historyLoaded;
-    const needsBookmarks = !libraryCache.bookmarksLoaded["newest"];
-    if (!needsHistory && !needsBookmarks) return;
+  async function ensureLibraryDataLoaded(version: number, currentHasItems: boolean) {
+    const needsHistory = untrack(() => !libraryCache.historyLoaded);
+    const needsBookmarks = untrack(() => !libraryCache.bookmarksLoaded["newest"]);
+    if (!needsHistory && !needsBookmarks) return false;
 
-    loadingLibrary = allLibraryItems.length === 0;
+    loadingLibrary = !currentHasItems;
     try {
       const [hist, bms] = await Promise.all([
         needsHistory ? api.listHistory().catch(() => null) : Promise.resolve(null),
         needsBookmarks ? api.listBookmarks("newest").catch(() => null) : Promise.resolve(null),
       ]);
-      if (version !== hydrateVersion) return;
-      if (hist) libraryCache.setHistory(hist);
-      if (bms) libraryCache.setBookmarks("newest", bms);
+      if (version !== hydrateVersion) return false;
+      let updated = false;
+      if (hist) {
+        libraryCache.setHistory(hist);
+        updated = true;
+      }
+      if (bms) {
+        libraryCache.setBookmarks("newest", bms);
+        updated = true;
+      }
+      return updated;
     } finally {
       if (version === hydrateVersion) {
         loadingLibrary = false;
@@ -120,16 +133,21 @@
    */
   async function hydrateLibraryMetadata(version: number) {
     const priorityIds: number[] = [];
-    if (activeItemId !== null) priorityIds.push(activeItemId);
-    for (const id of poolIds) {
+    const curActiveId = untrack(() => activeItemId);
+    const curPoolIds = untrack(() => [...poolIds]);
+    const curLibraryItems = untrack(() => allLibraryItems);
+    const curMetaById = untrack(() => libraryCache.mangaMetaById);
+
+    if (curActiveId !== null) priorityIds.push(curActiveId);
+    for (const id of curPoolIds) {
       if (!priorityIds.includes(id)) priorityIds.push(id);
     }
-    for (const item of allLibraryItems) {
+    for (const item of curLibraryItems) {
       if (priorityIds.length >= MAX_HYDRATE_ITEMS) break;
       if (!priorityIds.includes(item.id)) priorityIds.push(item.id);
     }
 
-    const missing = priorityIds.filter((id) => !libraryCache.mangaMetaById[id]);
+    const missing = priorityIds.filter((id) => !curMetaById[id]);
     if (missing.length === 0) return;
 
     for (let i = 0; i < missing.length; i += HYDRATE_BATCH_SIZE) {
@@ -168,18 +186,16 @@
   }
 
   $effect(() => {
-    if (!randomMangaStore.isOpen) {
+    const open = randomMangaStore.isOpen;
+    if (!open) {
       hydrateVersion += 1;
       isSpinning = false;
+      loadingLibrary = false;
+      initializedForOpen = false;
       return;
     }
 
     const version = ++hydrateVersion;
-    scope = randomMangaStore.scope;
-    selectedGenre = "__all__";
-    isSpinning = false;
-    overlayGuard.lock(140);
-
     const unregisterBack = router.registerBackInterceptor(() => {
       if (!randomMangaStore.isOpen) return false;
       if (!isSpinning) {
@@ -188,12 +204,57 @@
       return true;
     });
 
-    void (async () => {
-      await ensureLibraryDataLoaded(version);
-      if (version !== hydrateVersion || !randomMangaStore.isOpen) return;
-      rebuildPool(randomMangaStore.lastPickedId);
-      await hydrateLibraryMetadata(version);
-    })();
+    // Run open setup untracked so background cache hydration (bookmarks/meta) NEVER
+    // re-triggers this effect, resets selected scope/genre, or double-shuffles the deck.
+    untrack(() => {
+      const nextScope = randomMangaStore.scope;
+      const avoidId = randomMangaStore.lastPickedId;
+      scope = nextScope;
+      selectedGenre = "__all__";
+      isSpinning = false;
+      overlayGuard.lock(140);
+
+      const initialItems = buildUnifiedLibraryItems(
+        libraryCache.history,
+        libraryCache.bookmarksBySort["newest"] ?? [],
+        libraryCache.mangaMetaById,
+        nextScope
+      );
+
+      const needsTargetLoad =
+        (nextScope === "all" && !libraryCache.historyLoaded) ||
+        (nextScope === "bookmarks" && !libraryCache.bookmarksLoaded["newest"]);
+
+      if (initialItems.length > 0) {
+        rebuildPool(avoidId, initialItems);
+        initializedForOpen = true;
+        loadingLibrary = false;
+      } else {
+        poolIds = [];
+        activeItemId = null;
+        initializedForOpen = !needsTargetLoad;
+        loadingLibrary = needsTargetLoad;
+      }
+
+      void (async () => {
+        const hadPool = initialItems.length > 0;
+        const loadedNew = await ensureLibraryDataLoaded(version, hadPool);
+        if (version !== hydrateVersion || !randomMangaStore.isOpen) return;
+
+        if (!hadPool || (loadedNew && poolIds.length === 0)) {
+          const refreshedItems = buildUnifiedLibraryItems(
+            libraryCache.history,
+            libraryCache.bookmarksBySort["newest"] ?? [],
+            libraryCache.mangaMetaById,
+            scope
+          );
+          rebuildPool(avoidId, filterItemsByGenre(refreshedItems, selectedGenre));
+        }
+        initializedForOpen = true;
+        loadingLibrary = false;
+        await hydrateLibraryMetadata(version);
+      })();
+    });
 
     return () => {
       unregisterBack();
@@ -281,8 +342,7 @@
 
 {#if randomMangaStore.isOpen}
   <div
-    class="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4 lg:p-6"
-    style="padding-top: max(0.5rem, var(--safe-top)); padding-left: var(--safe-left); padding-right: var(--safe-right);"
+    class="random-modal-overlay fixed inset-0 z-50 flex items-end justify-center sm:items-center"
     role="dialog"
     aria-modal="true"
     aria-labelledby="random-manga-modal-title"
@@ -299,7 +359,7 @@
     <!-- Modal / Bottom Sheet Container -->
     <div
       transition:adaptiveOverlay|local={{ isMobile: isCompactMobile }}
-      class="modal-cq relative z-10 flex max-h-[calc(100dvh-0.75rem-var(--safe-top))] w-full max-w-5xl flex-col overflow-hidden rounded-t-3xl border-t sm:max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
+      class="relative z-10 flex max-h-[calc(100dvh-0.75rem-var(--safe-top))] w-full max-w-5xl min-w-0 flex-col overflow-hidden rounded-t-3xl border-t sm:max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
       style="background-color: var(--surface); border-color: var(--border); color: var(--text); box-shadow: var(--shadow-lg); padding-bottom: var(--safe-bottom);"
     >
       <div class="sheet-handle sm:hidden" aria-hidden="true"></div>
@@ -316,14 +376,9 @@
           >
             <Dices size={18} />
           </div>
-          <div class="min-w-0">
-            <h2 id="random-manga-modal-title" class="truncate text-base font-bold leading-snug">
-              {t.randomMangaTitle}
-            </h2>
-            <p class="hidden truncate text-xs sm:block" style="color: var(--text-muted);">
-              {t.randomMangaSubtitle}
-            </p>
-          </div>
+          <h2 id="random-manga-modal-title" class="min-w-0 truncate text-base font-bold leading-snug">
+            {t.randomMangaTitle}
+          </h2>
         </div>
 
         <div class="flex items-center gap-1.5 sm:gap-2">
@@ -337,12 +392,8 @@
                 type="button"
                 disabled={isSpinning}
                 onclick={() => handleScopeChange("all")}
-                class="gpu-press rounded-lg px-2.5 py-1 disabled:opacity-50"
-                style="background-color: {scope === 'all'
-                  ? 'var(--accent)'
-                  : 'transparent'}; color: {scope === 'all'
-                  ? 'var(--accent-fg)'
-                  : 'var(--text-muted)'};"
+                class="btn-3d rounded-lg px-2.5 py-1 disabled:opacity-50 {scope === 'all' ? 'btn-3d-accent' : ''}"
+                style={scope === "all" ? "" : "background-color: transparent; color: var(--text-muted);"}
               >
                 {t.randomMangaScopeAll}
               </button>
@@ -350,12 +401,8 @@
                 type="button"
                 disabled={isSpinning}
                 onclick={() => handleScopeChange("bookmarks")}
-                class="gpu-press inline-flex items-center gap-1 rounded-lg px-2.5 py-1 disabled:opacity-50"
-                style="background-color: {scope === 'bookmarks'
-                  ? 'var(--accent)'
-                  : 'transparent'}; color: {scope === 'bookmarks'
-                  ? 'var(--accent-fg)'
-                  : 'var(--text-muted)'};"
+                class="btn-3d inline-flex items-center gap-1 rounded-lg px-2.5 py-1 disabled:opacity-50 {scope === 'bookmarks' ? 'btn-3d-accent' : ''}"
+                style={scope === "bookmarks" ? "" : "background-color: transparent; color: var(--text-muted);"}
               >
                 <Bookmark size={11} />
                 <span>{t.randomMangaScopeBookmarks}</span>
@@ -370,8 +417,7 @@
                 use:pressable
                 disabled={isSpinning}
                 onclick={handleReshuffleDeck}
-                class="gpu-press inline-flex min-h-[34px] items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-medium disabled:opacity-45"
-                style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
+                class="btn-3d btn-3d-subtle inline-flex min-h-[34px] items-center gap-1.5 rounded-xl px-2.5 py-1 text-xs font-medium disabled:opacity-45"
                 title={t.randomMangaReshufflePool}
               >
                 <Shuffle size={13} />
@@ -385,7 +431,7 @@
             use:pressable
             disabled={isSpinning}
             onclick={closeModal}
-            class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl opacity-75 hover:opacity-100 disabled:opacity-35"
+            class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl opacity-85 hover:opacity-100 disabled:opacity-35"
             aria-label={t.cancel}
           >
             <X size={18} />
@@ -410,7 +456,7 @@
               type="button"
               disabled={isSpinning}
               onclick={() => handleGenreChange("__all__")}
-              class="gpu-press shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium disabled:opacity-45"
+              class="pill-3d shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium disabled:opacity-45"
               style="border-color: {selectedGenre === '__all__'
                 ? 'var(--accent)'
                 : 'var(--border)'}; background-color: {selectedGenre === '__all__'
@@ -428,7 +474,7 @@
                 type="button"
                 disabled={isSpinning}
                 onclick={() => handleGenreChange(genre.name)}
-                class="gpu-press shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium disabled:opacity-45"
+                class="pill-3d shrink-0 rounded-lg border px-2.5 py-1 text-[11px] font-medium disabled:opacity-45"
                 style="border-color: {active
                   ? 'var(--accent)'
                   : 'var(--border)'}; background-color: {active
@@ -460,7 +506,7 @@
 
       <!-- Responsive Body: Side-by-side on Desktop (lg+), Stacked on Mobile/Android -->
       <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-5">
-        {#if loadingLibrary && poolItems.length === 0}
+        {#if (!initializedForOpen || loadingLibrary) && poolItems.length === 0}
           <div class="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.25fr)_minmax(300px,0.85fr)]">
             <div
               class="h-80 animate-pulse rounded-2xl lg:h-[430px]"
@@ -482,14 +528,12 @@
             <div class="text-sm font-semibold" style="color: var(--text);">
               {t.randomMangaEmptyTitle}
             </div>
-            <p class="max-w-sm text-xs">{t.randomMangaEmptyDesc}</p>
             {#if selectedGenre !== "__all__"}
               <button
                 type="button"
                 use:pressable
                 onclick={() => handleGenreChange("__all__")}
-                class="gpu-press mt-1 rounded-xl px-3.5 py-2 text-xs font-semibold"
-                style="background-color: var(--accent); color: var(--accent-fg);"
+                class="btn-3d btn-3d-accent mt-1 rounded-xl px-3.5 py-2 text-xs font-semibold"
               >
                 {t.randomMangaGenreAll}
               </button>
@@ -550,12 +594,7 @@
                     >
                       <RefreshCw size={16} class="animate-spin" />
                     </span>
-                    <div>
-                      <div class="text-sm font-bold">{t.randomMangaPickingLabel}</div>
-                      <div class="text-xs" style="color: var(--text-muted);">
-                        {t.randomMangaPickingSub}
-                      </div>
-                    </div>
+                    <div class="text-sm font-bold">{t.randomMangaPickingLabel}</div>
                   </div>
 
                   <div class="mt-2 flex flex-col gap-2">
@@ -682,16 +721,14 @@
                     {/if}
 
                     <!-- 3-Line Clamped Summary -->
-                    <p
-                      class="line-clamp-3 text-xs leading-relaxed"
-                      style="color: var(--text-muted);"
-                    >
-                      {activeItem.summary || t.randomMangaNoSummary}
-                    </p>
-
-                    <div class="mt-auto text-[11px]" style="color: var(--text-muted);">
-                      {t.randomMangaClickCenterHint}
-                    </div>
+                    {#if activeItem.summary}
+                      <p
+                        class="line-clamp-3 text-xs leading-relaxed"
+                        style="color: var(--text-muted);"
+                      >
+                        {activeItem.summary}
+                      </p>
+                    {/if}
                   </div>
                 {/key}
               {/if}
@@ -703,8 +740,7 @@
                   use:pressable
                   disabled={isSpinning || poolItems.length === 0}
                   onclick={handleSpinClick}
-                  class="gpu-press inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold shadow-sm hover:opacity-95 disabled:opacity-55"
-                  style="background-color: var(--accent); color: var(--accent-fg);"
+                  class="btn-3d btn-3d-accent inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold disabled:opacity-55"
                 >
                   {#if isSpinning}
                     <RefreshCw size={16} class="animate-spin" />
@@ -721,8 +757,7 @@
                     use:pressable
                     disabled={isSpinning || !activeItem}
                     onclick={() => activeItem && handleReadNow(activeItem)}
-                    class="gpu-press inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold disabled:opacity-45"
-                    style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+                    class="btn-3d btn-3d-surface inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold disabled:opacity-45"
                   >
                     <Play size={13} fill="currentColor" style="color: var(--accent);" />
                     <span class="truncate">{t.randomMangaReadNowBtn}</span>
@@ -733,8 +768,7 @@
                     use:pressable
                     disabled={isSpinning || !activeItem}
                     onclick={() => activeItem && handleSelectStory(activeItem)}
-                    class="gpu-press inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold disabled:opacity-45"
-                    style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+                    class="btn-3d btn-3d-surface inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold disabled:opacity-45"
                   >
                     <BookOpen size={13} style="color: var(--text-muted);" />
                     <span class="truncate">{t.randomMangaViewDetailsBtn}</span>
@@ -748,3 +782,30 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .random-modal-overlay {
+    padding-top: max(0.5rem, var(--safe-top));
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+    padding-bottom: 0;
+  }
+
+  @media (min-width: 640px) {
+    .random-modal-overlay {
+      padding-top: max(1rem, var(--safe-top));
+      padding-bottom: max(1rem, var(--safe-bottom));
+      padding-left: max(1rem, var(--safe-left));
+      padding-right: max(1rem, var(--safe-right));
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .random-modal-overlay {
+      padding-top: max(1.5rem, var(--safe-top));
+      padding-bottom: max(1.5rem, var(--safe-bottom));
+      padding-left: max(1.5rem, var(--safe-left));
+      padding-right: max(1.5rem, var(--safe-right));
+    }
+  }
+</style>

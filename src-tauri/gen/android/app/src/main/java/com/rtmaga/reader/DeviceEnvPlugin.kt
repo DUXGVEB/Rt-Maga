@@ -14,6 +14,7 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.activity.result.ActivityResult
@@ -80,7 +81,9 @@ class DeviceEnvPlugin(private val activity: Activity) : Plugin(activity) {
   companion object {
     const val CHANNEL_ID = "rtmaga_new_chapters"
     const val REQ_POST_NOTIFICATIONS = 4201
-    const val MAX_BACKUP_BYTES = 32L * 1024L * 1024L + 24L
+    const val MIN_BACKUP_HEADER_BYTES = 24
+    const val MAX_BACKUP_BYTES = 32L * 1024L * 1024L + MIN_BACKUP_HEADER_BYTES.toLong()
+    val RTMAGA_MAGIC = byteArrayOf(0x52, 0x54, 0x4D, 0x47)
   }
 
   private val ioExecutor = Executors.newSingleThreadExecutor()
@@ -306,6 +309,29 @@ class DeviceEnvPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
+  private fun queryFileSize(uri: Uri): Long? {
+    return try {
+      activity.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)
+        ?.use { cursor ->
+          if (cursor.moveToFirst()) {
+            val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (idx >= 0 && !cursor.isNull(idx)) cursor.getLong(idx).takeIf { it >= 0L } else null
+          } else {
+            null
+          }
+        }
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  private fun hasRtmagaMagic(bytes: ByteArray): Boolean =
+    bytes.size >= 4 &&
+      bytes[0] == RTMAGA_MAGIC[0] &&
+      bytes[1] == RTMAGA_MAGIC[1] &&
+      bytes[2] == RTMAGA_MAGIC[2] &&
+      bytes[3] == RTMAGA_MAGIC[3]
+
   @Command
   fun exportBackupSaf(invoke: Invoke) {
     try {
@@ -335,6 +361,14 @@ class DeviceEnvPlugin(private val activity: Activity) : Plugin(activity) {
     pendingExportTempPath = null
     val uri = result.data?.data
     if (result.resultCode != Activity.RESULT_OK || uri == null || srcPath.isNullOrBlank()) {
+      if (!srcPath.isNullOrBlank()) {
+        runCatching {
+          val temp = File(srcPath)
+          if (temp.exists() && isInsideCacheDir(temp)) {
+            temp.delete()
+          }
+        }
+      }
       val res = JSObject()
       res.put("cancelled", true)
       res.put("bytes", 0L)
@@ -343,21 +377,45 @@ class DeviceEnvPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     ioExecutor.execute {
+      val srcFile = File(srcPath)
+      var buffer: ByteArray? = null
       try {
-        val srcFile = File(srcPath)
+        if (!srcFile.isFile || !isInsideCacheDir(srcFile)) {
+          throw IllegalStateException("Backup temp file is missing or outside app cache directory")
+        }
+        val expectedBytes = srcFile.length()
+        if (expectedBytes < MIN_BACKUP_HEADER_BYTES.toLong()) {
+          throw IllegalStateException(
+            "Backup temp file is truncated ($expectedBytes bytes, expected >= $MIN_BACKUP_HEADER_BYTES bytes)"
+          )
+        }
+
         var copied = 0L
-        val buffer = ByteArray(64 * 1024)
-        activity.contentResolver.openOutputStream(uri)?.use { outStream ->
-          FileInputStream(srcFile).use { inStream ->
+        val copyBuf = ByteArray(64 * 1024)
+        buffer = copyBuf
+        val outStream = runCatching {
+          activity.contentResolver.openOutputStream(uri, "wt")
+        }.getOrNull() ?: activity.contentResolver.openOutputStream(uri)
+          ?: throw IllegalStateException("Android SAF returned null output stream")
+
+        outStream.use { out ->
+          FileInputStream(srcFile).use { input ->
             while (true) {
-              val read = inStream.read(buffer)
-              if (read <= 0) break
-              outStream.write(buffer, 0, read)
+              val read = input.read(copyBuf)
+              if (read < 0) break
+              if (read == 0) continue
+              out.write(copyBuf, 0, read)
               copied += read
             }
-            outStream.flush()
+            out.flush()
           }
-        } ?: throw IllegalStateException("Android SAF returned null output stream")
+        }
+
+        if (copied != expectedBytes) {
+          throw IllegalStateException(
+            "Short write during Android SAF .rtmaga export (wrote $copied of $expectedBytes bytes)"
+          )
+        }
 
         val res = JSObject()
         res.put("cancelled", false)
@@ -365,7 +423,15 @@ class DeviceEnvPlugin(private val activity: Activity) : Plugin(activity) {
         res.put("bytes", copied)
         invoke.resolve(res)
       } catch (ex: Exception) {
+        runCatching { DocumentsContract.deleteDocument(activity.contentResolver, uri) }
+        runCatching {
+          if (srcFile.exists() && isInsideCacheDir(srcFile)) {
+            srcFile.delete()
+          }
+        }
         invoke.reject(ex.message ?: ex.toString())
+      } finally {
+        buffer = null
       }
     }
   }
@@ -396,35 +462,115 @@ class DeviceEnvPlugin(private val activity: Activity) : Plugin(activity) {
 
     ioExecutor.execute {
       var outFile: File? = null
+      var buffer: ByteArray? = null
       try {
+        val reportedSize = queryFileSize(uri)
+        if (reportedSize != null && reportedSize > MAX_BACKUP_BYTES) {
+          throw IllegalArgumentException(
+            "Selected file exceeds maximum .rtmaga backup size (32 MB)"
+          )
+        }
+        if (reportedSize != null && reportedSize < MIN_BACKUP_HEADER_BYTES.toLong()) {
+          throw IllegalArgumentException(
+            "Invalid .rtmaga backup: file is smaller than the 24-byte header ($reportedSize bytes)"
+          )
+        }
+
         val displayName = queryDisplayName(uri) ?: "backup.rtmaga"
-        val dest = File(activity.cacheDir, "rtmaga_import_${UUID.randomUUID()}.rtmaga")
-        outFile = dest
-        var total = 0L
-        val buffer = ByteArray(64 * 1024)
+        var destPath = ""
+
         activity.contentResolver.openInputStream(uri)?.use { inStream ->
+          // Fail-fast: validate 4-byte RTMG magic & 24-byte header BEFORE writing anything to cache.
+          val header = ByteArray(MIN_BACKUP_HEADER_BYTES)
+          var headerRead = 0
+          var magicChecked = false
+          while (headerRead < MIN_BACKUP_HEADER_BYTES) {
+            val read = inStream.read(header, headerRead, MIN_BACKUP_HEADER_BYTES - headerRead)
+            if (read < 0) break
+            if (read == 0) continue
+            headerRead += read
+            if (!magicChecked && headerRead >= 4) {
+              if (!hasRtmagaMagic(header)) {
+                throw IllegalArgumentException(
+                  "Invalid .rtmaga backup file: missing RTMG magic header"
+                )
+              }
+              magicChecked = true
+            }
+          }
+
+          if (headerRead < MIN_BACKUP_HEADER_BYTES) {
+            if (!magicChecked && headerRead >= 4 && !hasRtmagaMagic(header)) {
+              throw IllegalArgumentException(
+                "Invalid .rtmaga backup file: missing RTMG magic header"
+              )
+            }
+            throw IllegalArgumentException(
+              "Truncated .rtmaga backup file (expected at least $MIN_BACKUP_HEADER_BYTES-byte header, got $headerRead bytes)"
+            )
+          }
+
+          val formatVersion =
+            ((header[4].toInt() and 0xFF) shl 8) or (header[5].toInt() and 0xFF)
+          val declaredPayloadBytes =
+            ((header[16].toLong() and 0xFFL) shl 24) or
+              ((header[17].toLong() and 0xFFL) shl 16) or
+              ((header[18].toLong() and 0xFFL) shl 8) or
+              (header[19].toLong() and 0xFFL)
+          if (formatVersion == 1 &&
+              declaredPayloadBytes > (MAX_BACKUP_BYTES - MIN_BACKUP_HEADER_BYTES.toLong())
+          ) {
+            throw IllegalArgumentException(
+              "Selected .rtmaga backup declares payload exceeding 32 MB limit ($declaredPayloadBytes bytes)"
+            )
+          }
+
+          val dest = File(activity.cacheDir, "rtmaga_import_${UUID.randomUUID()}.rtmaga")
+          outFile = dest
+          var total = MIN_BACKUP_HEADER_BYTES.toLong()
+          val copyBuf = ByteArray(64 * 1024)
+          buffer = copyBuf
+
           FileOutputStream(dest).use { outStream ->
+            outStream.write(header, 0, MIN_BACKUP_HEADER_BYTES)
             while (true) {
-              val read = inStream.read(buffer)
-              if (read <= 0) break
+              val read = inStream.read(copyBuf)
+              if (read < 0) break
+              if (read == 0) continue
               total += read
               if (total > MAX_BACKUP_BYTES) {
-                throw IllegalArgumentException("Selected file exceeds maximum .rtmaga backup size (32 MB)")
+                throw IllegalArgumentException(
+                  "Selected file exceeds maximum .rtmaga backup size (32 MB)"
+                )
               }
-              outStream.write(buffer, 0, read)
+              outStream.write(copyBuf, 0, read)
             }
             outStream.flush()
           }
+
+          if (formatVersion == 1) {
+            val expectedTotal = MIN_BACKUP_HEADER_BYTES.toLong() + declaredPayloadBytes
+            if (total != expectedTotal) {
+              throw IllegalArgumentException(
+                "Truncated or mismatched .rtmaga backup stream (read $total bytes, header declares $expectedTotal bytes)"
+              )
+            }
+          }
+
+          destPath = dest.absolutePath
         } ?: throw IllegalStateException("Android SAF returned null input stream")
 
         val res = JSObject()
         res.put("cancelled", false)
-        res.put("path", dest.absolutePath)
+        res.put("path", destPath)
         res.put("displayName", displayName)
         invoke.resolve(res)
       } catch (ex: Exception) {
-        outFile?.delete()
+        runCatching { outFile?.delete() }
+        outFile = null
         invoke.reject(ex.message ?: ex.toString())
+      } finally {
+        buffer = null
       }
     }
   }

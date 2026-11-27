@@ -27,6 +27,7 @@
   import FloatingControls from "../lib/components/FloatingControls.svelte";
   import LatticeLoader from "../lib/components/LatticeLoader.svelte";
   import PageImage from "../lib/components/PageImage.svelte";
+  import ReaderAiPill from "../lib/components/ReaderAiPill.svelte";
   import SourceDiagnosticCard from "../lib/components/SourceDiagnosticCard.svelte";
   import SquishSwitch from "../lib/components/SquishSwitch.svelte";
   import {
@@ -41,6 +42,7 @@
   import {
     clampZoomPan,
     computeAnchoredZoom,
+    computeBubbleZoom,
     computeFocusedZoom,
     computeHorizontalTrackMetrics,
     computeNavStepCooldownMs,
@@ -50,9 +52,11 @@
     detectWebtoonFromDimensions,
     focusBrightness,
     partitionPages,
+    type NormalizedBbox,
     type PageDimensionSample,
     type RectBox,
   } from "../lib/readerLayout";
+  import { aiTranslateStore } from "../lib/stores/aiTranslate.svelte";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
@@ -123,6 +127,7 @@
     quickSettingsOpen = false;
     openQuickCat = null;
     quickFloatConfig = null;
+    aiPillOpen = false;
     imageMenuTarget = null;
   }
 
@@ -137,7 +142,11 @@
   let isFullscreen = $state(false);
   let showScrollTopBtn = $state(false);
   let controlsDimmed = $state(false);
-  let chapterDetectedWebtoon = $state(false);
+  let chapterDetectedLayout = $state<"manga" | "webtoon" | null>(null);
+  let aiPillOpen = $state(false);
+  let activeBubbleKey = $state<string | null>(null);
+  let aiPageDispatchTimer: number | null = null;
+  let lastAiFocusKey = "";
 
   // Double-tap / double-click focused zoom state (`1` = normal, `2.0` = zoomed).
   const ZOOM_TARGET_SCALE = 2.0;
@@ -264,6 +273,17 @@
     debounceMs = 0
   ) {
     const base = cloneReaderSettings(manga?.readerSettings ?? settingsStore.value.reader);
+    if (!manga?.readerSettings) {
+      if (isAutoWebtoonActive) {
+        base.orientation = "vertical";
+        base.vertical.noGapMode = true;
+      } else if (isAutoMangaActive) {
+        base.orientation = "horizontal";
+        base.horizontal.direction = "rtl";
+        base.horizontal.pagesPerGroup = 1;
+        base.horizontal.noGapMode = false;
+      }
+    }
     mutator(base);
     if (manga) {
       manga = {
@@ -317,18 +337,30 @@
   const vCfg = $derived(readerSettings.vertical);
   const hCfg = $derived(readerSettings.horizontal);
   const behavior = $derived(readerSettings.behavior);
+  const a11y = $derived(settingsStore.value.accessibility);
+  const oneHandedMode = $derived(a11y.oneHandedMode);
+  const aiBubbleZoom = $derived(a11y.bubbleAutoZoom);
+  const aiTranslateOn = $derived(a11y.aiTranslationOverlay);
   const t = $derived(settingsStore.t);
 
   const effectiveOverride = $derived<ReaderModeOverride>(
     hasCustomMangaSettings ? null : (manga?.readerModeOverride ?? null)
   );
 
-  const isAutoWebtoonActive = $derived(
-    !hasCustomMangaSettings &&
-      effectiveOverride === null &&
-      readerSettings.autoWebtoonDetect &&
-      Boolean(manga?.detectedWebtoon || chapterDetectedWebtoon)
-  );
+  const effectiveDetectedLayout = $derived.by<"manga" | "webtoon" | null>(() => {
+    if (hasCustomMangaSettings || effectiveOverride !== null || !readerSettings.autoWebtoonDetect) {
+      return null;
+    }
+    if (chapterDetectedLayout) return chapterDetectedLayout;
+    if (manga?.detectedLayout === "webtoon" || manga?.detectedLayout === "manga") {
+      return manga.detectedLayout;
+    }
+    if (manga?.detectedWebtoon) return "webtoon";
+    return null;
+  });
+
+  const isAutoWebtoonActive = $derived(effectiveDetectedLayout === "webtoon");
+  const isAutoMangaActive = $derived(effectiveDetectedLayout === "manga");
 
   const effectiveOrientation = $derived<ReadingOrientation>(
     effectiveOverride === "horizontal"
@@ -337,7 +369,9 @@
         ? "vertical"
         : isAutoWebtoonActive
           ? "vertical"
-          : readerSettings.orientation
+          : isAutoMangaActive
+            ? "horizontal"
+            : readerSettings.orientation
   );
 
   const effectiveNoGap = $derived(isAutoWebtoonActive || vCfg.noGapMode);
@@ -345,7 +379,10 @@
   const effectiveVerticalGapPx = $derived(effectiveNoGap ? 0 : vCfg.pageGapPx);
 
   const isHorizontal = $derived(effectiveOrientation === "horizontal");
-  const isRtl = $derived(isHorizontal && hCfg.direction === "rtl");
+  const effectiveHorizontalDirection = $derived<HorizontalDirection>(
+    isAutoMangaActive ? "rtl" : hCfg.direction
+  );
+  const isRtl = $derived(isHorizontal && effectiveHorizontalDirection === "rtl");
 
   const activeChapter = $derived(
     strip.find((c) => normUrl(c.url) === normUrl(activeUrl)) ?? strip[strip.length - 1] ?? null
@@ -354,9 +391,13 @@
   const lastChapter = $derived(strip[strip.length - 1] ?? null);
   const totalPages = $derived(activeChapter?.images.length ?? 0);
   const effectivePagesPerGroup = $derived(
-    isHorizontal && landscapeAutoSpread && deviceEnv.isLandscape && hCfg.pagesPerGroup === 1
-      ? 2
-      : Math.max(1, hCfg.pagesPerGroup)
+    isAutoMangaActive
+      ? landscapeAutoSpread && deviceEnv.isLandscape
+        ? 2
+        : 1
+      : isHorizontal && landscapeAutoSpread && deviceEnv.isLandscape && hCfg.pagesPerGroup === 1
+        ? 2
+        : Math.max(1, hCfg.pagesPerGroup)
   );
   const horizontalGroups = $derived(
     activeChapter ? partitionPages(activeChapter.images, effectivePagesPerGroup) : []
@@ -381,7 +422,7 @@
     )
   );
   const horizontalDirSign = $derived(isRtl ? 1 : -1);
-  const isHorizontalSeamless = $derived(isHorizontal && hCfg.noGapMode);
+  const isHorizontalSeamless = $derived(isHorizontal && !isAutoMangaActive && hCfg.noGapMode);
   const horizontalTrackTranslateX = $derived(
     horizontalDirSign * activeHorizontalSlideIdx * horizontalTrackMetrics.stride +
       horizontalDragOffsetPx
@@ -482,6 +523,7 @@
     openQuickCat = null;
     quickFloatConfig = null;
     chapterJumpOpen = false;
+    aiPillOpen = false;
   }
 
   const filteredJumpChapters = $derived(() => {
@@ -553,6 +595,7 @@
   function resetZoom(anchorClientY?: number) {
     const wasZoomed = zoomScale > 1.01;
     const prevScale = zoomScale;
+    activeBubbleKey = null;
     if (zoomFocusSettleTimer !== null) {
       window.clearTimeout(zoomFocusSettleTimer);
       zoomFocusSettleTimer = null;
@@ -735,15 +778,21 @@
       dimensionSamples.set(info.index, info);
       if (dimensionSamples.size >= 2) {
         const result = detectWebtoonFromDimensions(Array.from(dimensionSamples.values()));
-        if (result.decided) {
+        if (result.decided && result.detectedLayout) {
           webtoonDecidedForChapter = true;
-          if (result.isWebtoon && !manga?.detectedWebtoon) {
-            chapterDetectedWebtoon = true;
+          if (result.detectedLayout === "webtoon" && effectiveDetectedLayout !== "webtoon") {
+            chapterDetectedLayout = "webtoon";
             if (manga) {
-              manga = { ...manga, detectedWebtoon: true };
+              manga = { ...manga, detectedWebtoon: true, detectedLayout: "webtoon" };
             }
             void api.markMangaDetectedWebtoon(mangaId).catch(() => {});
             toasts.push(t.toastWebtoonDetected, "info", 2600);
+          } else if (result.detectedLayout === "manga" && !manga?.detectedLayout && !manga?.detectedWebtoon) {
+            chapterDetectedLayout = "manga";
+            if (manga) {
+              manga = { ...manga, detectedWebtoon: false, detectedLayout: "manga" };
+            }
+            toasts.push(t.a11yToastMangaDetected, "info", 2200);
           }
         }
       }
@@ -887,6 +936,7 @@
       wheelResetTimer,
       zoomFocusSettleTimer,
       longPressTimer,
+      aiPageDispatchTimer,
     ]) {
       if (timer !== null) window.clearTimeout(timer);
     }
@@ -899,6 +949,7 @@
     zoomFocusSettleTimer = null;
     longPressTimer = null;
     longPressPointerId = null;
+    aiPageDispatchTimer = null;
     if (focusRaf !== null) {
       window.cancelAnimationFrame(focusRaf);
       focusRaf = null;
@@ -1031,7 +1082,9 @@
     markedReadSet.clear();
     dimensionSamples.clear();
     webtoonDecidedForChapter = false;
-    chapterDetectedWebtoon = false;
+    chapterDetectedLayout = null;
+    activeBubbleKey = null;
+    lastAiFocusKey = "";
     restoredInitialScroll = false;
     isUserScrollingBeforeRestore = false;
     showScrollTopBtn = false;
@@ -1105,10 +1158,11 @@
         !hasCustomMangaSettings &&
         effectiveOverride === null &&
         readerSettings.autoWebtoonDetect &&
+        !mangaData?.detectedLayout &&
         !mangaData?.detectedWebtoon &&
         chapterData.images.length > 0
       ) {
-        const probeTokens = chapterData.images.slice(0, 4);
+        const probeTokens = chapterData.images.slice(0, 6);
         void api
           .detectChapterLayout(mangaId, probeTokens)
           .then((verdict) => {
@@ -1119,16 +1173,27 @@
             }
             webtoonDecidedForChapter = true;
             if (
-              verdict.isWebtoon &&
+              (verdict.layout === "webtoon" || verdict.isWebtoon) &&
               !hasCustomMangaSettings &&
               effectiveOverride === null &&
-              !manga?.detectedWebtoon
+              effectiveDetectedLayout !== "webtoon"
             ) {
-              chapterDetectedWebtoon = true;
+              chapterDetectedLayout = "webtoon";
               if (manga) {
-                manga = { ...manga, detectedWebtoon: true };
+                manga = { ...manga, detectedWebtoon: true, detectedLayout: "webtoon" };
               }
               toasts.push(t.toastWebtoonDetected, "info", 2600);
+            } else if (
+              verdict.layout === "manga" &&
+              !hasCustomMangaSettings &&
+              effectiveOverride === null &&
+              effectiveDetectedLayout !== "manga"
+            ) {
+              chapterDetectedLayout = "manga";
+              if (manga) {
+                manga = { ...manga, detectedWebtoon: false, detectedLayout: "manga" };
+              }
+              toasts.push(t.a11yToastMangaDetected, "info", 2200);
             }
           })
           .catch(() => {
@@ -1158,6 +1223,10 @@
     const unregisterBack = router.registerBackInterceptor(() => {
       if (imageMenuTarget !== null) {
         if (!imageActionBusy) imageMenuTarget = null;
+        return true;
+      }
+      if (aiPillOpen) {
+        aiPillOpen = false;
         return true;
       }
       if (chapterJumpOpen) {
@@ -1310,6 +1379,7 @@
       closingReader = true;
       captureCurrentProgressNow(false);
       clearPendingTimers(true, false);
+      void aiTranslateStore.disableAndPurge();
       void api.clearReaderSession().catch(() => {});
       void api.purgeMangaPageCache(mangaId).catch(() => {});
       unregisterBack();
@@ -1338,12 +1408,62 @@
     };
   });
 
+  // Reactive AI Translation & Bubble Detection driver with fast-swipe job cancellation.
+  $effect(() => {
+    const enabled = aiBubbleZoom || aiTranslateOn;
+    const translateMode = aiTranslateOn;
+    const chap = activeChapter;
+    const pageIdx = focusedPageIdx;
+    const horiz = isHorizontal;
+    const grp = currentHorizontalGroup;
+    const tier = aiTranslateStore.activeTier;
+    const lang = settingsStore.value.language;
+    const loading = loadingInitial;
+
+    if (aiPageDispatchTimer !== null) {
+      window.clearTimeout(aiPageDispatchTimer);
+      aiPageDispatchTimer = null;
+    }
+
+    if (!enabled) {
+      activeBubbleKey = null;
+      lastAiFocusKey = "";
+      return;
+    }
+    if (loading || !chap || chap.images.length === 0) return;
+
+    const activeTokens =
+      horiz && grp && grp.items.length > 0
+        ? grp.items.map((it) => it.token)
+        : chap.images[pageIdx]
+          ? [chap.images[pageIdx]]
+          : [];
+    if (activeTokens.length === 0) return;
+
+    const focusKey = `${chap.url}|${activeTokens.join(",")}|${translateMode ? "t" : "d"}|${tier}|${lang}`;
+    if (focusKey === lastAiFocusKey) return;
+
+    const movedPage = lastAiFocusKey !== "";
+    lastAiFocusKey = focusKey;
+
+    if (movedPage) {
+      aiTranslateStore.cancelJobs();
+    }
+
+    aiPageDispatchTimer = window.setTimeout(() => {
+      aiPageDispatchTimer = null;
+      for (const tok of activeTokens) {
+        void aiTranslateStore.processPage(tok, { detectOnly: !translateMode });
+      }
+    }, movedPage ? 140 : 40);
+  });
+
   let prevLayoutSig = "";
   let prevLayoutOrient = "";
   $effect(() => {
     const orient = effectiveOrientation;
     const perGroup = effectivePagesPerGroup;
-    const sig = `${orient}|${perGroup}|${hCfg.direction}|${hCfg.noGapMode}`;
+    const sig = `${orient}|${perGroup}|${effectiveHorizontalDirection}|${isHorizontalSeamless}`;
     if (!prevLayoutSig) {
       prevLayoutSig = sig;
       prevLayoutOrient = orient;
@@ -2183,6 +2303,10 @@
       if (!imageActionBusy) imageMenuTarget = null;
       return true;
     }
+    if (aiPillOpen) {
+      aiPillOpen = false;
+      return true;
+    }
     if (quickFloatConfig !== null) {
       quickFloatConfig = null;
       return true;
@@ -2195,6 +2319,125 @@
     if (chapterJumpOpen) {
       chapterJumpOpen = false;
       return true;
+    }
+    return false;
+  }
+
+  function handleBubbleTap(info: {
+    pageIndex: number;
+    token: string;
+    bbox: NormalizedBbox;
+    bubbleKey: string;
+    imgEl: HTMLImageElement | null;
+  }) {
+    if (!aiBubbleZoom || !scrollEl || !info.imgEl) return;
+    wakeFloatingControls();
+
+    // Tapping the already zoomed bubble toggles back cleanly to 1x.
+    if (zoomScale > 1.01 && activeBubbleKey === info.bubbleKey) {
+      resetZoom();
+      return;
+    }
+
+    const vpRect = scrollEl.getBoundingClientRect();
+    const imgRect = info.imgEl.getBoundingClientRect();
+    if (imgRect.width <= 12 || imgRect.height <= 12) return;
+
+    const prevScale = zoomScale > 1.01 ? zoomScale : 1;
+    const unscaledImageRect: RectBox = isHorizontal
+      ? {
+          left: (imgRect.left - vpRect.left - zoomTx) / prevScale,
+          top: (imgRect.top - vpRect.top - zoomTy) / prevScale,
+          width: imgRect.width / prevScale,
+          height: imgRect.height / prevScale,
+        }
+      : {
+          left: (imgRect.left - vpRect.left - zoomTx) / prevScale,
+          top: (imgRect.top - vpRect.top) / prevScale,
+          width: imgRect.width / prevScale,
+          height: imgRect.height / prevScale,
+        };
+
+    const box = measureZoomTargetBox(info.imgEl);
+    zoomContentRect = box.rect;
+    zoomOriginLeft = box.originLeft;
+    zoomOriginTop = box.originTop;
+
+    const next = computeBubbleZoom(
+      info.bbox,
+      unscaledImageRect,
+      vpRect.width,
+      vpRect.height,
+      box.rect,
+      box.originLeft,
+      box.originTop
+    );
+
+    if (zoomFocusSettleTimer !== null) {
+      window.clearTimeout(zoomFocusSettleTimer);
+      zoomFocusSettleTimer = null;
+    }
+
+    activeBubbleKey = info.bubbleKey;
+
+    if (isHorizontal) {
+      zoomTransitionLockUntil = Date.now() + 220;
+      zoomScale = next.scale;
+      zoomTx = next.tx;
+      zoomTy = next.ty;
+      zoomFocusSettleTimer = window.setTimeout(() => {
+        zoomFocusSettleTimer = null;
+        zoomTransitionLockUntil = 0;
+        updateFocusNow();
+      }, 200);
+    } else {
+      const unscaledDocY = scrollEl.scrollTop / prevScale + next.bubbleCenterY;
+      const baseHeight = verticalContentEl?.offsetHeight ?? scrollEl.scrollHeight;
+      zoomTransitionLockUntil = Date.now() + 240;
+      suppressAutoHideUntil = Date.now() + 360;
+      const desiredScrollTop = Math.max(
+        0,
+        Math.round(unscaledDocY * next.scale - vpRect.height * 0.5)
+      );
+
+      flushSync(() => {
+        verticalZoomExtraBottomPx = Math.max(0, Math.round(baseHeight * (next.scale - 1)));
+        zoomScale = next.scale;
+        zoomTx = next.tx;
+        zoomTy = 0;
+      });
+      if (scrollEl) {
+        const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+        const clampedTop = Math.max(0, Math.min(maxTop, desiredScrollTop));
+        scrollEl.scrollTop = clampedTop;
+        lastScrollOffset = clampedTop;
+      }
+      zoomFocusSettleTimer = window.setTimeout(() => {
+        zoomFocusSettleTimer = null;
+        zoomTransitionLockUntil = 0;
+        updateFocusNow();
+      }, 210);
+    }
+  }
+
+  function hitTestHorizontalBubble(clientX: number, clientY: number): boolean {
+    if (!aiBubbleZoom || !horizontalStageEl) return false;
+    const buttons = horizontalStageEl.querySelectorAll<HTMLButtonElement>(
+      '[data-hslide-active="true"] [data-ai-bubble="true"]'
+    );
+    for (const btn of buttons) {
+      const r = btn.getBoundingClientRect();
+      if (
+        r.width > 4 &&
+        r.height > 4 &&
+        clientX >= r.left &&
+        clientX <= r.right &&
+        clientY >= r.top &&
+        clientY <= r.bottom
+      ) {
+        btn.click();
+        return true;
+      }
     }
     return false;
   }
@@ -2213,6 +2456,10 @@
       return;
     }
     if (dismissHorizontalOverlayIfOpen()) return;
+
+    if (aiBubbleZoom && hitTestHorizontalBubble(e.clientX, e.clientY)) {
+      return;
+    }
 
     const runSingleAction = () => {
       if (zone === "left") {
@@ -2420,6 +2667,10 @@
       if (!imageActionBusy) imageMenuTarget = null;
       return;
     }
+    if (aiPillOpen) {
+      aiPillOpen = false;
+      return;
+    }
     if (quickFloatConfig !== null) {
       quickFloatConfig = null;
       return;
@@ -2434,6 +2685,11 @@
       return;
     }
     if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
+      return;
+    }
+    // Tapping outside a bubble while bubble-zoomed smoothly resets to 1x.
+    if (activeBubbleKey !== null && zoomScale > 1.01) {
+      resetZoom(e.clientY);
       return;
     }
     // Ignore drags/scroll gestures (> 14px movement to allow slight mobile finger jitter).
@@ -2815,6 +3071,7 @@
     flushPendingMangaSettings();
     captureCurrentProgressNow(false);
     await flushPendingProgress(false);
+    void aiTranslateStore.disableAndPurge();
     await api.clearReaderSession().catch(() => {});
     // Reclaim transient chapter page cache immediately on exit while keeping cover & settings.
     void api.purgeMangaPageCache(mangaId).catch(() => {});
@@ -2844,7 +3101,8 @@
       e.preventDefault();
       if (imageMenuTarget !== null) {
         if (!imageActionBusy) imageMenuTarget = null;
-      } else if (chapterJumpOpen) chapterJumpOpen = false;
+      } else if (aiPillOpen) aiPillOpen = false;
+      else if (chapterJumpOpen) chapterJumpOpen = false;
       else if (quickFloatConfig !== null) quickFloatConfig = null;
       else if (quickSettingsOpen) {
         quickSettingsOpen = false;
@@ -3011,14 +3269,16 @@
 >
   <!-- Top Auto-Hide Toolbar (frosted glass, GPU transform/opacity only, never overlaps corner tap zones) -->
   <header
-    class="glass-chrome fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 transition-[opacity,transform] duration-200 sm:px-4"
+    class="glass-chrome fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 transition-[opacity,transform] duration-200 sm:px-4 {oneHandedMode === 'left'
+      ? 'flex-row-reverse'
+      : ''}"
     style="padding-top: calc(0.5rem + var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); border-color: var(--border); opacity: {toolbarVisible
       ? 1
       : 0}; pointer-events: {toolbarVisible ? 'auto' : 'none'}; transform: translate3d(0, {toolbarVisible
       ? '0px'
       : '-8px'}, 0);"
   >
-    <div class="flex min-w-0 items-center gap-2">
+    <div class="flex min-w-0 items-center gap-2 {oneHandedMode === 'left' ? 'flex-row-reverse' : ''}">
       <button
         type="button"
         onclick={exitReader}
@@ -3029,8 +3289,11 @@
         <span class="hidden sm:inline">{t.back}</span>
       </button>
 
-      <div class="min-w-0 border-l pl-2.5" style="border-color: var(--border);">
-        <div class="flex items-center gap-1.5">
+      <div
+        class="min-w-0 {oneHandedMode === 'left' ? 'border-r pr-2.5 text-right' : 'border-l pl-2.5'}"
+        style="border-color: var(--border);"
+      >
+        <div class="flex items-center gap-1.5 {oneHandedMode === 'left' ? 'justify-end' : ''}">
           <div class="truncate text-sm font-semibold">{manga?.title ?? t.readingFallback}</div>
           {#if isAutoWebtoonActive}
             <span
@@ -3041,6 +3304,15 @@
             >
               <Sparkles size={10} />
               Webtoon
+            </span>
+          {:else if isAutoMangaActive}
+            <span
+              transition:badgePop|local
+              class="hidden shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium sm:inline-flex"
+              style="background-color: var(--accent-soft); color: var(--accent);"
+            >
+              <Sparkles size={10} />
+              {t.a11yAutoMangaBadge}
             </span>
           {/if}
         </div>
@@ -3053,7 +3325,7 @@
       </div>
     </div>
 
-    <div class="flex shrink-0 items-center gap-1">
+    <div class="flex shrink-0 items-center gap-1 {oneHandedMode === 'left' ? 'flex-row-reverse' : ''}">
       {#if zoomScale > 1.01}
         <span transition:badgePop|local class="inline-flex">
           <button
@@ -3165,7 +3437,7 @@
         : "glass-chrome fixed z-40 flex max-h-[calc(100dvh-4.75rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100dvw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overscroll-contain rounded-2xl border p-3.5 text-xs"}
       style={isCompactMobile
         ? "padding-bottom: max(1rem, var(--safe-bottom)); padding-left: max(1rem, var(--safe-left)); padding-right: max(1rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg);"
-        : "top: calc(3.75rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg);"}
+        : `top: calc(3.75rem + var(--safe-top)); ${oneHandedMode === "left" ? "left: max(0.75rem, var(--safe-left));" : "right: max(0.75rem, var(--safe-right));"} border-color: var(--border); box-shadow: var(--shadow-lg);`}
     >
       {#if isCompactMobile}
         <div class="sheet-handle" aria-hidden="true"></div>
@@ -3244,7 +3516,7 @@
         : "reader-quick-popover glass-chrome fixed z-40 flex max-h-[calc(100dvh-4.75rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100dvw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-2.5 overflow-y-auto overscroll-contain touch-pan-y rounded-2xl border p-3.5 text-xs"}
       style={isCompactMobile
         ? "padding-bottom: max(1rem, var(--safe-bottom)); padding-left: max(1rem, var(--safe-left)); padding-right: max(1rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;"
-        : "top: calc(3.75rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;"}
+        : `top: calc(3.75rem + var(--safe-top)); ${oneHandedMode === "left" ? "left: max(0.75rem, var(--safe-left));" : "right: max(0.75rem, var(--safe-right));"} border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;`}
     >
       {#if isCompactMobile}
         <div class="sheet-handle" aria-hidden="true"></div>
@@ -3274,7 +3546,7 @@
         </div>
       </div>
 
-      {#if hasCustomMangaSettings || isAutoWebtoonActive || effectiveOverride !== null}
+      {#if hasCustomMangaSettings || isAutoWebtoonActive || isAutoMangaActive || effectiveOverride !== null}
         <div
           transition:collapseReveal|local
           class="flex shrink-0 items-center justify-between gap-2 rounded-xl border px-3 py-2"
@@ -3283,7 +3555,9 @@
           <span class="font-medium" style="color: var(--text);">
             {hasCustomMangaSettings || effectiveOverride !== null
               ? t.perMangaSettingsBadge
-              : t.autoWebtoonBadge}
+              : isAutoWebtoonActive
+                ? t.autoWebtoonBadge
+                : t.a11yAutoMangaBadge}
           </span>
           {#if hasCustomMangaSettings || effectiveOverride !== null}
             <button
@@ -3311,7 +3585,7 @@
             <div class="font-semibold">{t.readerCatLayout}</div>
             <div class="truncate text-[10px]" style="color: var(--text-muted);">
               {isHorizontal
-                ? `${t.modeHorizontal} · ${hCfg.direction.toUpperCase()} · ${effectivePagesPerGroup}x${hCfg.noGapMode ? ` · ${t.horizontalNoGapLabel}` : ""}`
+                ? `${t.modeHorizontal} · ${effectiveHorizontalDirection.toUpperCase()} · ${effectivePagesPerGroup}x${isHorizontalSeamless ? ` · ${t.horizontalNoGapLabel}` : ""}`
                 : `${t.modeVertical} · ${effectiveNoGap ? t.noGapModeLabel : `${effectiveVerticalGapPx}px`}`}
             </div>
           </div>
@@ -3359,11 +3633,11 @@
                       type="button"
                       onclick={() => setHorizontalDirection(val as HorizontalDirection)}
                       class="gpu-press rounded-lg border py-1.5 font-medium"
-                      style="border-color: {hCfg.direction === val
+                      style="border-color: {effectiveHorizontalDirection === val
                         ? 'var(--accent)'
-                        : 'var(--border)'}; background-color: {hCfg.direction === val
+                        : 'var(--border)'}; background-color: {effectiveHorizontalDirection === val
                         ? 'var(--accent-soft)'
-                        : 'var(--surface-subtle)'}; color: {hCfg.direction === val
+                        : 'var(--surface-subtle)'}; color: {effectiveHorizontalDirection === val
                         ? 'var(--accent)'
                         : 'var(--text)'};"
                     >
@@ -3663,7 +3937,7 @@
         : "reader-quick-popover glass-chrome fixed z-40 flex max-h-[calc(100dvh-4.75rem-var(--safe-top)-var(--safe-bottom))] w-80 max-w-[calc(100dvw-1.5rem-var(--safe-left)-var(--safe-right))] flex-col gap-3 overflow-y-auto overscroll-contain touch-pan-y rounded-2xl border p-4 text-xs"}
       style={isCompactMobile
         ? "padding-bottom: max(1rem, var(--safe-bottom)); padding-left: max(1rem, var(--safe-left)); padding-right: max(1rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;"
-        : "top: calc(3.75rem + var(--safe-top)); right: max(0.75rem, var(--safe-right)); border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;"}
+        : `top: calc(3.75rem + var(--safe-top)); ${oneHandedMode === "left" ? "left: max(0.75rem, var(--safe-left));" : "right: max(0.75rem, var(--safe-right));"} border-color: var(--border); box-shadow: var(--shadow-lg); -webkit-overflow-scrolling: touch;`}
     >
       {#if isCompactMobile}
         <div class="sheet-handle" aria-hidden="true"></div>
@@ -4066,6 +4340,10 @@
                       snapStopAlways={false}
                       groupPageCount={1}
                       skipBroken={behavior.skipBrokenImages}
+                      bubbleZoomEnabled={aiBubbleZoom}
+                      translationEnabled={aiTranslateOn}
+                      {activeBubbleKey}
+                      onBubbleTap={handleBubbleTap}
                       onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
                     />
                     <span
@@ -4135,6 +4413,10 @@
                           snapStopAlways={false}
                           groupPageCount={1}
                           skipBroken={behavior.skipBrokenImages}
+                          bubbleZoomEnabled={aiBubbleZoom}
+                          translationEnabled={aiTranslateOn}
+                          {activeBubbleKey}
+                          onBubbleTap={handleBubbleTap}
                           onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
                         />
                         <!-- Subtle Bottom-Left Page Badge -->
@@ -4242,6 +4524,10 @@
                   )}
                   dimBrightness={pageDimBrightness(pKey)}
                   skipBroken={behavior.skipBrokenImages}
+                  bubbleZoomEnabled={aiBubbleZoom}
+                  translationEnabled={aiTranslateOn}
+                  {activeBubbleKey}
+                  onBubbleTap={handleBubbleTap}
                   onImageLoaded={(info) => handlePageImageLoaded(chap.url, info)}
                 />
               {/each}
@@ -4442,27 +4728,54 @@
     {/if}
   {/if}
 
-  <!-- Bottom Reading Progress Bar with Seek Support (frosted glass, GPU transform/opacity only) -->
+  <!-- Bottom Reading Progress Bar with Seek Support & One-Handed Thumb Clustering -->
   {#if !loadingInitial && !errorState && activeChapter && totalPages > 0}
     <footer
-      class="glass-chrome fixed right-0 bottom-0 left-0 z-30 flex items-center gap-3 border-t px-3 py-2.5 transition-[opacity,transform] duration-200 sm:px-5"
+      class="glass-chrome fixed right-0 bottom-0 left-0 z-30 flex items-center gap-2.5 border-t px-3 py-2.5 transition-[opacity,transform] duration-200 sm:gap-3 sm:px-5"
       style="padding-bottom: calc(0.625rem + var(--safe-bottom)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); border-color: var(--border); opacity: {toolbarVisible
         ? 1
         : 0}; pointer-events: {toolbarVisible ? 'auto' : 'none'}; transform: translate3d(0, {toolbarVisible
         ? '0px'
         : '8px'}, 0);"
     >
-      <button
-        type="button"
-        disabled={!activeChapter.prev}
-        onclick={() => activeChapter?.prev && jumpToChapter(activeChapter.prev)}
-        class="gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
-        style="border-color: var(--border); background-color: var(--surface);"
-        title={t.prevChapterTooltip}
-        aria-label={t.prevChapterTooltip}
-      >
-        <ChevronLeft size={16} />
-      </button>
+      {#if oneHandedMode === "left"}
+        <div class="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            disabled={!activeChapter.prev}
+            onclick={() => activeChapter?.prev && jumpToChapter(activeChapter.prev)}
+            class="btn-3d btn-3d-surface gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
+            style="border-color: var(--border); background-color: var(--surface);"
+            title={t.prevChapterTooltip}
+            aria-label={t.prevChapterTooltip}
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <button
+            type="button"
+            disabled={!activeChapter.next}
+            onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
+            class="btn-3d btn-3d-surface gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
+            style="border-color: var(--border); background-color: var(--surface);"
+            title={t.nextChapterTooltip}
+            aria-label={t.nextChapterTooltip}
+          >
+            <ChevronRight size={16} />
+          </button>
+        </div>
+      {:else if oneHandedMode === "default"}
+        <button
+          type="button"
+          disabled={!activeChapter.prev}
+          onclick={() => activeChapter?.prev && jumpToChapter(activeChapter.prev)}
+          class="btn-3d btn-3d-surface gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
+          style="border-color: var(--border); background-color: var(--surface);"
+          title={t.prevChapterTooltip}
+          aria-label={t.prevChapterTooltip}
+        >
+          <ChevronLeft size={16} />
+        </button>
+      {/if}
 
       {#if isHorizontal && manga && manga.chapters.length > 0}
         {@const selectedChapUrl =
@@ -4517,18 +4830,54 @@
         </span>
       </div>
 
-      <button
-        type="button"
-        disabled={!activeChapter.next}
-        onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
-        class="gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
-        style="border-color: var(--border); background-color: var(--surface);"
-        title={t.nextChapterTooltip}
-        aria-label={t.nextChapterTooltip}
-      >
-        <ChevronRight size={16} />
-      </button>
+      {#if oneHandedMode === "right"}
+        <div class="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            disabled={!activeChapter.prev}
+            onclick={() => activeChapter?.prev && jumpToChapter(activeChapter.prev)}
+            class="btn-3d btn-3d-surface gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
+            style="border-color: var(--border); background-color: var(--surface);"
+            title={t.prevChapterTooltip}
+            aria-label={t.prevChapterTooltip}
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <button
+            type="button"
+            disabled={!activeChapter.next}
+            onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
+            class="btn-3d btn-3d-surface gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
+            style="border-color: var(--border); background-color: var(--surface);"
+            title={t.nextChapterTooltip}
+            aria-label={t.nextChapterTooltip}
+          >
+            <ChevronRight size={16} />
+          </button>
+        </div>
+      {:else if oneHandedMode === "default"}
+        <button
+          type="button"
+          disabled={!activeChapter.next}
+          onclick={() => activeChapter?.next && jumpToChapter(activeChapter.next)}
+          class="btn-3d btn-3d-surface gpu-press touch-target flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl border disabled:opacity-35"
+          style="border-color: var(--border); background-color: var(--surface);"
+          title={t.nextChapterTooltip}
+          aria-label={t.nextChapterTooltip}
+        >
+          <ChevronRight size={16} />
+        </button>
+      {/if}
     </footer>
+  {/if}
+
+  {#if !loadingInitial && !errorState && activeChapter}
+    <ReaderAiPill
+      bind:open={aiPillOpen}
+      {oneHandedMode}
+      {toolbarVisible}
+      onOpenAccessibilitySettings={() => openFullSettings("accessibility")}
+    />
   {/if}
 
   <FloatingControls
@@ -4541,6 +4890,7 @@
       quickSettingsOpen = false;
       openQuickCat = null;
       chapterJumpOpen = false;
+      aiPillOpen = false;
       wakeFloatingControls();
     }}
     onToggleReaderSettings={toggleQuickSettings}
@@ -4552,11 +4902,16 @@
       quickSettingsOpen = false;
       openQuickCat = null;
       chapterJumpOpen = false;
+      aiPillOpen = false;
       wakeFloatingControls();
     }}
     orientationLock={readerSettings.orientationLock}
     dimmed={controlsDimmed}
-    fadedOut={!toolbarVisible && !quickSettingsOpen && quickFloatConfig === null && !chapterJumpOpen}
+    fadedOut={!toolbarVisible &&
+      !quickSettingsOpen &&
+      quickFloatConfig === null &&
+      !chapterJumpOpen &&
+      !aiPillOpen}
   />
 </div>
 

@@ -204,9 +204,6 @@
             .rtmaga · LZ4 · CRC32
           </span>
         </div>
-        <p class="mt-0.5 text-xs leading-relaxed" style="color: var(--text-muted);">
-          {t.rtmagaBackupDesc}
-        </p>
       </div>
     </div>
   </div>
@@ -214,7 +211,7 @@
   <!-- Block Selection Checkboxes -->
   <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
     <label
-      class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition-colors"
+      class="flex cursor-pointer items-center gap-2.5 rounded-xl border p-3 transition-colors"
       style="border-color: {selection.manga
         ? 'var(--accent)'
         : 'var(--border)'}; background-color: {selection.manga
@@ -225,21 +222,16 @@
         type="checkbox"
         bind:checked={selection.manga}
         disabled={busy}
-        class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]"
+        class="h-4 w-4 shrink-0 accent-[var(--accent)]"
       />
-      <div class="min-w-0">
-        <div class="flex items-center gap-1.5 text-xs font-semibold">
-          <BookOpen size={13} class="shrink-0" style="color: var(--accent);" />
-          <span class="truncate">{t.rtmagaBackupBlockManga}</span>
-        </div>
-        <div class="mt-0.5 text-[11px] leading-snug" style="color: var(--text-muted);">
-          {t.rtmagaBackupBlockMangaDesc}
-        </div>
+      <div class="flex min-w-0 items-center gap-1.5 text-xs font-semibold">
+        <BookOpen size={13} class="shrink-0" style="color: var(--accent);" />
+        <span class="truncate">{t.rtmagaBackupBlockManga}</span>
       </div>
     </label>
 
     <label
-      class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition-colors"
+      class="flex cursor-pointer items-center gap-2.5 rounded-xl border p-3 transition-colors"
       style="border-color: {selection.trackers
         ? 'var(--accent)'
         : 'var(--border)'}; background-color: {selection.trackers
@@ -250,21 +242,16 @@
         type="checkbox"
         bind:checked={selection.trackers}
         disabled={busy}
-        class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]"
+        class="h-4 w-4 shrink-0 accent-[var(--accent)]"
       />
-      <div class="min-w-0">
-        <div class="flex items-center gap-1.5 text-xs font-semibold">
-          <Compass size={13} class="shrink-0" style="color: var(--accent);" />
-          <span class="truncate">{t.rtmagaBackupBlockTrackers}</span>
-        </div>
-        <div class="mt-0.5 text-[11px] leading-snug" style="color: var(--text-muted);">
-          {t.rtmagaBackupBlockTrackersDesc}
-        </div>
+      <div class="flex min-w-0 items-center gap-1.5 text-xs font-semibold">
+        <Compass size={13} class="shrink-0" style="color: var(--accent);" />
+        <span class="truncate">{t.rtmagaBackupBlockTrackers}</span>
       </div>
     </label>
 
     <label
-      class="flex cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition-colors"
+      class="flex cursor-pointer items-center gap-2.5 rounded-xl border p-3 transition-colors"
       style="border-color: {selection.prefs
         ? 'var(--accent)'
         : 'var(--border)'}; background-color: {selection.prefs
@@ -275,16 +262,11 @@
         type="checkbox"
         bind:checked={selection.prefs}
         disabled={busy}
-        class="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]"
+        class="h-4 w-4 shrink-0 accent-[var(--accent)]"
       />
-      <div class="min-w-0">
-        <div class="flex items-center gap-1.5 text-xs font-semibold">
-          <SlidersHorizontal size={13} class="shrink-0" style="color: var(--accent);" />
-          <span class="truncate">{t.rtmagaBackupBlockPrefs}</span>
-        </div>
-        <div class="mt-0.5 text-[11px] leading-snug" style="color: var(--text-muted);">
-          {t.rtmagaBackupBlockPrefsDesc}
-        </div>
+      <div class="flex min-w-0 items-center gap-1.5 text-xs font-semibold">
+        <SlidersHorizontal size={13} class="shrink-0" style="color: var(--accent);" />
+        <span class="truncate">{t.rtmagaBackupBlockPrefs}</span>
       </div>
     </label>
   </div>
@@ -320,7 +302,7 @@
       type="button"
       onclick={handleExport}
       disabled={busy || !anySelected}
-      class="gpu-press inline-flex min-h-[42px] flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold hover:opacity-92 disabled:opacity-45 sm:flex-initial"
+      class="btn-3d btn-3d-accent gpu-press inline-flex min-h-[42px] flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold hover:opacity-92 disabled:opacity-45 sm:flex-initial"
       style="background-color: var(--accent); color: var(--accent-fg);"
     >
       {#if exporting}
@@ -336,7 +318,7 @@
       type="button"
       onclick={handlePickImport}
       disabled={busy}
-      class="gpu-press inline-flex min-h-[42px] flex-1 items-center justify-center gap-2 rounded-xl border px-4 py-2 text-xs font-semibold hover:opacity-88 disabled:opacity-45 sm:flex-initial"
+      class="btn-3d btn-3d-surface gpu-press inline-flex min-h-[42px] flex-1 items-center justify-center gap-2 rounded-xl border px-4 py-2 text-xs font-semibold hover:opacity-88 disabled:opacity-45 sm:flex-initial"
       style="border-color: var(--border); background-color: var(--surface-subtle); color: var(--text);"
     >
       {#if pickingImport}
@@ -475,48 +457,38 @@
             type="button"
             disabled={importing}
             onclick={() => (importMode = "smart_merge")}
-            class="gpu-press flex flex-col items-start gap-1 rounded-xl border p-3 text-left"
+            class="btn-3d btn-3d-surface gpu-press flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left"
             style="border-color: {importMode === 'smart_merge'
               ? 'var(--accent)'
               : 'var(--border)'}; background-color: {importMode === 'smart_merge'
               ? 'var(--accent-soft)'
               : 'var(--surface-subtle)'};"
           >
-            <div class="flex w-full items-center justify-between gap-1 text-xs font-semibold">
-              <span style="color: {importMode === 'smart_merge' ? 'var(--accent)' : 'var(--text)'};">
-                {t.rtmagaBackupModeSmartMerge}
-              </span>
-              {#if importMode === "smart_merge"}
-                <Check size={13} style="color: var(--accent);" />
-              {/if}
-            </div>
-            <p class="text-[11px] leading-snug" style="color: var(--text-muted);">
-              {t.rtmagaBackupModeSmartMergeDesc}
-            </p>
+            <span class="text-xs font-semibold" style="color: {importMode === 'smart_merge' ? 'var(--accent)' : 'var(--text)'};">
+              {t.rtmagaBackupModeSmartMerge}
+            </span>
+            {#if importMode === "smart_merge"}
+              <Check size={13} style="color: var(--accent);" />
+            {/if}
           </button>
 
           <button
             type="button"
             disabled={importing}
             onclick={() => (importMode = "overwrite")}
-            class="gpu-press flex flex-col items-start gap-1 rounded-xl border p-3 text-left"
+            class="btn-3d btn-3d-surface gpu-press flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left"
             style="border-color: {importMode === 'overwrite'
               ? 'var(--danger)'
               : 'var(--border)'}; background-color: {importMode === 'overwrite'
               ? 'rgba(239, 68, 68, 0.08)'
               : 'var(--surface-subtle)'};"
           >
-            <div class="flex w-full items-center justify-between gap-1 text-xs font-semibold">
-              <span style="color: {importMode === 'overwrite' ? 'var(--danger)' : 'var(--text)'};">
-                {t.rtmagaBackupModeOverwrite}
-              </span>
-              {#if importMode === "overwrite"}
-                <Check size={13} style="color: var(--danger);" />
-              {/if}
-            </div>
-            <p class="text-[11px] leading-snug" style="color: var(--text-muted);">
-              {t.rtmagaBackupModeOverwriteDesc}
-            </p>
+            <span class="text-xs font-semibold" style="color: {importMode === 'overwrite' ? 'var(--danger)' : 'var(--text)'};">
+              {t.rtmagaBackupModeOverwrite}
+            </span>
+            {#if importMode === "overwrite"}
+              <Check size={13} style="color: var(--danger);" />
+            {/if}
           </button>
         </div>
 

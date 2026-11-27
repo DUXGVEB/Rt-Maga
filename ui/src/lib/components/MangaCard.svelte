@@ -3,6 +3,7 @@
   import { imgProxyUrl } from "../api";
   import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../comicFormats";
   import { badgePop, pressable } from "../motion";
+  import { heroTransitionStore } from "../stores/heroTransition.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -11,6 +12,7 @@
   let { item }: { item: HistoryItemView } = $props();
   let coverError = $state(false);
   let coverLoaded = $state(false);
+  let coverBoxEl = $state<HTMLDivElement | null>(null);
   const t = $derived(settingsStore.t);
 
   $effect(() => {
@@ -31,6 +33,7 @@
 
   function openContinue() {
     if (isCatalogOnly || isMetadataOnlyChapterUrl(item.chapterUrl)) {
+      heroTransitionStore.captureFromElement(coverBoxEl, item.coverToken, item.mangaId);
       router.goManga(item.mangaId);
       return;
     }
@@ -43,6 +46,7 @@
 
   function openDetail(e?: MouseEvent) {
     e?.stopPropagation();
+    heroTransitionStore.captureFromElement(coverBoxEl, item.coverToken, item.mangaId);
     router.goManga(item.mangaId);
   }
 </script>
@@ -51,7 +55,11 @@
   use:pressable
   class="card-cq card-contain card-press surface-card group relative flex flex-col overflow-hidden rounded-2xl"
 >
-  <div class="relative aspect-[3/4] w-full overflow-hidden" style="background-color: var(--surface-subtle);">
+  <div
+    bind:this={coverBoxEl}
+    class="relative aspect-[3/4] w-full overflow-hidden"
+    style="background-color: var(--surface-subtle);"
+  >
     <button
       type="button"
       onclick={openContinue}
@@ -137,7 +145,7 @@
     <button
       type="button"
       onclick={openDetail}
-      class="gpu-press absolute right-2 bottom-2 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white opacity-95 backdrop-blur-md sm:opacity-0 sm:group-hover:opacity-100"
+      class="btn-3d absolute right-2 bottom-2 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white opacity-95 backdrop-blur-md sm:opacity-0 sm:group-hover:opacity-100"
       style="background-color: rgba(11, 11, 15, 0.78);"
     >
       {t.chaptersBtn}

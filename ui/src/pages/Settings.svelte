@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    Accessibility,
     AlertCircle,
     AlertTriangle,
     ArrowDown,
@@ -26,9 +27,11 @@
     EyeOff,
     Gauge,
     Globe,
+    Hand,
     HardDrive,
     Home,
     ImageOff,
+    Languages,
     Laptop,
     Layers,
     LayoutGrid,
@@ -43,6 +46,7 @@
     RefreshCw,
     RotateCcw,
     Rows3,
+    ScanSearch,
     Search,
     Settings as SettingsIcon,
     Shield,
@@ -71,6 +75,7 @@
   import SettingsVisualPreview from "../lib/components/SettingsVisualPreview.svelte";
   import SourceManagerPanel from "../lib/components/SourceManagerPanel.svelte";
   import ToggleSwitch from "../lib/components/ToggleSwitch.svelte";
+  import TranslationModelPanel from "../lib/components/TranslationModelPanel.svelte";
   import { LANGUAGE_OPTIONS } from "../lib/i18n";
   import {
     adaptiveOverlay,
@@ -82,6 +87,7 @@
     popoverPop,
     viewReveal,
   } from "../lib/motion";
+  import { aiTranslateStore } from "../lib/stores/aiTranslate.svelte";
   import { appReleaseStore } from "../lib/stores/appRelease.svelte";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
@@ -112,6 +118,7 @@
     Language,
     NavDestination,
     NotificationPermissionInfo,
+    OneHandedMode,
     ReaderBg,
     ReadingOrientation,
     Settings,
@@ -127,7 +134,14 @@
     subTarget?: "supplemental" | "feedback";
   } = $props();
 
-  type SettingsTabKey = "general" | "reader" | "floating" | "network" | "storage" | "system";
+  type SettingsTabKey =
+    | "general"
+    | "reader"
+    | "floating"
+    | "accessibility"
+    | "network"
+    | "storage"
+    | "system";
   type StorageSubTab = "source" | "manga" | "hidden";
 
   let activeTab = $state<SettingsTabKey>("general");
@@ -251,6 +265,8 @@
         return "reader";
       case "floating":
         return "floating";
+      case "accessibility":
+        return "accessibility";
       case "network":
       case "sources":
         return "network";
@@ -380,6 +396,13 @@
       keywords: `${t.floatingSection} ${t.floatingSubtitle} ${t.floatingScrollTopScreens} ${t.floatingReaderSettingsLabel} ${t.floatingOrientationLockLabel} ${t.floatingAutoDimLabel} floating scroll top orientation lock button nut noi`,
     },
     {
+      id: "accessibility",
+      tab: "accessibility",
+      title: t.settingsTabAccessibility,
+      subtitle: accessibilitySummaryText,
+      keywords: `${t.settingsTabAccessibility} ${t.a11yOneHandedTitle} ${t.a11yBubbleZoomTitle} ${t.a11yAiTranslateTitle} ${t.a11yModelSectionTitle} ${t.a11yModelLiteTitle} ${t.a11yModelTier2Title} accessibility one handed left right bubble zoom ai translate model qwen lite tro nang mot tay phong to khung thoai dich`,
+    },
+    {
       id: "network",
       tab: "network",
       title: t.netProtectionSection,
@@ -493,6 +516,24 @@
     `${t.settingsActiveButtonsCount(enabledFloatingCount)}${s.floating.autoDimInReader ? ` · ${t.floatingAutoDimLabel}` : ""}`
   );
 
+  const oneHandedLabel = $derived(
+    s.accessibility.oneHandedMode === "left"
+      ? t.a11yOneHandedLeft
+      : s.accessibility.oneHandedMode === "right"
+        ? t.a11yOneHandedRight
+        : t.a11yOneHandedDefault
+  );
+
+  const activeAiTierLabel = $derived(
+    aiTranslateStore.activeTier === "qwen3_vl_2b"
+      ? t.a11yModelTier2Badge
+      : t.a11yModelLiteBadge
+  );
+
+  const accessibilitySummaryText = $derived(
+    `${oneHandedLabel} · ${activeAiTierLabel}`
+  );
+
   const networkSummaryText = $derived.by(() => {
     const dnsPart = s.doh.enabled ? `DNS ${s.doh.providerId}` : t.netSystemDns;
     return s.proxy.enabled ? `${dnsPart} · Proxy` : `${dnsPart} · LAN`;
@@ -522,6 +563,8 @@
         return t.settingsTabReader;
       case "floating":
         return t.settingsTabFloating;
+      case "accessibility":
+        return t.settingsTabAccessibility;
       case "network":
         return t.settingsTabNetwork;
       case "storage":
@@ -625,6 +668,7 @@
   }
 
   onMount(() => {
+    void aiTranslateStore.init();
     void (async () => {
       try {
         notifPerm = await api.checkNotificationPermission();
@@ -801,7 +845,15 @@
     });
   }
 
-  const tabs: SettingsTabKey[] = ["general", "reader", "floating", "network", "storage", "system"];
+  const tabs: SettingsTabKey[] = [
+    "general",
+    "reader",
+    "floating",
+    "accessibility",
+    "network",
+    "storage",
+    "system",
+  ];
 </script>
 
 <div class="settings-shell mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-4 px-4 py-4 sm:px-6 sm:py-5">
@@ -829,7 +881,7 @@
           class="hidden rounded-full border px-2.5 py-0.5 text-[11px] font-medium sm:inline-flex"
           style="border-color: var(--border); background-color: var(--surface); color: var(--text-muted);"
         >
-          v{appReleaseStore.currentVersion} · {t.settingsAutoSavedChip}
+          v{appReleaseStore.currentVersion}
         </span>
       </div>
     </div>
@@ -899,6 +951,8 @@
             <BookOpen size={15} />
           {:else if tab === "floating"}
             <CircleDot size={15} />
+          {:else if tab === "accessibility"}
+            <Accessibility size={15} />
           {:else if tab === "network"}
             <Shield size={15} />
           {:else if tab === "storage"}
@@ -1070,6 +1124,17 @@
             <div class="min-w-0 flex-1">
               <div class="text-sm font-semibold">{t.settingsTabFloating}</div>
               <div class="truncate text-xs" style="color: var(--text-muted);">{floatingSummaryText}</div>
+            </div>
+            <ChevronRight size={16} style="color: var(--text-muted);" />
+          </button>
+
+          <button type="button" onclick={() => selectTab("accessibility")} class="hub-row">
+            <span class="hub-icon" style="background-color: rgba(236, 72, 153, 0.14); color: #ec4899;">
+              <Accessibility size={17} />
+            </span>
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-semibold">{t.settingsTabAccessibility}</div>
+              <div class="truncate text-xs" style="color: var(--text-muted);">{accessibilitySummaryText}</div>
             </div>
             <ChevronRight size={16} style="color: var(--text-muted);" />
           </button>
@@ -2212,6 +2277,28 @@
                 </select>
               </div>
             </div>
+
+            <!-- Quick Shortcut to Accessibility & Translation Model -->
+            <button
+              type="button"
+              onclick={() => selectTab("accessibility")}
+              class="btn-3d btn-3d-surface gpu-press flex items-center justify-between gap-2.5 rounded-xl border px-3 py-2.5 text-left"
+              style="border-color: var(--border); background-color: var(--surface-subtle);"
+            >
+              <div class="flex min-w-0 items-center gap-2">
+                <Accessibility size={15} class="shrink-0" style="color: var(--accent);" />
+                <span class="truncate text-xs font-semibold">{t.a11yShortcutLabel}</span>
+              </div>
+              <div class="flex shrink-0 items-center gap-1.5">
+                <span
+                  class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                  style="background-color: var(--accent-soft); color: var(--accent);"
+                >
+                  {activeAiTierLabel}
+                </span>
+                <ChevronRight size={14} style="color: var(--text-muted);" />
+              </div>
+            </button>
           </section>
         </div>
       {/if}
@@ -2534,7 +2621,118 @@
         </section>
       {/if}
 
-      <!-- ==================== TAB 4: NETWORK & LAN SYNC (2-Col Bento) ==================== -->
+      <!-- ==================== TAB 4: ACCESSIBILITY (One-Handed + Bubble Auto-Zoom + AI Translation + Model) ==================== -->
+      {#if activeTab === "accessibility"}
+        <div
+          in:viewReveal|local={{ duration: 165, y: 6 }}
+          id="settings-accessibility"
+          class="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-2"
+        >
+          <section class="bento-card">
+            <div class="card-head">
+              <div class="flex items-center gap-2.5">
+                <span class="card-icon" style="background-color: var(--accent-soft); color: var(--accent);">
+                  <Accessibility size={15} />
+                </span>
+                <h2 class="card-title">{t.settingsTabAccessibility}</h2>
+              </div>
+              <button
+                type="button"
+                onclick={() => handleResetSection("accessibility")}
+                disabled={resettingSection === "accessibility"}
+                class="icon-btn"
+                title={t.resetSectionBtn}
+                aria-label={t.resetSectionBtn}
+              >
+                <RotateCcw size={13} />
+              </button>
+            </div>
+
+            <!-- 1. One-Handed Mode Segmented 3D Selector -->
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center gap-1.5 text-xs font-semibold">
+                <Hand size={14} style="color: var(--accent);" />
+                <span>{t.a11yOneHandedTitle}</span>
+              </div>
+              <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label={t.a11yOneHandedTitle}>
+                {#each [
+                  ["left", t.a11yOneHandedLeft],
+                  ["right", t.a11yOneHandedRight],
+                  ["default", t.a11yOneHandedDefault],
+                ] as [mode, label] (mode)}
+                  {@const active = s.accessibility.oneHandedMode === mode}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onclick={() => patch((d) => (d.accessibility.oneHandedMode = mode as OneHandedMode))}
+                    class="btn-3d gpu-press flex min-h-[44px] flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-xs font-semibold"
+                    class:btn-3d-accent={active}
+                    class:btn-3d-surface={!active}
+                    style="border-color: {active ? 'var(--accent)' : 'var(--border)'}; background-color: {active
+                      ? 'var(--accent-soft)'
+                      : 'var(--surface-subtle)'}; color: {active ? 'var(--accent)' : 'var(--text)'};"
+                  >
+                    {#if mode === "left"}
+                      <PanelLeft size={15} />
+                    {:else if mode === "right"}
+                      <PanelRight size={15} />
+                    {:else}
+                      <Smartphone size={15} />
+                    {/if}
+                    <span class="truncate">{label}</span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            <!-- 2. Bubble Auto-Zoom Toggle -->
+            <div
+              class="toggle-tile"
+              class:toggle-tile-on={s.accessibility.bubbleAutoZoom}
+            >
+              <div class="flex min-w-0 items-center gap-2">
+                <ScanSearch
+                  size={15}
+                  class="shrink-0"
+                  style="color: {s.accessibility.bubbleAutoZoom ? 'var(--accent)' : 'var(--text-muted)'};"
+                />
+                <span class="truncate text-xs font-semibold sm:text-sm">{t.a11yBubbleZoomTitle}</span>
+              </div>
+              <ToggleSwitch
+                checked={s.accessibility.bubbleAutoZoom}
+                ariaLabel={t.a11yBubbleZoomTitle}
+                onchange={(checked) => aiTranslateStore.requestToggleBubbleZoom(checked)}
+              />
+            </div>
+
+            <!-- 3. AI Translation Overlay Toggle -->
+            <div
+              class="toggle-tile"
+              class:toggle-tile-on={s.accessibility.aiTranslationOverlay}
+            >
+              <div class="flex min-w-0 items-center gap-2">
+                <Languages
+                  size={15}
+                  class="shrink-0"
+                  style="color: {s.accessibility.aiTranslationOverlay ? 'var(--accent)' : 'var(--text-muted)'};"
+                />
+                <span class="truncate text-xs font-semibold sm:text-sm">{t.a11yAiTranslateTitle}</span>
+              </div>
+              <ToggleSwitch
+                checked={s.accessibility.aiTranslationOverlay}
+                ariaLabel={t.a11yAiTranslateTitle}
+                onchange={(checked) => aiTranslateStore.requestToggleTranslation(checked)}
+              />
+            </div>
+          </section>
+
+          <!-- 4. Translation Model Card -->
+          <TranslationModelPanel />
+        </div>
+      {/if}
+
+      <!-- ==================== TAB 5: NETWORK & LAN SYNC (2-Col Bento) ==================== -->
       {#if activeTab === "network"}
         <div in:viewReveal|local={{ duration: 165, y: 6 }} id="settings-network" class="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-12">
           <div class="flex flex-col gap-3.5 lg:col-span-7">

@@ -1,11 +1,64 @@
 //! Cross-platform device environment, real device identity, mobile orientation lock,
 //! immersive system bars, and Android notification channel/permission bridge.
 
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 #[cfg(not(target_os = "android"))]
 use crate::error::AppError;
+
+/// Execution mode for Tier 1 on-device OCR/bubble detection.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tier1RunMode {
+    /// Detect speech-bubble bounding boxes only (Bubble Auto-Zoom without translation).
+    DetectOnly,
+    /// Run full OCR + translation pipeline.
+    OcrAndTranslate,
+}
+
+/// Hardware and native AI runtime capabilities reported by the platform bridge.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Android AiRuntimePlugin capability flags"
+)]
+pub(crate) struct AiRuntimeCapabilities {
+    pub onnx_ready: bool,
+    pub ml_kit_ready: bool,
+    pub llama_jni_ready: bool,
+    pub vulkan_supported: bool,
+}
+
+/// Single speech-bubble / translated region returned by Android `AiRuntimePlugin`.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct AndroidAiRegion {
+    pub text: String,
+    pub source_text: Option<String>,
+    pub bbox: [u16; 4],
+}
+
+/// Response returned by Android `AiRuntimePlugin.runTier1OcrAndTranslate`.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct AndroidTier1Reply {
+    pub regions: Vec<AndroidAiRegion>,
+}
+
+/// Response returned by Android `AiRuntimePlugin.runTier2Vlm`.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct AndroidTier2Reply {
+    pub raw_json: String,
+}
 
 /// Display safe-area and gesture inset measurements in logical CSS pixels (`dp`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -155,19 +208,21 @@ pub(crate) fn resolve_display_device_name(
 
 #[cfg(target_os = "android")]
 mod imp {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use serde::Deserialize;
     use tauri::plugin::{Builder as PluginBuilder, PluginHandle, TauriPlugin};
     use tauri::{AppHandle, Manager, Runtime};
 
     use super::{
-        DeviceEnvInfo, GallerySaveReply, NotificationPermissionInfo, OrientationLockReply,
-        SafExportReply, SafPickReply,
+        AiRuntimeCapabilities, AndroidTier1Reply, AndroidTier2Reply, DeviceEnvInfo,
+        GallerySaveReply, NotificationPermissionInfo, OrientationLockReply, SafExportReply,
+        SafPickReply, Tier1RunMode,
     };
     use crate::error::AppError;
 
     struct DeviceEnvState<R: Runtime>(PluginHandle<R>);
+    struct AiRuntimeState<R: Runtime>(PluginHandle<R>);
 
     #[derive(Debug, Deserialize)]
     struct SendNotifReply {
@@ -179,6 +234,16 @@ mod imp {
         text: Option<String>,
     }
 
+    #[derive(Debug, Deserialize)]
+    struct AiStorageDirReply {
+        path: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct HardUnloadReply {
+        unloaded: bool,
+    }
+
     pub(crate) fn init_plugin<R: Runtime>() -> TauriPlugin<R> {
         PluginBuilder::new("device_env")
             .setup(|app, api| {
@@ -187,6 +252,107 @@ mod imp {
                 Ok(())
             })
             .build()
+    }
+
+    pub(crate) fn init_ai_plugin<R: Runtime>() -> TauriPlugin<R> {
+        PluginBuilder::new("ai-runtime")
+            .setup(|app, api| {
+                let handle = api.register_android_plugin("com.rtmaga.reader", "AiRuntimePlugin")?;
+                app.manage(AiRuntimeState(handle));
+                Ok(())
+            })
+            .build()
+    }
+
+    pub(crate) fn get_ai_storage_dir(app: &AppHandle) -> Option<PathBuf> {
+        let state = app.try_state::<AiRuntimeState<tauri::Wry>>()?;
+        let reply: AiStorageDirReply = state
+            .0
+            .run_mobile_plugin("getAiStorageDir", serde_json::json!({}))
+            .ok()?;
+        let trimmed = reply.path.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(trimmed))
+        }
+    }
+
+    pub(crate) fn get_runtime_capabilities(app: &AppHandle) -> AiRuntimeCapabilities {
+        let Some(state) = app.try_state::<AiRuntimeState<tauri::Wry>>() else {
+            return AiRuntimeCapabilities::default();
+        };
+        state
+            .0
+            .run_mobile_plugin("getRuntimeCapabilities", serde_json::json!({}))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn run_tier1_ocr_and_translate(
+        app: &AppHandle,
+        image_path: &Path,
+        target_lang: &str,
+        mode: Tier1RunMode,
+    ) -> Result<AndroidTier1Reply, AppError> {
+        let state = app.state::<AiRuntimeState<tauri::Wry>>();
+        let detect_only = matches!(mode, Tier1RunMode::DetectOnly);
+        state
+            .0
+            .run_mobile_plugin(
+                "runTier1OcrAndTranslate",
+                serde_json::json!({
+                    "imagePath": image_path.to_string_lossy(),
+                    "targetLang": target_lang,
+                    "detectOnly": detect_only,
+                }),
+            )
+            .map_err(|e| AppError::Internal {
+                message: format!("Android Tier 1 AI inference failed: {e}"),
+            })
+    }
+
+    pub(crate) fn run_tier2_vlm(
+        app: &AppHandle,
+        image_path: &Path,
+        model_path: &Path,
+        mmproj_path: &Path,
+        target_lang: &str,
+        prompt: &str,
+    ) -> Result<AndroidTier2Reply, AppError> {
+        let state = app.state::<AiRuntimeState<tauri::Wry>>();
+        state
+            .0
+            .run_mobile_plugin(
+                "runTier2Vlm",
+                serde_json::json!({
+                    "imagePath": image_path.to_string_lossy(),
+                    "modelPath": model_path.to_string_lossy(),
+                    "mmprojPath": mmproj_path.to_string_lossy(),
+                    "targetLang": target_lang,
+                    "prompt": prompt,
+                }),
+            )
+            .map_err(|e| AppError::Internal {
+                message: format!("Android Tier 2 VLM inference failed: {e}"),
+            })
+    }
+
+    pub(crate) fn cancel_active_ai_jobs(app: &AppHandle) {
+        if let Some(state) = app.try_state::<AiRuntimeState<tauri::Wry>>() {
+            let _: Result<serde_json::Value, _> = state
+                .0
+                .run_mobile_plugin("cancelActiveJobs", serde_json::json!({}));
+        }
+    }
+
+    pub(crate) fn hard_unload_all_ai(app: &AppHandle) -> bool {
+        let Some(state) = app.try_state::<AiRuntimeState<tauri::Wry>>() else {
+            return false;
+        };
+        state
+            .0
+            .run_mobile_plugin::<HardUnloadReply>("hardUnloadAll", serde_json::json!({}))
+            .is_ok_and(|r| r.unloaded)
     }
 
     pub(crate) fn get_device_env(app: &AppHandle) -> Result<DeviceEnvInfo, AppError> {
@@ -372,11 +538,45 @@ mod imp {
 
 #[cfg(target_os = "android")]
 pub(crate) use imp::{
-    check_notification_permission, export_backup_saf, get_device_env, init_plugin,
+    cancel_active_ai_jobs, check_notification_permission, export_backup_saf, get_ai_storage_dir,
+    get_device_env, get_runtime_capabilities, hard_unload_all_ai, init_ai_plugin, init_plugin,
     open_external_url_android, pick_backup_saf, read_clipboard_text,
-    request_notification_permission, save_image_to_gallery, send_android_notification,
-    set_immersive, set_keep_screen_on, set_orientation_lock,
+    request_notification_permission, run_tier1_ocr_and_translate, run_tier2_vlm,
+    save_image_to_gallery, send_android_notification, set_immersive, set_keep_screen_on,
+    set_orientation_lock,
 };
+
+#[cfg(not(target_os = "android"))]
+pub(crate) fn get_runtime_capabilities(_app: &AppHandle) -> AiRuntimeCapabilities {
+    AiRuntimeCapabilities {
+        onnx_ready: true,
+        ml_kit_ready: false,
+        llama_jni_ready: false,
+        vulkan_supported: detect_windows_vulkan_loader(),
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+pub(crate) fn cancel_active_ai_jobs(_app: &AppHandle) {}
+
+#[cfg(not(target_os = "android"))]
+pub(crate) fn hard_unload_all_ai(_app: &AppHandle) -> bool {
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn detect_windows_vulkan_loader() -> bool {
+    let sys32 = std::env::var_os("SystemRoot")
+        .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
+        .join("System32")
+        .join("vulkan-1.dll");
+    sys32.is_file()
+}
+
+#[cfg(all(not(target_os = "android"), not(target_os = "windows")))]
+fn detect_windows_vulkan_loader() -> bool {
+    false
+}
 
 #[cfg(not(target_os = "android"))]
 #[expect(

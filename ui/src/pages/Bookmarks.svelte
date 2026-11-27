@@ -11,6 +11,7 @@
     staggerDelay,
     viewReveal,
   } from "../lib/motion";
+  import { heroTransitionStore } from "../lib/stores/heroTransition.svelte";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { randomMangaStore } from "../lib/stores/randomManga.svelte";
   import { router } from "../lib/stores/router.svelte";
@@ -80,9 +81,17 @@
     }
   }
 
-  function openBookmarkCover(item: BookmarkItemView) {
+  function goMangaWithHero(item: BookmarkItemView, triggerEl?: HTMLElement | null) {
+    const coverEl =
+      triggerEl?.closest("[data-hero-card]")?.querySelector<HTMLElement>("[data-hero-cover-src]") ??
+      null;
+    heroTransitionStore.captureFromElement(coverEl, item.coverToken, item.mangaId);
+    router.goManga(item.mangaId);
+  }
+
+  function openBookmarkCover(item: BookmarkItemView, triggerEl?: HTMLElement | null) {
     if (isTachibkCatalogSite(item.site)) {
-      router.goManga(item.mangaId);
+      goMangaWithHero(item, triggerEl);
       return;
     }
     if (item.isCompleted && !item.hasNew) {
@@ -97,7 +106,7 @@
         item.pageIndex ?? 0
       );
     } else {
-      router.goManga(item.mangaId);
+      goMangaWithHero(item, triggerEl);
     }
   }
 
@@ -129,8 +138,7 @@
           type="button"
           use:pressable
           onclick={() => randomMangaStore.open("bookmarks")}
-          class="gpu-press inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold shadow-sm hover:opacity-95"
-          style="background-color: var(--accent); color: var(--accent-fg);"
+          class="btn-3d btn-3d-accent inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold"
         >
           <Dices size={14} />
           <span>{t.randomMangaTrigger}</span>
@@ -138,7 +146,7 @@
         <span class="text-xs font-medium" style="color: var(--text-muted);">{t.sortByLabel}</span>
         <select
           bind:value={sortField}
-          class="surface-card min-h-[36px] rounded-xl px-3 py-1.5 text-xs font-medium outline-none"
+          class="surface-card min-h-[38px] rounded-xl px-3 py-1.5 text-xs font-medium outline-none"
           style="color: var(--text);"
         >
           <option value="added">{t.sortDateAdded}</option>
@@ -146,11 +154,11 @@
         </select>
         <button
           type="button"
+          use:pressable
           onclick={() => {
             sortDir = sortDir === "desc" ? "asc" : "desc";
           }}
-          class="surface-card gpu-press inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
-          style="color: var(--text);"
+          class="btn-3d btn-3d-surface inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
           title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
         >
           <ArrowDown size={13} class="chevron-rot" data-open={sortDir === "asc" ? "true" : "false"} />
@@ -192,15 +200,17 @@
         >
           <article
             use:pressable
+            data-hero-card
             class="card-cq card-contain card-press surface-card group relative flex h-full flex-col overflow-hidden rounded-2xl"
           >
             <div
+              data-hero-cover-src
               class="relative aspect-[3/4] w-full overflow-hidden"
               style="background-color: var(--surface-subtle);"
             >
               <button
                 type="button"
-                onclick={() => openBookmarkCover(item)}
+                onclick={(e) => openBookmarkCover(item, e.currentTarget)}
                 title={completedOnly ? t.toastMangaCompletedNoResume : t.coverTapResumeHint}
                 class="block h-full w-full cursor-pointer text-left"
               >
@@ -272,7 +282,7 @@
                 onclick={(e) => removeBookmark(item.mangaId, e)}
                 title={t.bookmarkRemove}
                 aria-label={t.bookmarkRemove}
-                class="gpu-press absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-xl text-white opacity-85 backdrop-blur-md hover:opacity-100"
+                class="btn-3d absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-xl text-white opacity-85 backdrop-blur-md hover:opacity-100"
                 style="background-color: rgba(11, 11, 15, 0.68);"
               >
                 <Trash2 size={13} />
@@ -280,8 +290,8 @@
 
               <button
                 type="button"
-                onclick={() => router.goManga(item.mangaId)}
-                class="gpu-press absolute right-2 bottom-2 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white opacity-95 backdrop-blur-md sm:opacity-0 sm:group-hover:opacity-100"
+                onclick={(e) => goMangaWithHero(item, e.currentTarget)}
+                class="btn-3d absolute right-2 bottom-2 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white opacity-95 backdrop-blur-md sm:opacity-0 sm:group-hover:opacity-100"
                 style="background-color: rgba(11, 11, 15, 0.78);"
               >
                 {t.chaptersBtn}
@@ -291,7 +301,7 @@
             <div class="card-body flex flex-1 flex-col gap-1.5 p-3">
               <button
                 type="button"
-                onclick={() => router.goManga(item.mangaId)}
+                onclick={(e) => goMangaWithHero(item, e.currentTarget)}
                 class="card-title line-clamp-2 cursor-pointer text-left font-semibold hover:underline"
                 title={item.title}
               >

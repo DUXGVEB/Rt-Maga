@@ -17,6 +17,7 @@ export interface PageDimensionSample {
 export interface WebtoonDetectionResult {
   decided: boolean;
   isWebtoon: boolean;
+  detectedLayout: "manga" | "webtoon" | null;
   qualifyingCount: number;
   tallCount: number;
   medianRatio: number;
@@ -58,31 +59,36 @@ export function focusBrightness(
 }
 
 /**
- * Passively classifies whether a chapter is a Webtoon / Long-Strip format using natural
- * image dimensions (zero extra network requests), matching the Rust header-sniffing heuristic.
+ * Passively classifies whether a chapter is a Webtoon / Long-Strip vs. standard Manga
+ * using natural image dimensions (zero extra network requests), synchronized with the
+ * strict multi-signal Rust classifier.
  *
- * Safeguards against false positives:
+ * Safeguards against Manga-as-Webtoon false positives:
  * - Ignores tiny icons/banners (`width < 200` or `height < 300`).
  * - Ignores landscape double-page spreads (`width > height * 1.15`).
- * - Requires at least 2 qualifying images from the leading pages before deciding.
- * - Triggers Vertical Webtoon mode if median aspect ratio `>= 1.8` OR a tall strip (`>= 2.2`)
- *   shares matching width continuity (`±8%`) with another qualifying page; otherwise defaults to Manga.
+ * - Requires at least 2 qualifying images before deciding.
+ * - NEVER flips on a single tall credit/promo banner (`tallStripCount < 2` -> never Webtoon).
+ * - Requires EITHER median aspect ratio >= 1.85 with >= 2 tall strips, OR majority tall strips
+ *   with matching width continuity (±8%), OR >= 2 consecutive tall strips sharing width (±8%)
+ *   when standard manga-ratio pages (`1.15..1.68`) are not the clear majority.
  */
 export function detectWebtoonFromDimensions(
   samples: PageDimensionSample[]
 ): WebtoonDetectionResult {
-  const qualifying: { width: number; ratio: number }[] = [];
+  const ordered = [...samples].sort((a, b) => a.index - b.index);
+  const qualifying: { index: number; width: number; ratio: number }[] = [];
 
-  for (const s of samples) {
+  for (const s of ordered) {
     if (s.width < 200 || s.height < 300) continue;
     if (s.width > s.height * 1.15) continue;
-    qualifying.push({ width: s.width, ratio: s.height / s.width });
+    qualifying.push({ index: s.index, width: s.width, ratio: s.height / s.width });
   }
 
   if (qualifying.length < 2) {
     return {
       decided: false,
       isWebtoon: false,
+      detectedLayout: null,
       qualifyingCount: qualifying.length,
       tallCount: 0,
       medianRatio: 0,
@@ -94,21 +100,52 @@ export function detectWebtoonFromDimensions(
   const medianRatio =
     sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 
-  const tallCount = qualifying.filter((q) => q.ratio >= 2.2).length;
-  const hasTallWithWidthContinuity = qualifying.some((a, i) => {
-    if (a.ratio < 2.2) return false;
-    return qualifying.some((b, j) => {
-      if (i === j) return false;
-      const maxW = Math.max(a.width, b.width);
-      return Math.abs(a.width - b.width) <= maxW * 0.08;
-    });
-  });
+  const mangaRangeCount = qualifying.filter((q) => q.ratio >= 1.15 && q.ratio <= 1.68).length;
+  const tallStrips = qualifying.filter((q) => q.ratio >= 1.85);
+  const tallCount = tallStrips.length;
 
-  const isWebtoon = medianRatio >= 1.8 || hasTallWithWidthContinuity;
+  const widthsMatch = (w1: number, w2: number) =>
+    Math.abs(w1 - w2) <= Math.max(w1, w2) * 0.08;
+
+  // Require at least 2 consecutive tall strips (`>= 1.85`) sharing width within ±8%.
+  let hasConsecutiveTallStrips = false;
+  for (let i = 1; i < qualifying.length; i += 1) {
+    const prev = qualifying[i - 1];
+    const curr = qualifying[i];
+    if (prev.ratio >= 1.85 && curr.ratio >= 1.85 && widthsMatch(prev.width, curr.width)) {
+      hasConsecutiveTallStrips = true;
+      break;
+    }
+  }
+
+  // Require at least 2 tall strips sharing width continuity for majority-tall classification.
+  const hasTallPairWidthContinuity = tallStrips.some((a, i) =>
+    tallStrips.some((b, j) => i !== j && widthsMatch(a.width, b.width))
+  );
+
+  const mangaFraction = mangaRangeCount / qualifying.length;
+  const isMajorityTall = tallCount * 2 > qualifying.length;
+
+  const isWebtoon =
+    tallCount >= 2 &&
+    ((medianRatio >= 1.85 && (hasTallPairWidthContinuity || isMajorityTall)) ||
+      (hasConsecutiveTallStrips && mangaFraction < 0.6) ||
+      (isMajorityTall && hasTallPairWidthContinuity));
+
+  const isManga =
+    !isWebtoon &&
+    (mangaFraction >= 0.5 || medianRatio <= 1.68 || (qualifying.length >= 3 && tallCount < 2));
+
+  const detectedLayout: "manga" | "webtoon" | null = isWebtoon
+    ? "webtoon"
+    : isManga
+      ? "manga"
+      : null;
 
   return {
-    decided: true,
+    decided: detectedLayout !== null,
     isWebtoon,
+    detectedLayout,
     qualifyingCount: qualifying.length,
     tallCount,
     medianRatio: Number(medianRatio.toFixed(2)),
@@ -390,4 +427,78 @@ export function computeSeamlessTrackTranslateX(
 ): number {
   const activeCenter = activeSlideLeft + activeSlideWidth / 2;
   return Math.round(vpWidth / 2 - activeCenter + dragOffsetPx);
+}
+
+export type NormalizedBbox = [number, number, number, number];
+
+export interface BubbleZoomResult extends ZoomTransform {
+  bubbleCenterX: number;
+  bubbleCenterY: number;
+  bubbleRect: RectBox;
+}
+
+/**
+ * Maps a `[0..1000]` normalized speech-bubble bbox `[x1, y1, x2, y2]` onto rendered
+ * image pixel coordinates inside the viewport.
+ */
+export function mapNormalizedBboxToRect(bbox: NormalizedBbox, imageRect: RectBox): RectBox {
+  const x1 = Math.max(0, Math.min(1000, bbox[0]));
+  const y1 = Math.max(0, Math.min(1000, bbox[1]));
+  const x2 = Math.max(x1, Math.min(1000, bbox[2]));
+  const y2 = Math.max(y1, Math.min(1000, bbox[3]));
+  return {
+    left: Number((imageRect.left + (x1 * imageRect.width) / 1000).toFixed(2)),
+    top: Number((imageRect.top + (y1 * imageRect.height) / 1000).toFixed(2)),
+    width: Math.max(1, Number((((x2 - x1) * imageRect.width) / 1000).toFixed(2))),
+    height: Math.max(1, Number((((y2 - y1) * imageRect.height) / 1000).toFixed(2))),
+  };
+}
+
+/**
+ * Computes the exact `(scale, tx, ty)` zoom transform that smoothly magnifies and centers
+ * a tapped speech bubble (`bbox` in `[0..1000]`) inside the viewport with comfortable padding,
+ * clamped strictly to the page content bounds.
+ */
+export function computeBubbleZoom(
+  bbox: NormalizedBbox,
+  unscaledImageRect: RectBox,
+  vpWidth: number,
+  vpHeight: number,
+  contentRect: RectBox,
+  originLeft = 0,
+  originTop = 0,
+  opts: { minScale?: number; maxScale?: number; fillRatioX?: number; fillRatioY?: number } = {}
+): BubbleZoomResult {
+  const minScale = opts.minScale ?? 1.6;
+  const maxScale = opts.maxScale ?? 3.2;
+  const fillX = opts.fillRatioX ?? 0.64;
+  const fillY = opts.fillRatioY ?? 0.54;
+
+  const bubbleRect = mapNormalizedBboxToRect(bbox, unscaledImageRect);
+  const bubbleCenterX = bubbleRect.left + bubbleRect.width / 2;
+  const bubbleCenterY = bubbleRect.top + bubbleRect.height / 2;
+
+  const fitScaleX = (vpWidth * fillX) / Math.max(16, bubbleRect.width);
+  const fitScaleY = (vpHeight * fillY) / Math.max(16, bubbleRect.height);
+  const rawScale = Math.min(fitScaleX, fitScaleY);
+  const targetScale = Number(Math.max(minScale, Math.min(maxScale, rawScale)).toFixed(2));
+
+  const focused = computeFocusedZoom(
+    bubbleCenterX,
+    bubbleCenterY,
+    { scale: 1, tx: 0, ty: 0 },
+    targetScale,
+    vpWidth,
+    vpHeight,
+    contentRect,
+    originLeft,
+    originTop
+  );
+
+  return {
+    ...focused,
+    bubbleCenterX: Number(bubbleCenterX.toFixed(2)),
+    bubbleCenterY: Number(bubbleCenterY.toFixed(2)),
+    bubbleRect,
+  };
 }

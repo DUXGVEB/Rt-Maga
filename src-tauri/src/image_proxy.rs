@@ -128,6 +128,7 @@ pub(crate) struct VerifiedImageToken {
     pub referer: String,
     pub manga_id: Option<i64>,
     pub site: Option<String>,
+    pub is_cover: bool,
     pub chapter_url: Option<String>,
 }
 
@@ -140,12 +141,13 @@ pub(crate) fn verify_image_token(token: &str, key: &[u8; 32]) -> Option<Verified
         referer: payload.r,
         manga_id: payload.m,
         site: payload.s,
+        is_cover: payload.c,
         chapter_url: payload.ch,
     })
 }
 
-/// Resolves raw image bytes and MIME content-type for a verified `img://` page token without
-/// re-fetching from the network when already cached locally or stored in a local comic archive.
+/// Resolves raw image bytes and MIME content-type for a verified `img://` page or cover token
+/// without re-fetching from the network when already cached locally or stored in a local archive.
 ///
 /// # Errors
 ///
@@ -174,11 +176,16 @@ pub(crate) async fn resolve_image_bytes(
     let meta = CacheEntryMeta {
         site: verified.site.as_deref(),
         manga_id: verified.manga_id,
-        is_cover: false,
+        is_cover: verified.is_cover,
         chapter_url: verified.chapter_url.as_deref(),
     };
 
-    if let Some(hit) = state.images.get(&cache_key, meta.clone()).await {
+    let cached_hit = if verified.is_cover {
+        state.images.get_cover(&cache_key, meta.clone()).await
+    } else {
+        state.images.get(&cache_key, meta.clone()).await
+    };
+    if let Some(hit) = cached_hit {
         return Ok((hit.bytes.to_vec(), hit.content_type, verified));
     }
 
@@ -209,16 +216,28 @@ pub(crate) async fn resolve_image_bytes(
             .await
         {
             Ok(fetched) if !fetched.bytes.is_empty() => {
-                state
-                    .images
-                    .put(
-                        &cache_key,
-                        &fetched.bytes,
-                        &fetched.content_type,
-                        max_mb,
-                        meta.clone(),
-                    )
-                    .await;
+                if verified.is_cover {
+                    state
+                        .images
+                        .put_cover(
+                            &cache_key,
+                            &fetched.bytes,
+                            &fetched.content_type,
+                            meta.clone(),
+                        )
+                        .await;
+                } else {
+                    state
+                        .images
+                        .put(
+                            &cache_key,
+                            &fetched.bytes,
+                            &fetched.content_type,
+                            max_mb,
+                            meta.clone(),
+                        )
+                        .await;
+                }
                 return Ok((fetched.bytes.to_vec(), fetched.content_type, verified));
             }
             Ok(_) => {
@@ -289,8 +308,18 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
         };
     }
 
-    if !bypass_cache && let Some(hit) = state.images.get(&cache_key, meta.clone()).await {
-        return image_ok_response(hit.bytes.to_vec(), &hit.content_type, policy);
+    // Always check persistent shared cover store first for cover requests (`payload.c == true`)
+    // so Home, Sources/Browse, Bookmarks, History, Manga detail, and Random share ONE file and
+    // never re-download once persisted.
+    if !bypass_cache {
+        let cached = if payload.c {
+            state.images.get_cover(&cache_key, meta.clone()).await
+        } else {
+            state.images.get(&cache_key, meta.clone()).await
+        };
+        if let Some(hit) = cached {
+            return image_ok_response(hit.bytes.to_vec(), &hit.content_type, policy);
+        }
     }
 
     if crate::services::comics::is_local_comic_url(&payload.u) {
@@ -301,10 +330,15 @@ pub(crate) async fn handle_protocol_request(state: &AppState, uri: &str) -> Resp
         None
     } else {
         let guard = state.images.begin_single_flight(&cache_key).await;
-        if guard.is_none()
-            && let Some(hit) = state.images.get(&cache_key, meta.clone()).await
-        {
-            return image_ok_response(hit.bytes.to_vec(), &hit.content_type, policy);
+        if guard.is_none() {
+            let cached = if payload.c {
+                state.images.get_cover(&cache_key, meta.clone()).await
+            } else {
+                state.images.get(&cache_key, meta.clone()).await
+            };
+            if let Some(hit) = cached {
+                return image_ok_response(hit.bytes.to_vec(), &hit.content_type, policy);
+            }
         }
         guard
     };
@@ -343,16 +377,28 @@ async fn fetch_and_cache_image(
             .await
         {
             Ok(fetched) if !fetched.bytes.is_empty() => {
-                state
-                    .images
-                    .put(
-                        cache_key,
-                        &fetched.bytes,
-                        &fetched.content_type,
-                        max_mb,
-                        meta.clone(),
-                    )
-                    .await;
+                if payload.c {
+                    state
+                        .images
+                        .put_cover(
+                            cache_key,
+                            &fetched.bytes,
+                            &fetched.content_type,
+                            meta.clone(),
+                        )
+                        .await;
+                } else {
+                    state
+                        .images
+                        .put(
+                            cache_key,
+                            &fetched.bytes,
+                            &fetched.content_type,
+                            max_mb,
+                            meta.clone(),
+                        )
+                        .await;
+                }
                 return image_ok_response(fetched.bytes.to_vec(), &fetched.content_type, policy);
             }
             Ok(_) => {

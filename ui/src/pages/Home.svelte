@@ -129,17 +129,18 @@
       <div class="flex shrink-0 items-center gap-2">
         <button
           type="button"
+          use:pressable
           onclick={resumeCrashSession}
-          class="gpu-press inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 font-semibold hover:opacity-90"
-          style="background-color: var(--accent); color: var(--accent-fg);"
+          class="btn-3d btn-3d-accent inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 font-semibold"
         >
           <Play size={12} fill="currentColor" />
           <span>{t.crashRecoveryResume}</span>
         </button>
         <button
           type="button"
+          use:pressable
           onclick={dismissCrashSession}
-          class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl opacity-75 hover:opacity-100"
+          class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl opacity-80 hover:opacity-100"
           style="color: var(--text-muted);"
           title={t.dismissUpdate}
           aria-label={t.dismissUpdate}
@@ -150,36 +151,37 @@
     </div>
   {/if}
 
-  <!-- Hero Paste Box + Drag-and-Drop Multi-Format Importer (#032) -->
+  <!-- Hero Paste Box -->
   <section class="flex flex-col items-center gap-3.5 pt-1 text-center">
     <h1 class="text-2xl font-bold tracking-tight sm:text-[1.75rem]">{t.homeTitle}</h1>
     <div class="mt-1 flex w-full justify-center">
       <LinkInput />
     </div>
-    <div class="flex w-full justify-center">
-      <CbzDropZone onBackupImported={() => void loadHistory(false)} />
-    </div>
   </section>
 
-  <!-- Unified Sort Bar + Random Manga 3D Carousel Launcher -->
-  {#if !loading && history.length > 0}
-    <div in:viewReveal|local={{ duration: 150, y: 4 }} class="flex flex-wrap items-center justify-between gap-2.5">
-      <button
-        type="button"
-        use:pressable
-        onclick={() => randomMangaStore.open("all")}
-        class="gpu-press inline-flex min-h-[38px] items-center gap-2 rounded-xl px-3.5 py-1.5 text-xs font-semibold shadow-sm hover:opacity-95"
-        style="background-color: var(--accent); color: var(--accent-fg);"
-      >
-        <Dices size={15} />
-        <span>{t.randomMangaTrigger}</span>
-      </button>
+  <!-- Unified Action Bar: Random + Import Manga (identical size/3D elevation) + Sort -->
+  <div in:viewReveal|local={{ duration: 150, y: 4 }} class="flex flex-wrap items-center justify-between gap-2.5">
+    <div class="flex flex-wrap items-center gap-2">
+      {#if !loading && history.length > 0}
+        <button
+          type="button"
+          use:pressable
+          onclick={() => randomMangaStore.open("all")}
+          class="btn-3d btn-3d-accent inline-flex min-h-[38px] items-center gap-2 rounded-xl px-3.5 py-1.5 text-xs font-semibold"
+        >
+          <Dices size={15} />
+          <span>{t.randomMangaTrigger}</span>
+        </button>
+      {/if}
+      <CbzDropZone onBackupImported={() => void loadHistory(false)} />
+    </div>
 
+    {#if !loading && history.length > 0}
       <div class="flex flex-wrap items-center justify-end gap-2">
         <span class="text-xs font-medium" style="color: var(--text-muted);">{t.sortByLabel}</span>
         <select
           bind:value={sortField}
-          class="surface-card min-h-[36px] rounded-xl px-3 py-1.5 text-xs font-medium outline-none"
+          class="surface-card min-h-[38px] rounded-xl px-3 py-1.5 text-xs font-medium outline-none"
           style="color: var(--text);"
         >
           <option value="added">{t.sortDateAdded}</option>
@@ -187,19 +189,19 @@
         </select>
         <button
           type="button"
+          use:pressable
           onclick={() => {
             sortDir = sortDir === "desc" ? "asc" : "desc";
           }}
-          class="surface-card gpu-press inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
-          style="color: var(--text);"
+          class="btn-3d btn-3d-surface inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
           title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
         >
           <ArrowDown size={13} class="chevron-rot" data-open={sortDir === "asc" ? "true" : "false"} />
           <span>{sortDir === "desc" ? t.sortDesc : t.sortAsc}</span>
         </button>
       </div>
-    </div>
-  {/if}
+    {/if}
+  </div>
 
   <!-- New chapters section -->
   {#if updatedItems.length > 0}

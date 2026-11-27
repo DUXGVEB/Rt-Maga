@@ -1,5 +1,6 @@
 package com.rtmaga.reader
 
+import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
@@ -126,10 +127,25 @@ class MainActivity : TauriActivity() {
 
   override fun onDestroy() {
     mainHandler.removeCallbacksAndMessages(null)
+    AiRuntimePlugin.hardUnloadActiveInstance()
     webViewRef?.clearCache(true)
     StorageCleaner.purgeTransientPageCache(applicationContext)
     restoreSystemBars()
     super.onDestroy()
+  }
+
+  override fun onTrimMemory(level: Int) {
+    super.onTrimMemory(level)
+    @Suppress("DEPRECATION")
+    if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+      AiRuntimePlugin.hardUnloadActiveInstance()
+      webViewRef?.clearCache(false)
+    }
+  }
+
+  override fun onLowMemory() {
+    super.onLowMemory()
+    AiRuntimePlugin.hardUnloadActiveInstance()
   }
 
   private fun configureCutoutAndWindow() {

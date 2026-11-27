@@ -167,7 +167,7 @@
         type="button"
         onclick={saveLogsToFile}
         disabled={exporting}
-        class="gpu-press inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50"
+        class="btn-3d btn-3d-accent gpu-press inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold disabled:opacity-50"
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         <Download size={12} />

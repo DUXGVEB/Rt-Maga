@@ -1,4 +1,4 @@
-import type { DeviceInsets, FloatingButtonPosition, FloatingEdge } from "./types";
+import type { DeviceInsets, FloatingButtonPosition, FloatingEdge, OneHandedMode } from "./types";
 
 export interface FloatingControlRequest {
   id: string;
@@ -25,6 +25,18 @@ export interface FloatingViewportBounds {
 
 const DEFAULT_BUTTON_SIZE_PX = 42;
 const MIN_GAP_PX = 10;
+const ONE_HANDED_MIN_PCT = 55;
+const ONE_HANDED_MAX_PCT = 88;
+
+/**
+ * Maps an arbitrary vertical percentage (`10..90`) into the ergonomic lower thumb reach
+ * zone (`55..88%`) while preserving relative vertical stacking order.
+ */
+export function mapToOneHandedThumbPercent(rawPercent: number): number {
+  const clamped = Math.max(10, Math.min(90, rawPercent));
+  const t = (clamped - 10) / 80;
+  return Math.round(ONE_HANDED_MIN_PCT + t * (ONE_HANDED_MAX_PCT - ONE_HANDED_MIN_PCT));
+}
 
 /**
  * Computes safe viewport bounds accounting for display cutouts, Android edge gesture strips,
@@ -57,24 +69,36 @@ export function computeFloatingBounds(
  */
 export function resolveFloatingPositions(
   requests: FloatingControlRequest[],
-  bounds: FloatingViewportBounds
+  bounds: FloatingViewportBounds,
+  oneHandedMode: OneHandedMode = "default"
 ): ResolvedFloatingControl[] {
   const byEdge: Record<FloatingEdge, ResolvedFloatingControl[]> = {
     left: [],
     right: [],
   };
 
+  const thumbMode = oneHandedMode === "left" || oneHandedMode === "right";
+
   for (const req of requests) {
     const sizePx = req.sizePx ?? DEFAULT_BUTTON_SIZE_PX;
-    const edge: FloatingEdge = req.position.edge === "left" ? "left" : "right";
-    const pct = Math.max(10, Math.min(90, req.position.verticalPercent)) / 100;
+    const edge: FloatingEdge = thumbMode
+      ? oneHandedMode
+      : req.position.edge === "left"
+        ? "left"
+        : "right";
+    const verticalPercent = thumbMode
+      ? mapToOneHandedThumbPercent(req.position.verticalPercent)
+      : Math.max(10, Math.min(90, req.position.verticalPercent));
+    const pct = verticalPercent / 100;
     const minTop = bounds.topInsetPx;
     const maxTop = Math.max(minTop, bounds.height - bounds.bottomInsetPx - sizePx);
     const desiredTop = Math.round(bounds.height * pct - sizePx / 2);
     const clampedTop = Math.max(minTop, Math.min(maxTop, desiredTop));
     const edgeInset = edge === "left" ? bounds.leftInsetPx : bounds.rightInsetPx;
     const rawOffset = Math.max(8, Math.min(48, req.position.horizontalOffsetPx));
-    const offsetPx = Math.max(edgeInset + 4, rawOffset);
+    const offsetPx = thumbMode
+      ? Math.max(edgeInset + 4, Math.min(18, rawOffset))
+      : Math.max(edgeInset + 4, rawOffset);
 
     byEdge[edge].push({
       id: req.id,

@@ -19,6 +19,7 @@
     staggerDelay,
     viewReveal,
   } from "../lib/motion";
+  import { heroTransitionStore } from "../lib/stores/heroTransition.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
@@ -33,17 +34,22 @@
     CatalogEntryView,
     CatalogFilterQuery,
     CatalogPageView,
+    FilterTagOption,
     FormattedAppError,
+    NavLinkView,
+    SiteFilterSchema,
   } from "../lib/types";
 
   let {
     url,
     sourceId,
     initialCatalog,
+    initialTag,
   }: {
     url: string;
     sourceId?: number;
     initialCatalog?: CatalogPageView;
+    initialTag?: string;
   } = $props();
 
   let catalog = $state<CatalogPageView | null>(null);
@@ -58,15 +64,176 @@
   let verifying = $state(false);
   let loggingIn = $state(false);
   let loadSeq = 0;
+  let lastAppliedTagKey = "";
 
   const t = $derived(settingsStore.t);
 
   const effectiveSourceId = $derived(sourceId ?? catalog?.sourceId ?? undefined);
+  const effectiveInitialTag = $derived(
+    (
+      initialTag ??
+      (router.current.name === "browse" ? router.current.initialTag : undefined) ??
+      ""
+    ).trim()
+  );
   const activeFilterKey = $derived(filterKeyFor(effectiveSourceId, catalog?.url ?? url));
   const activeFilters = $derived(webFilterStore.getQuery(activeFilterKey));
   const activeSchema = $derived(
     catalog?.filterSchema ?? webFilterStore.getSchema(activeFilterKey) ?? emptyFilterSchema()
   );
+
+  function normalizeTagSlug(raw: string): string {
+    return raw
+      .trim()
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9\p{L}]+/gu, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  function findMatchingTag(
+    tags: readonly FilterTagOption[] | undefined,
+    label: string
+  ): FilterTagOption | null {
+    if (!tags || tags.length === 0) return null;
+    const rawLower = label.trim().toLowerCase();
+    const targetSlug = normalizeTagSlug(label);
+    if (!rawLower) return null;
+
+    // 1) Exact case-insensitive match on label or id
+    for (const tag of tags) {
+      if (tag.label.trim().toLowerCase() === rawLower || tag.id.trim().toLowerCase() === rawLower) {
+        return tag;
+      }
+    }
+    // 2) Slug-normalized match on label, id, or trailing URL segment
+    if (targetSlug) {
+      for (const tag of tags) {
+        if (
+          normalizeTagSlug(tag.label) === targetSlug ||
+          normalizeTagSlug(tag.id) === targetSlug
+        ) {
+          return tag;
+        }
+        if (tag.url) {
+          const cleaned = tag.url.replace(/[?#].*$/, "").replace(/\/+$/, "");
+          const tail = cleaned.split("/").pop() ?? "";
+          if (tail && normalizeTagSlug(decodeURIComponent(tail)) === targetSlug) {
+            return tag;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function findMatchingCategory(
+    categories: readonly NavLinkView[] | undefined,
+    label: string
+  ): NavLinkView | null {
+    if (!categories || categories.length === 0) return null;
+    const rawLower = label.trim().toLowerCase();
+    const targetSlug = normalizeTagSlug(label);
+    for (const cat of categories) {
+      if (cat.label.trim().toLowerCase() === rawLower) return cat;
+      if (targetSlug && normalizeTagSlug(cat.label) === targetSlug) return cat;
+    }
+    return null;
+  }
+
+  async function loadWithInitialTag(
+    targetUrl: string,
+    sid: number | undefined,
+    tagLabel: string
+  ) {
+    const seq = ++loadSeq;
+    loading = true;
+    errorState = null;
+    failedCovers = {};
+    const key = filterKeyFor(sid, targetUrl);
+
+    let schema: SiteFilterSchema | null = webFilterStore.getSchema(key);
+    if (!schema || schema.tags.length === 0) {
+      try {
+        schema = await api.getWebFilterSchema(
+          sid !== undefined ? { sourceId: sid } : { url: targetUrl }
+        );
+        if (seq !== loadSeq) return;
+        webFilterStore.setSchema(key, schema);
+      } catch {
+        schema = schema ?? emptyFilterSchema();
+      }
+    }
+
+    const matched = findMatchingTag(schema.tags, tagLabel);
+    if (matched) {
+      const nextFilters: CatalogFilterQuery = {
+        ...emptyFilterQuery(),
+        includeTags: [matched.id],
+      };
+      webFilterStore.setQuery(key, nextFilters);
+      searchQuery = "";
+      activeQuery = null;
+      if (sid !== undefined) {
+        await loadFromSavedSource(sid, null, 1, nextFilters, false);
+        return;
+      }
+      if (matched.url && !schema.includeTagParam && !schema.filterEndpoint) {
+        await loadCatalogUrl(matched.url, 1, emptyFilterQuery(), false);
+        return;
+      }
+      await loadCatalogUrl(targetUrl, 1, nextFilters, false);
+      return;
+    }
+
+    // Fallback when filter schema doesn't expose a matching tag ID yet:
+    // Load base catalog or tag search, and if base catalog brings a fuller schema/category list, apply it cleanly.
+    const fallbackFilters: CatalogFilterQuery = {
+      ...emptyFilterQuery(),
+      query: tagLabel,
+    };
+    webFilterStore.setQuery(key, fallbackFilters);
+    searchQuery = tagLabel;
+    activeQuery = tagLabel;
+
+    let loadedCat: CatalogPageView | null = null;
+    if (sid !== undefined) {
+      loadedCat = await loadFromSavedSource(sid, tagLabel, 1, fallbackFilters, false);
+    } else {
+      loadedCat = await loadCatalogUrl(targetUrl, 1, fallbackFilters, false);
+    }
+    if (!loadedCat || seq !== loadSeq) return;
+
+    const lateTag = findMatchingTag(loadedCat.filterSchema.tags, tagLabel);
+    if (lateTag) {
+      const refinedFilters: CatalogFilterQuery = {
+        ...emptyFilterQuery(),
+        includeTags: [lateTag.id],
+      };
+      webFilterStore.setQuery(filterKeyFor(sid ?? loadedCat.sourceId, loadedCat.url), refinedFilters);
+      searchQuery = "";
+      activeQuery = null;
+      if (sid !== undefined) {
+        await loadFromSavedSource(sid, null, 1, refinedFilters, false);
+      } else if (lateTag.url && !loadedCat.filterSchema.includeTagParam && !loadedCat.filterSchema.filterEndpoint) {
+        await loadCatalogUrl(lateTag.url, 1, emptyFilterQuery(), false);
+      } else {
+        await loadCatalogUrl(loadedCat.url, 1, refinedFilters, false);
+      }
+      return;
+    }
+
+    if (loadedCat.entries.length === 0) {
+      const matchedCat = findMatchingCategory(loadedCat.categories, tagLabel);
+      if (matchedCat) {
+        webFilterStore.resetQuery(filterKeyFor(sid ?? loadedCat.sourceId, loadedCat.url));
+        searchQuery = "";
+        activeQuery = null;
+        await loadCatalogUrl(matchedCat.url, 1, emptyFilterQuery(), false);
+      }
+    }
+  }
 
   async function loadFromSavedSource(
     id: number,
@@ -74,7 +241,7 @@
     page: number,
     filters: CatalogFilterQuery,
     forceRefresh = false
-  ) {
+  ): Promise<CatalogPageView | null> {
     const seq = ++loadSeq;
     loading = true;
     errorState = null;
@@ -91,15 +258,17 @@
         hasActiveFilters(mergedFilters) ? mergedFilters : null,
         forceRefresh
       );
-      if (seq !== loadSeq) return;
+      if (seq !== loadSeq) return null;
       catalog = cat;
       webFilterStore.setSchema(filterKeyFor(id, cat.url), cat.filterSchema);
       activeQuery = query;
       currentPage = cat.pagination.currentPage || page;
       searchQuery = cat.query ?? query ?? "";
+      return cat;
     } catch (err) {
-      if (seq !== loadSeq) return;
+      if (seq !== loadSeq) return null;
       errorState = formatAppError(err, settingsStore.value.language);
+      return null;
     } finally {
       if (seq === loadSeq) {
         loading = false;
@@ -112,11 +281,10 @@
     page = 1,
     filters?: CatalogFilterQuery | null,
     forceRefresh = false
-  ) {
+  ): Promise<CatalogPageView | null> {
     const activeF = filters ?? webFilterStore.getQuery(filterKeyFor(sourceId, targetUrl));
     if (sourceId !== undefined && !targetUrl.includes("/the-loai/") && !targetUrl.includes("/trang-")) {
-      await loadFromSavedSource(sourceId, activeQuery, page, activeF, forceRefresh);
-      return;
+      return loadFromSavedSource(sourceId, activeQuery, page, activeF, forceRefresh);
     }
     const seq = ++loadSeq;
     loading = true;
@@ -129,14 +297,16 @@
         hasActiveFilters(activeF) ? activeF : null,
         forceRefresh
       );
-      if (seq !== loadSeq) return;
+      if (seq !== loadSeq) return null;
       catalog = cat;
       webFilterStore.setSchema(filterKeyFor(cat.sourceId, cat.url), cat.filterSchema);
       currentPage = cat.pagination.currentPage || page;
       searchQuery = cat.query ?? "";
+      return cat;
     } catch (err) {
-      if (seq !== loadSeq) return;
+      if (seq !== loadSeq) return null;
       errorState = formatAppError(err, settingsStore.value.language);
+      return null;
     } finally {
       if (seq === loadSeq) {
         loading = false;
@@ -148,6 +318,16 @@
     const target = url;
     const sid = sourceId;
     const preloaded = initialCatalog;
+    const tag = effectiveInitialTag;
+    if (tag) {
+      const tagKey = `${sid ?? ""}|${target}|${tag.toLowerCase()}`;
+      if (tagKey !== lastAppliedTagKey) {
+        lastAppliedTagKey = tagKey;
+        void loadWithInitialTag(target, sid, tag);
+      }
+      return;
+    }
+    lastAppliedTagKey = "";
     if (preloaded && (preloaded.url === target || sid !== undefined)) {
       catalog = preloaded;
       webFilterStore.setSchema(filterKeyFor(sid ?? preloaded.sourceId, preloaded.url), preloaded.filterSchema);
@@ -164,8 +344,9 @@
     }
   });
 
-  async function openEntry(entry: CatalogEntryView) {
+  async function openEntry(entry: CatalogEntryView, triggerEl?: HTMLElement | null) {
     if (openingEntryUrl) return;
+    const coverEl = triggerEl?.querySelector<HTMLElement>("[data-hero-cover-src]") ?? null;
     openingEntryUrl = entry.url;
     try {
       const res = await api.resolveUrl(entry.url);
@@ -175,6 +356,11 @@
         if (res.startAt) {
           router.goReader(res.manga.id, res.startAt.url);
         } else {
+          heroTransitionStore.captureFromElement(
+            coverEl,
+            res.manga.coverToken ?? entry.coverToken,
+            res.manga.id
+          );
           router.goManga(res.manga.id);
         }
       }
@@ -366,10 +552,11 @@
   <div class="flex flex-wrap items-center justify-between gap-2">
     <button
       type="button"
+      use:pressable
       onclick={() => {
         if (!router.goBack()) router.goHome();
       }}
-      class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm hover:opacity-80"
+      class="btn-3d btn-3d-subtle inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-sm font-medium"
       style="color: var(--text-muted);"
     >
       <ArrowLeft size={16} />
@@ -389,10 +576,10 @@
       {/if}
       <button
         type="button"
+        use:pressable
         disabled={loading}
         onclick={() => void loadCatalogUrl(catalog?.url ?? url, currentPage, activeFilters, true)}
-        class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
-        style="background-color: var(--surface); border-color: var(--border);"
+        class="btn-3d btn-3d-surface inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
       >
         <RefreshCw size={13} class={loading ? "animate-spin" : ""} />
         <span>{t.retry}</span>
@@ -433,9 +620,9 @@
           />
           <button
             type="submit"
+            use:pressable
             disabled={(effectiveSourceId === undefined && !searchQuery.trim()) || loading}
-            class="gpu-press shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold disabled:opacity-45"
-            style="background-color: var(--accent); color: var(--accent-fg);"
+            class="btn-3d btn-3d-accent shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold disabled:opacity-45"
           >
             {t.browseSearchBtn}
           </button>
@@ -451,8 +638,9 @@
         {#each catalog.categories.slice(0, 28) as cat (cat.url)}
           <button
             type="button"
+            use:pressable
             onclick={() => navigateCategory(cat.url)}
-            class="gpu-press rounded-lg border px-2.5 py-1 text-xs font-medium hover:brightness-95"
+            class="pill-3d rounded-lg border px-2.5 py-1 text-xs font-medium"
             style="background-color: {cat.url === catalog.url
               ? 'var(--accent-soft)'
               : 'var(--surface-subtle)'}; border-color: {cat.url === catalog.url
@@ -518,12 +706,13 @@
             type="button"
             use:pressable
             disabled={openingEntryUrl !== null}
-            onclick={() => void openEntry(entry)}
+            onclick={(e) => void openEntry(entry, e.currentTarget)}
             class="card-cq card-contain card-press surface-card group flex flex-col overflow-hidden rounded-2xl text-left disabled:opacity-70"
             class:stagger-item={animateStagger}
             style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, catalog.entries.length)}ms;` : undefined}
           >
             <div
+              data-hero-cover-src
               class="relative aspect-[3/4] w-full overflow-hidden"
               style="background-color: var(--surface-subtle);"
             >
@@ -611,10 +800,10 @@
       <div class="flex flex-wrap items-center justify-center gap-2 pt-2">
         <button
           type="button"
+          use:pressable
           disabled={!canGoPrev || loading}
           onclick={() => goToPage(currentPage - 1)}
-          class="gpu-press inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-medium disabled:opacity-40"
-          style="background-color: var(--surface); border-color: var(--border);"
+          class="btn-3d btn-3d-surface inline-flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-40"
         >
           <ChevronLeft size={14} />
           <span>{t.browsePrevPage}</span>
@@ -629,12 +818,12 @@
                 {@const active = item === currentPage}
                 <button
                   type="button"
+                  use:pressable
                   disabled={loading}
                   onclick={() => goToPage(item)}
-                  class="gpu-press min-w-8 rounded-lg border px-2.5 py-1.5 text-xs font-semibold tabular-nums"
-                  style="border-color: {active ? 'var(--accent)' : 'var(--border)'}; background-color: {active
-                    ? 'var(--accent)'
-                    : 'var(--surface)'}; color: {active ? 'var(--accent-fg)' : 'var(--text)'};"
+                  class="btn-3d min-w-8 rounded-lg px-2.5 py-1.5 text-xs font-semibold tabular-nums {active
+                    ? 'btn-3d-accent'
+                    : 'btn-3d-surface'}"
                 >
                   {item}
                 </button>
@@ -649,10 +838,10 @@
 
         <button
           type="button"
+          use:pressable
           disabled={!canGoNext || loading}
           onclick={() => goToPage(currentPage + 1)}
-          class="gpu-press inline-flex items-center gap-1 rounded-xl border px-3 py-2 text-xs font-medium disabled:opacity-40"
-          style="background-color: var(--surface); border-color: var(--border);"
+          class="btn-3d btn-3d-surface inline-flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-40"
         >
           <span>{t.browseNextPage}</span>
           <ChevronRight size={14} />
@@ -678,9 +867,9 @@
             />
             <button
               type="submit"
+              use:pressable
               disabled={loading || !jumpPageInput.trim()}
-              class="gpu-press rounded-lg px-2 py-1 text-[11px] font-semibold disabled:opacity-45"
-              style="background-color: var(--accent); color: var(--accent-fg);"
+              class="btn-3d btn-3d-accent rounded-lg px-2 py-1 text-[11px] font-semibold disabled:opacity-45"
             >
               {t.browseJumpGoBtn}
             </button>

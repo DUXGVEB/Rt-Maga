@@ -95,6 +95,13 @@ export const DEFAULT_SETTINGS: Settings = {
     },
     autoDimInReader: true,
   },
+  accessibility: {
+    oneHandedMode: "default",
+    bubbleAutoZoom: false,
+    aiTranslationOverlay: false,
+    translationModelTier: "lite",
+    firstAiPromptSeen: false,
+  },
   updates: {
     enabled: true,
     intervalHours: 6,
@@ -195,6 +202,10 @@ function mergeSettings(raw: Partial<Settings>): Settings {
         ...(rawFloating.orientationLock ?? {}),
       },
     },
+    accessibility: {
+      ...DEFAULT_SETTINGS.accessibility,
+      ...(raw.accessibility ?? {}),
+    },
     updates: { ...DEFAULT_SETTINGS.updates, ...(raw.updates ?? {}) },
     sources: { ...DEFAULT_SETTINGS.sources, ...(raw.sources ?? {}) },
     doh: { ...DEFAULT_SETTINGS.doh, ...rawDoh },
@@ -236,7 +247,8 @@ class SettingsStore {
     const activeAccentHex =
       resolved === "dark" ? settings.ui.darkAccent : settings.ui.lightAccent;
     const tokens = computeAccentTokens(activeAccentHex, resolved);
-    const key = `${resolved}|${settings.language}|${tokens.accent}`;
+    const oneHanded = settings.accessibility?.oneHandedMode ?? "default";
+    const key = `${resolved}|${settings.language}|${tokens.accent}|${oneHanded}`;
     this.resolvedTheme = resolved;
     if (key === this.lastAppearanceKey) return;
     this.lastAppearanceKey = key;
@@ -244,6 +256,7 @@ class SettingsStore {
     const root = document.documentElement;
     root.setAttribute("data-theme", resolved);
     root.setAttribute("lang", settings.language);
+    root.setAttribute("data-one-handed", oneHanded);
     root.style.setProperty("--accent", tokens.accent);
     root.style.setProperty("--accent-hover", tokens.accentHover);
     root.style.setProperty("--accent-soft", tokens.accentSoft);

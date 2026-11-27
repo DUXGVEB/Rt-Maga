@@ -23,6 +23,7 @@ flate2.workspace = true
 hayro.workspace = true
 hmac.workspace = true
 http.workspace = true
+image.workspace = true
 imagesize.workspace = true
 infer.workspace = true
 lz4_flex.workspace = true
@@ -53,6 +54,7 @@ url.workspace = true
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 mangacore = { path = "../crates/mangacore", features = ["headless"] }
+ort.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 mangacore = { path = "../crates/mangacore", default-features = false }

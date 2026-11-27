@@ -50,7 +50,8 @@ pub fn run() {
     #[cfg(target_os = "android")]
     let builder = builder
         .plugin(android_installer::init_plugin())
-        .plugin(android_env::init_plugin());
+        .plugin(android_env::init_plugin())
+        .plugin(android_env::init_ai_plugin());
 
     let builder = builder
         .register_asynchronous_uri_scheme_protocol("img", |ctx, request, responder| {
@@ -161,6 +162,14 @@ pub fn run() {
             commands::download_reader_image,
             commands::set_manga_cover_from_page,
             commands::detect_chapter_layout,
+            commands::ai_get_status,
+            commands::ai_set_tier,
+            commands::ai_download_tier2,
+            commands::ai_cancel_download,
+            commands::ai_delete_tier2,
+            commands::ai_translate_page,
+            commands::ai_cancel_jobs,
+            commands::ai_hard_unload_and_purge,
             commands::build_feedback_report,
             commands::save_feedback_report_file,
         ]);
@@ -192,7 +201,13 @@ fn handle_run_event(handle: &tauri::AppHandle, event: &tauri::RunEvent) {
         let images = state.images.clone();
         let chapters = state.chapters.clone();
         let catalogs = state.catalogs.clone();
+        let state_ref = Arc::clone(&state);
+        let handle_clone = handle.clone();
         let _ = tauri::async_runtime::block_on(async move {
+            let _ = state_ref
+                .ai
+                .hard_unload_and_purge(Some(&handle_clone))
+                .await;
             chapters.invalidate_all();
             catalogs.invalidate_all();
             images.clear_all_chapter_pages().await

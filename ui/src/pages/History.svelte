@@ -12,6 +12,7 @@
     staggerDelay,
     viewReveal,
   } from "../lib/motion";
+  import { heroTransitionStore } from "../lib/stores/heroTransition.svelte";
   import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -52,9 +53,17 @@
     void load(!libraryCache.historyLoaded);
   });
 
-  function resumeFromCover(item: HistoryItemView) {
+  function goMangaWithHero(item: HistoryItemView, triggerEl?: HTMLElement | null) {
+    const coverEl =
+      triggerEl?.closest("[data-hero-card]")?.querySelector<HTMLElement>("[data-hero-cover-src]") ??
+      null;
+    heroTransitionStore.captureFromElement(coverEl, item.coverToken, item.mangaId);
+    router.goManga(item.mangaId);
+  }
+
+  function resumeFromCover(item: HistoryItemView, triggerEl?: HTMLElement | null) {
     if (isTachibkCatalogSite(item.site) || isMetadataOnlyChapterUrl(item.chapterUrl)) {
-      router.goManga(item.mangaId);
+      goMangaWithHero(item, triggerEl);
       return;
     }
     if (item.isCompleted && !item.hasNew) {
@@ -148,19 +157,19 @@
         <div in:popoverPop|local={{ duration: 150, y: 0 }} class="flex items-center gap-2">
           <button
             type="button"
+            use:pressable
             onclick={clearAll}
-            class="gpu-press min-h-[38px] rounded-xl px-3.5 py-1.5 text-xs font-semibold text-white"
-            style="background-color: var(--danger);"
+            class="btn-3d btn-3d-danger min-h-[38px] rounded-xl px-3.5 py-1.5 text-xs font-semibold"
           >
             {t.confirmClear}
           </button>
           <button
             type="button"
+            use:pressable
             onclick={() => {
               confirmingClear = false;
             }}
-            class="gpu-press min-h-[38px] rounded-xl border px-3.5 py-1.5 text-xs font-medium"
-            style="border-color: var(--border); background-color: var(--surface);"
+            class="btn-3d btn-3d-surface min-h-[38px] rounded-xl px-3.5 py-1.5 text-xs font-medium"
           >
             {t.cancel}
           </button>
@@ -169,10 +178,11 @@
         <span in:popoverPop|local={{ duration: 140, y: 0 }} class="inline-flex">
           <button
             type="button"
+            use:pressable
             onclick={() => {
               confirmingClear = true;
             }}
-            class="surface-card gpu-press inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium"
+            class="btn-3d btn-3d-surface inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-medium"
             style="color: var(--danger);"
           >
             <Trash2 size={14} />
@@ -214,6 +224,7 @@
             <div
               animate:flip={{ duration: flipDuration(175, group.list.length) }}
               out:itemExit|local
+              data-hero-card
               class="card-contain surface-card flex items-center gap-3.5 rounded-2xl p-3 sm:gap-4"
               class:stagger-item={animateStagger}
               style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 18, 180, group.list.length)}ms;` : undefined}
@@ -221,7 +232,8 @@
               <button
                 type="button"
                 use:pressable
-                onclick={() => resumeFromCover(item)}
+                data-hero-cover-src
+                onclick={(e) => resumeFromCover(item, e.currentTarget)}
                 title={completedOnly ? t.toastMangaCompletedNoResume : t.coverTapResumeHint}
                 class="gpu-press h-16 w-12 shrink-0 cursor-pointer overflow-hidden rounded-xl hover:scale-[1.03]"
                 style="background-color: var(--surface-subtle);"
@@ -248,7 +260,7 @@
                 <div class="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onclick={() => router.goManga(item.mangaId)}
+                    onclick={(e) => goMangaWithHero(item, e.currentTarget)}
                     class="truncate text-left text-sm font-semibold hover:underline"
                   >
                     {item.title}
@@ -297,16 +309,17 @@
               <div class="flex shrink-0 items-center gap-1.5">
                 <button
                   type="button"
-                  onclick={() => router.goManga(item.mangaId)}
-                  class="gpu-press min-h-[38px] rounded-xl border px-3 py-1.5 text-xs font-medium"
-                  style="border-color: var(--border); background-color: var(--surface-subtle);"
+                  use:pressable
+                  onclick={(e) => goMangaWithHero(item, e.currentTarget)}
+                  class="btn-3d btn-3d-subtle min-h-[38px] rounded-xl px-3 py-1.5 text-xs font-medium"
                 >
                   {t.chaptersBtn}
                 </button>
                 <button
                   type="button"
+                  use:pressable
                   onclick={(e) => removeOne(item.mangaId, e)}
-                  class="gpu-press flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl opacity-70 hover:opacity-100"
+                  class="btn-3d btn-3d-subtle flex min-h-[38px] min-w-[38px] items-center justify-center rounded-xl opacity-85 hover:opacity-100"
                   style="color: var(--danger);"
                   title={t.removeHistoryTooltip}
                   aria-label={t.removeHistoryTooltip}

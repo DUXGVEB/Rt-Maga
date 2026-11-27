@@ -15,7 +15,7 @@
     Settings,
     Sun,
   } from "lucide-svelte";
-  import logoUrl from "../../assets/logo.png";
+  import RtMagaLogo from "./RtMagaLogo.svelte";
   import { badgePop, viewReveal } from "../motion";
   import { appReleaseStore } from "../stores/appRelease.svelte";
   import { deviceEnv } from "../stores/deviceEnv.svelte";
@@ -83,13 +83,10 @@
         title="RtMaga"
         aria-label="RtMaga"
       >
-        <img src={logoUrl} alt="RtMaga" class="h-8 w-8 shrink-0 rounded-xl shadow-sm" />
+        <RtMagaLogo size={32} class="shrink-0" />
         {#if !isRailMode}
           <div in:viewReveal|local={{ duration: 140, y: 0 }} class="min-w-0 leading-tight">
             <div class="truncate text-sm font-bold tracking-tight">RtMaga</div>
-            <div class="truncate text-[10px] font-medium" style="color: var(--text-muted);">
-              Offline Reader
-            </div>
           </div>
         {/if}
       </button>

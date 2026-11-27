@@ -2,6 +2,20 @@
 
 All notable changes to **RtMaga** are documented in this file.
 
+## [3.3.0] - 2026-11-27
+
+### Added & Improved
+- **Hybrid 2-Tier On-Device AI Manga Translation & Speech-Bubble Detection:**
+  - **Tier 1 (`Lite`, bundled):** On-device `PP-OCRv6_tiny` ONNX detection/recognition (with Android ML Kit translation & Windows ONNX DirectML/CPU fallback), kept strictly under the 35 MB bundle budget and verified with SHA-256 checksums.
+  - **Tier 2 (`Qwen3-VL-2B`, optional download):** User-initiated download (`Qwen3-VL-2B-Instruct-IQ4_XS.gguf` + `mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf`) with verified SHA-256 digests, Vulkan GPU / CPU offload, `n_ctx=2048`, Flash Attention, Q8_0 KV cache, stateless per-page KV reset, and immediate hard-unload + transient AI cache purge on disable, reader exit, or app exit.
+  - Added Reader AI overlay, floating AI control pill, first-use model choice modal, Settings -> Translation Model management panel, and Android native `ai-runtime` plugin + NDK JNI bridge.
+- **Persistent Cover Store:**
+  - Manga covers are now stored in `<data_dir>/covers/<xx>/<sha256>` keyed by canonical URL, shared across Home, Sources, Bookmarks, and History, and immune to LRU page-cache eviction and cache clears.
+- **Fail-Fast Backup & Layout Classification:**
+  - Hardened `.rtmaga` and `.tachibk` backup/import flows with stricter validation and layout classification migration (`0009_layout_classification.sql`).
+- **3D UI, Motion System & Accessibility:**
+  - Refined 3D depth carousel math, GPU-friendly adaptive motion system, hero transitions, brand logo component, and reader accessibility controls.
+
 ## [2.5.2] - 2026-11-25
 
 ### Fixed

@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  computeFloatingBounds,
+  mapToOneHandedThumbPercent,
+  resolveFloatingPositions,
+} from "../src/lib/floatingLayout.ts";
+import {
   clampZoomPan,
   computeAnchoredZoom,
+  computeBubbleZoom,
   computeHorizontalRtlSlideOffset,
   computeHorizontalSlideOffset,
   computeHorizontalTrackMetrics,
@@ -10,6 +16,7 @@ import {
   computeSeamlessTrackTranslateX,
   computeVerticalSpeedMultiplier,
   detectWebtoonFromDimensions,
+  mapNormalizedBboxToRect,
   partitionPages,
 } from "../src/lib/readerLayout.ts";
 
@@ -84,7 +91,7 @@ test("partitionPages groups spreads without dummy slots", () => {
   assert.equal(groups[2].items[0].pageIdx, 4);
 });
 
-test("detectWebtoonFromDimensions distinguishes tall webtoons from standard manga", () => {
+test("detectWebtoonFromDimensions distinguishes tall webtoons from standard manga without single-banner false positives", () => {
   const tall = detectWebtoonFromDimensions([
     { index: 0, width: 800, height: 3200 },
     { index: 1, width: 800, height: 2800 },
@@ -92,6 +99,7 @@ test("detectWebtoonFromDimensions distinguishes tall webtoons from standard mang
   ]);
   assert.equal(tall.decided, true);
   assert.equal(tall.isWebtoon, true);
+  assert.equal(tall.detectedLayout, "webtoon");
 
   const standard = detectWebtoonFromDimensions([
     { index: 0, width: 1000, height: 1450 },
@@ -100,15 +108,27 @@ test("detectWebtoonFromDimensions distinguishes tall webtoons from standard mang
   ]);
   assert.equal(standard.decided, true);
   assert.equal(standard.isWebtoon, false);
+  assert.equal(standard.detectedLayout, "manga");
 
-  // Tall strip >= 2.2 with matching width continuity classifies as Webtoon.
-  const stripContinuity = detectWebtoonFromDimensions([
+  // Single tall banner sharing width inside standard manga MUST NOT false-positive as Webtoon!
+  const singleTallBannerSameWidth = detectWebtoonFromDimensions([
     { index: 0, width: 800, height: 1200 },
     { index: 1, width: 800, height: 1300 },
     { index: 2, width: 800, height: 2400 },
   ]);
-  assert.equal(stripContinuity.decided, true);
-  assert.equal(stripContinuity.isWebtoon, true);
+  assert.equal(singleTallBannerSameWidth.decided, true);
+  assert.equal(singleTallBannerSameWidth.isWebtoon, false);
+  assert.equal(singleTallBannerSameWidth.detectedLayout, "manga");
+
+  // Cover page + 2 consecutive tall strips sharing width continuity classifies as Webtoon.
+  const consecutiveStrips = detectWebtoonFromDimensions([
+    { index: 0, width: 800, height: 1200 },
+    { index: 1, width: 800, height: 2200 },
+    { index: 2, width: 800, height: 2500 },
+  ]);
+  assert.equal(consecutiveStrips.decided, true);
+  assert.equal(consecutiveStrips.isWebtoon, true);
+  assert.equal(consecutiveStrips.detectedLayout, "webtoon");
 
   // Mismatched-width tall credits banner inside standard manga stays Manga.
   const mangaWithBanner = detectWebtoonFromDimensions([
@@ -118,6 +138,7 @@ test("detectWebtoonFromDimensions distinguishes tall webtoons from standard mang
   ]);
   assert.equal(mangaWithBanner.decided, true);
   assert.equal(mangaWithBanner.isWebtoon, false);
+  assert.equal(mangaWithBanner.detectedLayout, "manga");
 });
 
 test("computeHorizontalTrackMetrics preserves center fit and visible side peeks across viewports", () => {
@@ -194,4 +215,73 @@ test("computeSeamlessTrackTranslateX locks arbitrary-width joined slides dead ce
   assert.equal(720 + 760 / 2 + tx, vpW / 2);
   // Verify dragOffsetPx shifts track 1:1.
   assert.equal(computeSeamlessTrackTranslateX(vpW, 720, 760, 85), -55);
+});
+
+test("computeBubbleZoom maps [0..1000] bbox cleanly and centers bubble in viewport", () => {
+  const imageRect = { left: 100, top: 0, width: 800, height: 1000 };
+  const mapped = mapNormalizedBboxToRect([400, 400, 600, 600], imageRect);
+  assert.deepEqual(mapped, { left: 420, top: 400, width: 160, height: 200 });
+
+  const vpW = 1000;
+  const vpH = 800;
+  const content = { left: 100, top: 0, width: 800, height: 1000 };
+  const zoomed = computeBubbleZoom([400, 350, 600, 550], imageRect, vpW, vpH, content);
+
+  assert.ok(zoomed.scale >= 1.6 && zoomed.scale <= 3.2, `unexpected scale ${zoomed.scale}`);
+  // Center of bubble (500, 450) should map dead-center into viewport (500, 400).
+  const mappedCenterX = zoomed.bubbleCenterX * zoomed.scale + zoomed.tx;
+  const mappedCenterY = zoomed.bubbleCenterY * zoomed.scale + zoomed.ty;
+  assert.ok(Math.abs(mappedCenterX - vpW / 2) < 1, `expected X near ${vpW / 2}, got ${mappedCenterX}`);
+  assert.ok(Math.abs(mappedCenterY - vpH / 2) < 1, `expected Y near ${vpH / 2}, got ${mappedCenterY}`);
+});
+
+test("resolveFloatingPositions mirrors and remaps all FABs into lower thumb zone in One-Handed mode", () => {
+  const bounds = computeFloatingBounds(
+    390,
+    844,
+    {
+      cutoutTop: 24,
+      cutoutBottom: 16,
+      cutoutLeft: 0,
+      cutoutRight: 0,
+      gestureLeft: 12,
+      gestureRight: 12,
+      imeBottom: 0,
+    },
+    { hasBottomNav: true, topToolbarHeightPx: 56 }
+  );
+
+  const requests = [
+    { id: "orientationLock", position: { edge: "right" as const, verticalPercent: 25, horizontalOffsetPx: 16 } },
+    { id: "readerSettings", position: { edge: "right" as const, verticalPercent: 68, horizontalOffsetPx: 16 } },
+    { id: "scrollToTop", position: { edge: "left" as const, verticalPercent: 82, horizontalOffsetPx: 16 } },
+  ];
+
+  // Default mode preserves each control's configured edge.
+  const defaultPlaced = resolveFloatingPositions(requests, bounds, "default");
+  assert.equal(defaultPlaced.find((p) => p.id === "scrollToTop")?.edge, "left");
+  assert.equal(defaultPlaced.find((p) => p.id === "readerSettings")?.edge, "right");
+
+  // Left one-handed mode moves ALL controls to left edge within lower 55%..88% thumb zone without overlap.
+  const leftPlaced = resolveFloatingPositions(requests, bounds, "left").sort((a, b) => a.topPx - b.topPx);
+  assert.equal(leftPlaced.length, 3);
+  for (const item of leftPlaced) {
+    assert.equal(item.edge, "left");
+    const centerPct = ((item.topPx + item.sizePx / 2) / bounds.height) * 100;
+    assert.ok(centerPct >= 52 && centerPct <= 90, `expected thumb reach %, got ${centerPct.toFixed(1)}%`);
+  }
+  for (let i = 1; i < leftPlaced.length; i += 1) {
+    assert.ok(
+      leftPlaced[i].topPx >= leftPlaced[i - 1].topPx + leftPlaced[i - 1].sizePx + 10,
+      "stacked one-handed buttons must not overlap"
+    );
+  }
+
+  // Right one-handed mode moves ALL controls to right edge.
+  const rightPlaced = resolveFloatingPositions(requests, bounds, "right");
+  assert.ok(rightPlaced.every((p) => p.edge === "right"));
+
+  // Helper bounds check.
+  assert.equal(mapToOneHandedThumbPercent(10), 55);
+  assert.equal(mapToOneHandedThumbPercent(90), 88);
 });

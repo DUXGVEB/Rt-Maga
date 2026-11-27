@@ -16,15 +16,18 @@
     X,
   } from "lucide-svelte";
   import { onMount } from "svelte";
-  import logoUrl from "./assets/logo.png";
   import { api } from "./lib/api";
+  import AiFirstUseModal from "./lib/components/AiFirstUseModal.svelte";
   import FloatingControls from "./lib/components/FloatingControls.svelte";
+  import HeroTransitionLayer from "./lib/components/HeroTransitionLayer.svelte";
   import NotificationDrawer from "./lib/components/NotificationDrawer.svelte";
   import RandomMangaModal from "./lib/components/RandomMangaModal.svelte";
+  import RtMagaLogo from "./lib/components/RtMagaLogo.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import ToastContainer from "./lib/components/ToastContainer.svelte";
   import UpdatePromptModal from "./lib/components/UpdatePromptModal.svelte";
   import { backdropFade, badgePop, popoverPop, viewReveal } from "./lib/motion";
+  import { aiTranslateStore } from "./lib/stores/aiTranslate.svelte";
   import { appReleaseStore } from "./lib/stores/appRelease.svelte";
   import { deviceEnv } from "./lib/stores/deviceEnv.svelte";
   import { notificationsStore } from "./lib/stores/notifications.svelte";
@@ -50,6 +53,7 @@
     router.installBackBridge();
     void deviceEnv.init();
     void settingsStore.init();
+    void aiTranslateStore.init();
     void updatesStore.init();
     void notificationsStore.init();
     void appReleaseStore.init();
@@ -116,6 +120,7 @@
   const t = $derived(settingsStore.t);
   const activeScreen = $derived<FloatingScreenKey>(router.current.name);
   const navOrder = $derived(normalizeNavOrder(settingsStore.value.ui.navOrder));
+  const oneHandedMode = $derived(settingsStore.value.accessibility.oneHandedMode);
   const routeViewKey = $derived(() => {
     const r = router.current;
     if (r.name === "manga") return `manga:${r.id}`;
@@ -160,10 +165,12 @@
   {/if}
 
   <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-    <!-- Mobile Top App Bar: frosted Option 1 Sumi Studio header with quick Updates, Theme & Notifications -->
+    <!-- Mobile Top App Bar: frosted Sumi Studio header with One-Handed thumb bias -->
     {#if !isReader}
       <header
-        class="glass-chrome z-20 flex shrink-0 items-center justify-between border-b md:hidden"
+        class="glass-chrome z-20 flex shrink-0 items-center justify-between border-b md:hidden {oneHandedMode === 'left'
+          ? 'flex-row-reverse'
+          : ''}"
         style="padding-top: calc(0.45rem + var(--safe-top)); padding-bottom: 0.45rem; padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); border-color: var(--border);"
       >
         <button
@@ -171,13 +178,13 @@
           onclick={() => router.goHome()}
           class="gpu-press flex min-h-[44px] items-center gap-2.5 rounded-xl px-1.5 text-left"
         >
-          <img src={logoUrl} alt="RtMaga" class="h-7 w-7 rounded-xl shadow-sm" />
+          <RtMagaLogo size={28} />
           <div class="leading-tight">
             <div class="text-sm font-bold tracking-tight">RtMaga</div>
           </div>
         </button>
 
-        <div class="flex items-center gap-0.5">
+        <div class="flex items-center gap-0.5 {oneHandedMode === 'left' ? 'flex-row-reverse' : ''}">
           <button
             type="button"
             onclick={() => randomMangaStore.open(router.current.name === "bookmarks" ? "bookmarks" : "all")}
@@ -349,8 +356,16 @@
     <!-- Compact Portrait Bottom Navigation (< 768px): ergonomic >=44x44px thumb targets -->
     <nav
       aria-label={t.navOrderSection}
-      class="glass-chrome fixed right-0 bottom-0 left-0 z-20 flex items-center justify-around border-t px-1.5 pt-1.5 md:hidden"
-      style="padding-bottom: max(0.45rem, var(--safe-bottom)); padding-left: max(0.45rem, var(--safe-left)); padding-right: max(0.45rem, var(--safe-right)); border-color: var(--border);"
+      class="glass-chrome fixed right-0 bottom-0 left-0 z-20 flex items-center border-t pt-1.5 md:hidden {oneHandedMode === 'left'
+        ? 'justify-start pr-8 pl-1.5'
+        : oneHandedMode === 'right'
+          ? 'justify-end pr-1.5 pl-8'
+          : 'justify-around px-1.5'}"
+      style="padding-bottom: max(0.45rem, var(--safe-bottom)); padding-left: {oneHandedMode === 'right'
+        ? 'max(2rem, var(--safe-left))'
+        : 'max(0.45rem, var(--safe-left))'}; padding-right: {oneHandedMode === 'left'
+        ? 'max(2rem, var(--safe-right))'
+        : 'max(0.45rem, var(--safe-right))'}; border-color: var(--border);"
     >
       {#each navOrder as dest (dest)}
         {#if dest === "home"}
@@ -454,6 +469,8 @@
   {/if}
 
   <NotificationDrawer />
+  <HeroTransitionLayer />
+  <AiFirstUseModal />
 
   {#if !isReader}
     <RandomMangaModal />

@@ -31,6 +31,7 @@ pub(crate) struct MangaRow {
     pub(crate) reader_mode_override: Option<String>,
     pub(crate) reader_settings_json: Option<String>,
     pub(crate) detected_webtoon: i64,
+    pub(crate) detected_layout: Option<String>,
     pub(crate) hidden: i64,
     pub(crate) source_id: Option<String>,
     pub(crate) canonical_url: Option<String>,
@@ -579,7 +580,30 @@ impl Database {
     ///
     /// Returns [`AppError::Db`] on SQLite failure.
     pub(crate) async fn mark_manga_detected_webtoon(&self, manga_id: i64) -> Result<(), AppError> {
-        sqlx::query("UPDATE manga SET detected_webtoon = 1 WHERE id = ?")
+        self.set_manga_detected_layout(manga_id, Some("webtoon"))
+            .await
+    }
+
+    /// Persists the multi-signal layout classification (`Some("manga")`, `Some("webtoon")`, or
+    /// `None` for undecided) while keeping the legacy `detected_webtoon` flag synchronized.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Db`] on SQLite failure.
+    pub(crate) async fn set_manga_detected_layout(
+        &self,
+        manga_id: i64,
+        layout: Option<&str>,
+    ) -> Result<(), AppError> {
+        let normalized = layout.and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+            "manga" => Some("manga"),
+            "webtoon" => Some("webtoon"),
+            _ => None,
+        });
+        let is_webtoon = i64::from(normalized == Some("webtoon"));
+        sqlx::query("UPDATE manga SET detected_layout = ?, detected_webtoon = ? WHERE id = ?")
+            .bind(normalized)
+            .bind(is_webtoon)
             .bind(manga_id)
             .execute(self.pool())
             .await?;

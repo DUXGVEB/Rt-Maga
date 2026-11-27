@@ -4487,6 +4487,328 @@ const V10_DICTIONARIES: Record<Language, V10Dictionary> = {
   th: V10_EN,
 };
 
+interface V11Dictionary {
+  settingsTabAccessibility: string;
+  a11yOneHandedTitle: string;
+  a11yOneHandedDefault: string;
+  a11yOneHandedLeft: string;
+  a11yOneHandedRight: string;
+  a11yBubbleZoomTitle: string;
+  a11yAiTranslateTitle: string;
+  a11yAiToolsTitle: string;
+  a11yModelSectionTitle: string;
+  a11yModelLiteTitle: string;
+  a11yModelLiteBadge: string;
+  a11yModelTier2Title: string;
+  a11yModelTier2Badge: string;
+  a11yStatusReady: string;
+  a11yStatusNotDownloaded: string;
+  a11yStatusDownloading: string;
+  a11yDownloadBtn: string;
+  a11yCancelDownloadBtn: string;
+  a11yDeleteModelBtn: string;
+  a11yShortcutLabel: string;
+  a11yFirstUseTitle: string;
+  a11yFirstUseBody: string;
+  a11yFirstUseUseLite: string;
+  a11yFirstUseDownloadTier2: string;
+  a11yConfirmDeleteTitle: string;
+  a11yDownloadCompleteToast: string;
+  a11yDownloadCancelledToast: string;
+  a11yModelDeletedToast: string;
+  a11yTranslatingStatus: string;
+  a11yDetectingBubblesStatus: string;
+  a11yBubbleResetZoom: string;
+  a11yAutoMangaBadge: string;
+  a11yToastMangaDetected: string;
+  importMangaBtn: string;
+  importFilesOption: string;
+  importFolderOption: string;
+}
+
+const V11_EN: V11Dictionary = {
+  settingsTabAccessibility: "Accessibility",
+  a11yOneHandedTitle: "One-Handed Mode",
+  a11yOneHandedDefault: "Default",
+  a11yOneHandedLeft: "Left",
+  a11yOneHandedRight: "Right",
+  a11yBubbleZoomTitle: "Bubble Auto-Zoom",
+  a11yAiTranslateTitle: "AI Translation Overlay",
+  a11yAiToolsTitle: "AI Reader",
+  a11yModelSectionTitle: "Translation Model",
+  a11yModelLiteTitle: "Lite (Built-in)",
+  a11yModelLiteBadge: "Lite",
+  a11yModelTier2Title: "Qwen3-VL-2B (High Accuracy)",
+  a11yModelTier2Badge: "Qwen3-VL-2B",
+  a11yStatusReady: "Ready",
+  a11yStatusNotDownloaded: "Not Downloaded",
+  a11yStatusDownloading: "Downloading",
+  a11yDownloadBtn: "Download",
+  a11yCancelDownloadBtn: "Cancel",
+  a11yDeleteModelBtn: "Delete",
+  a11yShortcutLabel: "Accessibility & AI",
+  a11yFirstUseTitle: "AI Translation Overlay",
+  a11yFirstUseBody: "Use Built-in Lite immediately, or download Qwen3-VL-2B for higher accuracy.",
+  a11yFirstUseUseLite: "Use Lite (Built-in)",
+  a11yFirstUseDownloadTier2: "Download Qwen3-VL-2B",
+  a11yConfirmDeleteTitle: "Delete Qwen3-VL-2B?",
+  a11yDownloadCompleteToast: "Qwen3-VL-2B ready",
+  a11yDownloadCancelledToast: "Download cancelled",
+  a11yModelDeletedToast: "Qwen3-VL-2B deleted",
+  a11yTranslatingStatus: "Translating…",
+  a11yDetectingBubblesStatus: "Detecting bubbles…",
+  a11yBubbleResetZoom: "Reset zoom",
+  a11yAutoMangaBadge: "Manga",
+  a11yToastMangaDetected: "Manga layout applied",
+  importMangaBtn: "Import Manga",
+  importFilesOption: "Files",
+  importFolderOption: "Folder",
+};
+
+const V11_VI: V11Dictionary = {
+  settingsTabAccessibility: "Trợ năng",
+  a11yOneHandedTitle: "Chế độ một tay",
+  a11yOneHandedDefault: "Mặc định",
+  a11yOneHandedLeft: "Trái",
+  a11yOneHandedRight: "Phải",
+  a11yBubbleZoomTitle: "Phóng to khung thoại",
+  a11yAiTranslateTitle: "Lớp dịch AI",
+  a11yAiToolsTitle: "AI Đọc truyện",
+  a11yModelSectionTitle: "Mô hình dịch thuật",
+  a11yModelLiteTitle: "Lite (Tích hợp sẵn)",
+  a11yModelLiteBadge: "Lite",
+  a11yModelTier2Title: "Qwen3-VL-2B (Độ chính xác cao)",
+  a11yModelTier2Badge: "Qwen3-VL-2B",
+  a11yStatusReady: "Sẵn sàng",
+  a11yStatusNotDownloaded: "Chưa tải",
+  a11yStatusDownloading: "Đang tải",
+  a11yDownloadBtn: "Tải xuống",
+  a11yCancelDownloadBtn: "Hủy",
+  a11yDeleteModelBtn: "Xóa",
+  a11yShortcutLabel: "Trợ năng & AI",
+  a11yFirstUseTitle: "Lớp dịch AI",
+  a11yFirstUseBody: "Dùng ngay Lite tích hợp sẵn, hoặc tải Qwen3-VL-2B để dịch chính xác hơn.",
+  a11yFirstUseUseLite: "Dùng Lite (Tích hợp sẵn)",
+  a11yFirstUseDownloadTier2: "Tải Qwen3-VL-2B",
+  a11yConfirmDeleteTitle: "Xóa mô hình Qwen3-VL-2B?",
+  a11yDownloadCompleteToast: "Qwen3-VL-2B đã sẵn sàng",
+  a11yDownloadCancelledToast: "Đã hủy tải xuống",
+  a11yModelDeletedToast: "Đã xóa Qwen3-VL-2B",
+  a11yTranslatingStatus: "Đang dịch…",
+  a11yDetectingBubblesStatus: "Đang nhận diện khung thoại…",
+  a11yBubbleResetZoom: "Đặt lại thu phóng",
+  a11yAutoMangaBadge: "Manga",
+  a11yToastMangaDetected: "Đã áp dụng bố cục Manga",
+  importMangaBtn: "Nhập truyện",
+  importFilesOption: "Tệp",
+  importFolderOption: "Thư mục",
+};
+
+const V11_ZH: V11Dictionary = {
+  settingsTabAccessibility: "无障碍",
+  a11yOneHandedTitle: "单手模式",
+  a11yOneHandedDefault: "默认",
+  a11yOneHandedLeft: "左手",
+  a11yOneHandedRight: "右手",
+  a11yBubbleZoomTitle: "气泡自动缩放",
+  a11yAiTranslateTitle: "AI 翻译叠加层",
+  a11yAiToolsTitle: "AI 阅读助手",
+  a11yModelSectionTitle: "翻译模型",
+  a11yModelLiteTitle: "Lite（内置）",
+  a11yModelLiteBadge: "Lite",
+  a11yModelTier2Title: "Qwen3-VL-2B（高精度）",
+  a11yModelTier2Badge: "Qwen3-VL-2B",
+  a11yStatusReady: "已就绪",
+  a11yStatusNotDownloaded: "未下载",
+  a11yStatusDownloading: "下载中",
+  a11yDownloadBtn: "下载",
+  a11yCancelDownloadBtn: "取消",
+  a11yDeleteModelBtn: "删除",
+  a11yShortcutLabel: "无障碍与 AI",
+  a11yFirstUseTitle: "AI 翻译叠加层",
+  a11yFirstUseBody: "可立即使用内置 Lite 模型，或下载 Qwen3-VL-2B 获得更高精度。",
+  a11yFirstUseUseLite: "使用 Lite（内置）",
+  a11yFirstUseDownloadTier2: "下载 Qwen3-VL-2B",
+  a11yConfirmDeleteTitle: "删除 Qwen3-VL-2B？",
+  a11yDownloadCompleteToast: "Qwen3-VL-2B 已就绪",
+  a11yDownloadCancelledToast: "已取消下载",
+  a11yModelDeletedToast: "已删除 Qwen3-VL-2B",
+  a11yTranslatingStatus: "正在翻译…",
+  a11yDetectingBubblesStatus: "正在检测气泡…",
+  a11yBubbleResetZoom: "重置缩放",
+  a11yAutoMangaBadge: "漫画",
+  a11yToastMangaDetected: "已应用漫画布局",
+  importMangaBtn: "导入漫画",
+  importFilesOption: "文件",
+  importFolderOption: "文件夹",
+};
+
+const V11_JA: V11Dictionary = {
+  settingsTabAccessibility: "アクセシビリティ",
+  a11yOneHandedTitle: "片手モード",
+  a11yOneHandedDefault: "デフォルト",
+  a11yOneHandedLeft: "左",
+  a11yOneHandedRight: "右",
+  a11yBubbleZoomTitle: "吹き出し自動ズーム",
+  a11yAiTranslateTitle: "AI 翻訳オーバーレイ",
+  a11yAiToolsTitle: "AI リーダー",
+  a11yModelSectionTitle: "翻訳モデル",
+  a11yModelLiteTitle: "Lite（内蔵）",
+  a11yModelLiteBadge: "Lite",
+  a11yModelTier2Title: "Qwen3-VL-2B（高精度）",
+  a11yModelTier2Badge: "Qwen3-VL-2B",
+  a11yStatusReady: "準備完了",
+  a11yStatusNotDownloaded: "未ダウンロード",
+  a11yStatusDownloading: "ダウンロード中",
+  a11yDownloadBtn: "ダウンロード",
+  a11yCancelDownloadBtn: "キャンセル",
+  a11yDeleteModelBtn: "削除",
+  a11yShortcutLabel: "アクセシビリティ・AI",
+  a11yFirstUseTitle: "AI 翻訳オーバーレイ",
+  a11yFirstUseBody: "内蔵 Lite をすぐ使うか、高精度な Qwen3-VL-2B をダウンロードできます。",
+  a11yFirstUseUseLite: "Lite（内蔵）を使用",
+  a11yFirstUseDownloadTier2: "Qwen3-VL-2B をダウンロード",
+  a11yConfirmDeleteTitle: "Qwen3-VL-2B を削除しますか？",
+  a11yDownloadCompleteToast: "Qwen3-VL-2B の準備が完了しました",
+  a11yDownloadCancelledToast: "ダウンロードをキャンセルしました",
+  a11yModelDeletedToast: "Qwen3-VL-2B を削除しました",
+  a11yTranslatingStatus: "翻訳中…",
+  a11yDetectingBubblesStatus: "吹き出し検出中…",
+  a11yBubbleResetZoom: "ズーム解除",
+  a11yAutoMangaBadge: "マンガ",
+  a11yToastMangaDetected: "マンガレイアウトを適用しました",
+  importMangaBtn: "マンガを取込",
+  importFilesOption: "ファイル",
+  importFolderOption: "フォルダ",
+};
+
+const V11_RU: V11Dictionary = {
+  settingsTabAccessibility: "Доступность",
+  a11yOneHandedTitle: "Режим одной рукой",
+  a11yOneHandedDefault: "По умолчанию",
+  a11yOneHandedLeft: "Слева",
+  a11yOneHandedRight: "Справа",
+  a11yBubbleZoomTitle: "Автозум облачков",
+  a11yAiTranslateTitle: "ИИ-перевод поверх страниц",
+  a11yAiToolsTitle: "ИИ-читалка",
+  a11yModelSectionTitle: "Модель перевода",
+  a11yModelLiteTitle: "Lite (Встроенная)",
+  a11yModelLiteBadge: "Lite",
+  a11yModelTier2Title: "Qwen3-VL-2B (Высокая точность)",
+  a11yModelTier2Badge: "Qwen3-VL-2B",
+  a11yStatusReady: "Готово",
+  a11yStatusNotDownloaded: "Не загружена",
+  a11yStatusDownloading: "Загрузка",
+  a11yDownloadBtn: "Скачать",
+  a11yCancelDownloadBtn: "Отмена",
+  a11yDeleteModelBtn: "Удалить",
+  a11yShortcutLabel: "Доступность и ИИ",
+  a11yFirstUseTitle: "ИИ-перевод поверх страниц",
+  a11yFirstUseBody: "Используйте встроенную Lite сразу или скачайте Qwen3-VL-2B для высокой точности.",
+  a11yFirstUseUseLite: "Использовать Lite",
+  a11yFirstUseDownloadTier2: "Скачать Qwen3-VL-2B",
+  a11yConfirmDeleteTitle: "Удалить Qwen3-VL-2B?",
+  a11yDownloadCompleteToast: "Qwen3-VL-2B готова",
+  a11yDownloadCancelledToast: "Загрузка отменена",
+  a11yModelDeletedToast: "Qwen3-VL-2B удалена",
+  a11yTranslatingStatus: "Перевод…",
+  a11yDetectingBubblesStatus: "Поиск облачков…",
+  a11yBubbleResetZoom: "Сбросить зум",
+  a11yAutoMangaBadge: "Манга",
+  a11yToastMangaDetected: "Применён макет манги",
+  importMangaBtn: "Импорт манги",
+  importFilesOption: "Файлы",
+  importFolderOption: "Папка",
+};
+
+const V11_KO: V11Dictionary = {
+  settingsTabAccessibility: "접근성",
+  a11yOneHandedTitle: "한 손 모드",
+  a11yOneHandedDefault: "기본값",
+  a11yOneHandedLeft: "왼쪽",
+  a11yOneHandedRight: "오른쪽",
+  a11yBubbleZoomTitle: "말풍선 자동 확대",
+  a11yAiTranslateTitle: "AI 번역 오버레이",
+  a11yAiToolsTitle: "AI 리더",
+  a11yModelSectionTitle: "번역 모델",
+  a11yModelLiteTitle: "Lite (기본 내장)",
+  a11yModelLiteBadge: "Lite",
+  a11yModelTier2Title: "Qwen3-VL-2B (고정확도)",
+  a11yModelTier2Badge: "Qwen3-VL-2B",
+  a11yStatusReady: "준비됨",
+  a11yStatusNotDownloaded: "다운로드 안 됨",
+  a11yStatusDownloading: "다운로드 중",
+  a11yDownloadBtn: "다운로드",
+  a11yCancelDownloadBtn: "취소",
+  a11yDeleteModelBtn: "삭제",
+  a11yShortcutLabel: "접근성 및 AI",
+  a11yFirstUseTitle: "AI 번역 오버레이",
+  a11yFirstUseBody: "내장 Lite를 바로 사용하거나 높은 정확도를 위해 Qwen3-VL-2B를 다운로드하세요.",
+  a11yFirstUseUseLite: "Lite 사용 (내장)",
+  a11yFirstUseDownloadTier2: "Qwen3-VL-2B 다운로드",
+  a11yConfirmDeleteTitle: "Qwen3-VL-2B를 삭제할까요?",
+  a11yDownloadCompleteToast: "Qwen3-VL-2B 준비 완료",
+  a11yDownloadCancelledToast: "다운로드 취소됨",
+  a11yModelDeletedToast: "Qwen3-VL-2B 삭제됨",
+  a11yTranslatingStatus: "번역 중…",
+  a11yDetectingBubblesStatus: "말풍선 감지 중…",
+  a11yBubbleResetZoom: "확대 초기화",
+  a11yAutoMangaBadge: "망가",
+  a11yToastMangaDetected: "망가 레이아웃 적용됨",
+  importMangaBtn: "만화 가져오기",
+  importFilesOption: "파일",
+  importFolderOption: "폴더",
+};
+
+const V11_TH: V11Dictionary = {
+  settingsTabAccessibility: "การช่วยการเข้าถึง",
+  a11yOneHandedTitle: "โหมดมือเดียว",
+  a11yOneHandedDefault: "ค่าเริ่มต้น",
+  a11yOneHandedLeft: "ซ้าย",
+  a11yOneHandedRight: "ขวา",
+  a11yBubbleZoomTitle: "ซูมบอลลูนอัตโนมัติ",
+  a11yAiTranslateTitle: "แปลภาษา AI บนหน้า",
+  a11yAiToolsTitle: "ตัวช่วย AI",
+  a11yModelSectionTitle: "โมเดลแปลภาษา",
+  a11yModelLiteTitle: "Lite (ในตัว)",
+  a11yModelLiteBadge: "Lite",
+  a11yModelTier2Title: "Qwen3-VL-2B (ความแม่นยำสูง)",
+  a11yModelTier2Badge: "Qwen3-VL-2B",
+  a11yStatusReady: "พร้อมใช้งาน",
+  a11yStatusNotDownloaded: "ยังไม่ดาวน์โหลด",
+  a11yStatusDownloading: "กำลังดาวน์โหลด",
+  a11yDownloadBtn: "ดาวน์โหลด",
+  a11yCancelDownloadBtn: "ยกเลิก",
+  a11yDeleteModelBtn: "ลบ",
+  a11yShortcutLabel: "การเข้าถึง & AI",
+  a11yFirstUseTitle: "แปลภาษา AI บนหน้า",
+  a11yFirstUseBody: "ใช้ Lite ในตัวได้ทันที หรือดาวน์โหลด Qwen3-VL-2B เพื่อความแม่นยำสูงขึ้น",
+  a11yFirstUseUseLite: "ใช้ Lite (ในตัว)",
+  a11yFirstUseDownloadTier2: "ดาวน์โหลด Qwen3-VL-2B",
+  a11yConfirmDeleteTitle: "ลบโมเดล Qwen3-VL-2B?",
+  a11yDownloadCompleteToast: "Qwen3-VL-2B พร้อมใช้งานแล้ว",
+  a11yDownloadCancelledToast: "ยกเลิกการดาวน์โหลดแล้ว",
+  a11yModelDeletedToast: "ลบ Qwen3-VL-2B แล้ว",
+  a11yTranslatingStatus: "กำลังแปล…",
+  a11yDetectingBubblesStatus: "กำลังตรวจจับบอลลูน…",
+  a11yBubbleResetZoom: "รีเซ็ตการซูม",
+  a11yAutoMangaBadge: "มังงะ",
+  a11yToastMangaDetected: "ใช้เลย์เอาต์มังงะแล้ว",
+  importMangaBtn: "นำเข้ามังงะ",
+  importFilesOption: "ไฟล์",
+  importFolderOption: "โฟลเดอร์",
+};
+
+const V11_DICTIONARIES: Record<Language, V11Dictionary> = {
+  en: V11_EN,
+  vi: V11_VI,
+  zh: V11_ZH,
+  ja: V11_JA,
+  ru: V11_RU,
+  ko: V11_KO,
+  th: V11_TH,
+};
+
 export type FullDictionary = Dictionary &
   V3Dictionary &
   V4Dictionary &
@@ -4495,7 +4817,8 @@ export type FullDictionary = Dictionary &
   V7Dictionary &
   V8Dictionary &
   V9Dictionary &
-  V10Dictionary;
+  V10Dictionary &
+  V11Dictionary;
 
 const DICTIONARIES: Record<Language, Dictionary> = { en, vi, zh, ja, ru, ko, th };
 
@@ -4510,6 +4833,7 @@ export function getDict(lang: Language): FullDictionary {
     ...(V8_DICTIONARIES[lang] ?? V8_EN),
     ...(V9_DICTIONARIES[lang] ?? V9_EN),
     ...(V10_DICTIONARIES[lang] ?? V10_EN),
+    ...(V11_DICTIONARIES[lang] ?? V11_EN),
   };
 }
 

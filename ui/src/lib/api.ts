@@ -2,6 +2,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getDict } from "./i18n";
 import type {
+  AiDownloadProgressEvent,
+  AiStatusView,
   AppError,
   AppReleaseInfo,
   BackupBlockSelection,
@@ -44,6 +46,7 @@ import type {
   NotificationPermissionInfo,
   OrientationLockMode,
   OrientationLockReply,
+  PageAiResultView,
   ProxyEndpoint,
   ProxyTestResult,
   ReaderModeOverride,
@@ -63,6 +66,7 @@ import type {
   TachibkBackupPreview,
   TachibkImportReport,
   TachibkImportRequest,
+  TranslationModelTier,
   UpdateDownloadProgress,
   UpdateProgress,
   UpdateSummary,
@@ -617,6 +621,35 @@ export const api = {
     invoke<SetCoverOutcome>("set_manga_cover_from_page", { mangaId, token }),
   detectChapterLayout: (mangaId: number, pageTokens: string[]) =>
     invoke<LayoutDetectionResult>("detect_chapter_layout", { mangaId, pageTokens }),
+
+  aiGetStatus: () => invoke<AiStatusView>("ai_get_status"),
+  aiSetTier: (tier: TranslationModelTier) => invoke<AiStatusView>("ai_set_tier", { tier }),
+  aiDownloadTier2: (onProgress?: (ev: AiDownloadProgressEvent) => void) => {
+    const channel = new Channel<AiDownloadProgressEvent>();
+    if (onProgress) {
+      channel.onmessage = onProgress;
+    }
+    return invoke<AiStatusView>("ai_download_tier2", { onProgress: channel });
+  },
+  aiCancelDownload: () => invoke<AiStatusView>("ai_cancel_download"),
+  aiDeleteTier2: () => invoke<AiStatusView>("ai_delete_tier2"),
+  aiTranslatePage: (params: {
+    pageToken: string;
+    targetLang: string;
+    detectOnly?: boolean | null;
+    generation?: number | null;
+  }) =>
+    invoke<PageAiResultView>("ai_translate_page", {
+      pageToken: params.pageToken,
+      targetLang: params.targetLang,
+      detectOnly: params.detectOnly ?? null,
+      generation: params.generation ?? null,
+    }),
+  aiCancelJobs: () => invoke<number>("ai_cancel_jobs"),
+  aiHardUnloadAndPurge: () => invoke<AiStatusView>("ai_hard_unload_and_purge"),
+
+  onAiDownloadProgress: (cb: (ev: AiDownloadProgressEvent) => void): Promise<UnlistenFn> =>
+    listen<AiDownloadProgressEvent>("ai://download-progress", (e) => cb(e.payload)),
 
   onUpdatesFound: (cb: (found: FoundUpdate[]) => void): Promise<UnlistenFn> =>
     listen<FoundUpdate[]>("updates://found", (e) => cb(e.payload)),

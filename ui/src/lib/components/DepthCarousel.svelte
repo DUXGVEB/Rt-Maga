@@ -312,11 +312,21 @@
     setCardsWillChange(false);
   }
 
-  function updateStageMetrics() {
+  let measureRafId: number | null = null;
+
+  function updateStageMetrics(widthOverride?: number, heightOverride?: number) {
     if (!stageEl) return;
-    const rect = stageEl.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    stageScale = computeStageScale(rect.width, rect.height);
+    // Measure unscaled CSS layout box (clientWidth/clientHeight) so parent modal
+    // scale transforms (adaptiveOverlay) NEVER distort card sizing on open!
+    let w = widthOverride ?? stageEl.clientWidth;
+    let h = heightOverride ?? stageEl.clientHeight;
+    if (w <= 0 || h <= 0) {
+      const rect = stageEl.getBoundingClientRect();
+      w = rect.width;
+      h = rect.height;
+    }
+    if (w <= 0 || h <= 0) return;
+    stageScale = computeStageScale(w, h);
     const cardW = Math.round(260 * stageScale);
     const cardH = Math.round(390 * stageScale);
     stageEl.style.setProperty("--dc-card-w", `${cardW}px`);
@@ -617,11 +627,15 @@
   function bindShadeNode(node: HTMLSpanElement, idx: number) {
     let cur = idx;
     shadeEls[cur] = node;
+    const state = computeCard3DState(cur, virtualPos, items.length, currentConfig(), stageScale, scratch);
+    node.style.opacity = state.shadeOpacity.toFixed(3);
     return {
       update(nextIdx: number) {
         if (shadeEls[cur] === node) shadeEls[cur] = null;
         cur = nextIdx;
         shadeEls[cur] = node;
+        const nextState = computeCard3DState(cur, virtualPos, items.length, currentConfig(), stageScale, scratch);
+        node.style.opacity = nextState.shadeOpacity.toFixed(3);
       },
       destroy() {
         if (shadeEls[cur] === node) shadeEls[cur] = null;
@@ -652,16 +666,26 @@
     cardEls.length = items.length;
     frameEls.length = items.length;
     shadeEls.length = items.length;
+    updateStageMetrics();
     applyAllTransforms(0);
     reportActiveIfChanged(0, true);
   });
 
   onMount(() => {
     updateStageMetrics();
+    measureRafId = requestAnimationFrame(() => {
+      measureRafId = null;
+      updateStageMetrics();
+    });
 
     if (stageEl && typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver(() => {
-        updateStageMetrics();
+      resizeObserver = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+          updateStageMetrics(entry.contentRect.width, entry.contentRect.height);
+        } else {
+          updateStageMetrics();
+        }
       });
       resizeObserver.observe(stageEl);
     }
@@ -713,6 +737,10 @@
 
   onDestroy(() => {
     stopLoop();
+    if (measureRafId !== null) {
+      cancelAnimationFrame(measureRafId);
+      measureRafId = null;
+    }
     cancelHighlightPulse();
     resizeObserver?.disconnect();
     resizeObserver = null;
@@ -727,7 +755,7 @@
   });
 </script>
 
-<div class="relative flex w-full flex-col items-center select-none">
+<div class="relative flex w-full min-w-0 flex-col items-center select-none">
   <!-- 3D Perspective Stage -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -742,15 +770,16 @@
     onpointerup={endPointerGesture}
     onpointercancel={endPointerGesture}
     ondragstart={(e) => e.preventDefault()}
-    class="depth-stage relative flex w-full items-center justify-center overflow-hidden rounded-2xl outline-none"
-    style="perspective: {perspective}px;"
+    class="depth-stage relative w-full overflow-hidden rounded-2xl outline-none"
   >
     <!-- Ambient radial spotlight (static CSS gradient, zero blur filter) -->
     <div class="depth-stage-glow pointer-events-none absolute inset-0" aria-hidden="true"></div>
 
-    <!-- 3D Track -->
-    <div class="depth-track relative flex h-full w-full items-center justify-center">
-      {#each items as item, idx (item.id)}
+    <!-- Isolated 3D Perspective Viewport (prevents 3D cards from intersecting 2D nav controls) -->
+    <div class="depth-viewport" style="perspective: {perspective}px;">
+      <!-- 3D Track -->
+      <div class="depth-track relative h-full w-full">
+        {#each items as item, idx (item.id)}
         {@const statusCue = item.hasNew
           ? t.badgeNew
           : item.isCompleted
@@ -855,65 +884,66 @@
           </div>
         </div>
       {/each}
+      </div>
     </div>
 
-    <!-- Left / Right Desktop & Touch Step Controls -->
+    <!-- Left / Right Desktop & Touch Step Controls (2D overlay plane isolated above 3D track) -->
     {#if items.length > 1}
       <div
-        transition:badgePop|local={{ duration: 150, start: 0.78 }}
-        class="absolute top-1/2 left-2.5 z-20 -translate-y-1/2 sm:left-3.5"
+        class="pointer-events-none absolute inset-y-0 left-2.5 z-30 flex items-center sm:left-3.5"
       >
-        <button
-          type="button"
-          data-carousel-nav
-          disabled={isSpinning}
-          onclick={() => step(-1)}
-          class="gpu-press flex h-10 w-10 items-center justify-center rounded-full border shadow-md disabled:pointer-events-none disabled:opacity-35"
-          style="background-color: var(--surface-glass-solid); border-color: var(--border); color: var(--text);"
-          aria-label={t.browsePrevPage}
-        >
-          <ChevronLeft size={18} />
-        </button>
+        <div transition:badgePop|local={{ duration: 150, start: 0.78 }} class="pointer-events-auto">
+          <button
+            type="button"
+            data-carousel-nav
+            disabled={isSpinning}
+            onclick={() => step(-1)}
+            class="btn-3d btn-3d-surface flex h-10 w-10 items-center justify-center rounded-full disabled:pointer-events-none disabled:opacity-35"
+            style="background-color: var(--surface-glass-solid);"
+            aria-label={t.browsePrevPage}
+          >
+            <ChevronLeft size={18} />
+          </button>
+        </div>
       </div>
 
       <div
-        transition:badgePop|local={{ duration: 150, start: 0.78 }}
-        class="absolute top-1/2 right-2.5 z-20 -translate-y-1/2 sm:right-3.5"
+        class="pointer-events-none absolute inset-y-0 right-2.5 z-30 flex items-center sm:right-3.5"
       >
-        <button
-          type="button"
-          data-carousel-nav
-          disabled={isSpinning}
-          onclick={() => step(1)}
-          class="gpu-press flex h-10 w-10 items-center justify-center rounded-full border shadow-md disabled:pointer-events-none disabled:opacity-35"
-          style="background-color: var(--surface-glass-solid); border-color: var(--border); color: var(--text);"
-          aria-label={t.browseNextPage}
-        >
-          <ChevronRight size={18} />
-        </button>
+        <div transition:badgePop|local={{ duration: 150, start: 0.78 }} class="pointer-events-auto">
+          <button
+            type="button"
+            data-carousel-nav
+            disabled={isSpinning}
+            onclick={() => step(1)}
+            class="btn-3d btn-3d-surface flex h-10 w-10 items-center justify-center rounded-full disabled:pointer-events-none disabled:opacity-35"
+            style="background-color: var(--surface-glass-solid);"
+            aria-label={t.browseNextPage}
+          >
+            <ChevronRight size={18} />
+          </button>
+        </div>
       </div>
     {/if}
   </div>
 
-  <!-- Subtle deck counter & interaction hint -->
+  <!-- Compact deck counter -->
   {#if items.length > 0}
     <div
-      class="mt-2.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11px]"
+      class="mt-2.5 flex items-center justify-center text-[11px]"
       style="color: var(--text-muted);"
     >
       <span class="font-semibold tabular-nums" style="color: var(--text);">
         {isSpinning ? "•••" : `${activeIndex + 1} / ${items.length}`}
       </span>
-      <span aria-hidden="true">·</span>
-      <span>{t.randomMangaGestureHint}</span>
     </div>
   {/if}
 </div>
 
 <style>
   .depth-stage {
-    --dc-card-w: 260px;
-    --dc-card-h: 390px;
+    --dc-card-w: clamp(160px, 42vw, 240px);
+    --dc-card-h: calc(var(--dc-card-w) * 1.5);
     height: clamp(300px, 46dvh, 450px);
     touch-action: pan-y;
     cursor: grab;
@@ -933,14 +963,26 @@
     );
   }
 
+  .depth-viewport {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    isolation: isolate;
+    overflow: hidden;
+  }
+
   .depth-track {
     transform-style: preserve-3d;
   }
 
   .depth-card {
     position: absolute;
+    top: 50%;
+    left: 50%;
     width: var(--dc-card-w);
     height: var(--dc-card-h);
+    margin-left: calc(var(--dc-card-w) * -0.5);
+    margin-top: calc(var(--dc-card-h) * -0.5);
     transform-origin: center center;
     backface-visibility: hidden;
     -webkit-backface-visibility: hidden;

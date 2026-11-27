@@ -32,6 +32,7 @@
     viewReveal,
   } from "../motion";
   import { deviceEnv } from "../stores/deviceEnv.svelte";
+  import { heroTransitionStore } from "../stores/heroTransition.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -149,7 +150,11 @@
 
   $effect(() => {
     const q = (initialQuery ?? "").trim();
-    if (q && q !== lastInitQuery) {
+    if (!q) {
+      lastInitQuery = "";
+      return;
+    }
+    if (q !== lastInitQuery) {
       lastInitQuery = q;
       searchQuery = q;
       void runSearch(q);
@@ -318,8 +323,9 @@
     }
   }
 
-  async function openCatalogEntry(entry: CatalogEntryView) {
+  async function openCatalogEntry(entry: CatalogEntryView, triggerEl?: HTMLElement | null) {
     if (openingEntryUrl) return;
+    const coverEl = triggerEl?.querySelector<HTMLElement>("[data-hero-cover-src]") ?? null;
     openingEntryUrl = entry.url;
     try {
       const res = await api.resolveUrl(entry.url);
@@ -329,6 +335,11 @@
         if (res.startAt) {
           router.goReader(res.manga.id, res.startAt.url);
         } else {
+          heroTransitionStore.captureFromElement(
+            coverEl,
+            res.manga.coverToken ?? entry.coverToken,
+            res.manga.id
+          );
           router.goManga(res.manga.id);
         }
       }
@@ -450,6 +461,136 @@
 </script>
 
 <div class="flex flex-col gap-4">
+  {#if scope === "supplemental"}
+    <!-- Minimal Supplemental Sources (Settings > Network & LAN > Additional Sources):
+         NO tag-filtering, NO search/filter clutter, NO CMS/disabled badges — ONLY Name + URL + minimal actions -->
+    <div class="flex items-center justify-end">
+      <button
+        type="button"
+        use:pressable
+        onclick={() => {
+          if (!modalGuard.canAct()) return;
+          modalGuard.lock();
+          addModalOpen = true;
+        }}
+        class="btn-3d btn-3d-accent inline-flex min-h-[36px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold"
+      >
+        <Plus size={14} />
+        <span>{t.sourcesAddBtn}</span>
+      </button>
+    </div>
+
+    {#if loadingSources}
+      <div class="flex flex-col gap-2">
+        {#each Array(2) as _, i (i)}
+          <div class="h-16 animate-pulse rounded-2xl" style="background-color: var(--surface-hover);"></div>
+        {/each}
+      </div>
+    {:else if sources.length === 0}
+      <div
+        in:viewReveal|local={{ duration: 160, y: 6 }}
+        class="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed py-10 text-center"
+        style="border-color: var(--border); color: var(--text-muted);"
+      >
+        <Compass size={24} strokeWidth={1.5} />
+        <div class="text-xs font-medium" style="color: var(--text);">{t.sourcesEmptyTitle}</div>
+      </div>
+    {:else}
+      <div class="flex flex-col gap-2">
+        {#each sources as src, idx (src.id)}
+          {@const animateStagger = shouldStaggerItem(idx, sources.length)}
+          <div
+            animate:flip={{ duration: flipDuration(175, sources.length) }}
+            out:itemExit|local
+            class:stagger-item={animateStagger}
+            style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, sources.length)}ms;` : undefined}
+          >
+            <article
+              class="card-contain flex items-center justify-between gap-3 rounded-2xl border px-4 py-3"
+              style="background-color: var(--surface); border-color: var(--border);"
+            >
+              <div class="min-w-0 flex-1">
+                <h3 class="truncate text-sm font-semibold">{src.displayName}</h3>
+                <div class="mt-0.5 truncate text-xs" style="color: var(--text-muted);">
+                  {src.baseUrl}
+                </div>
+              </div>
+
+              <div class="flex shrink-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  use:pressable
+                  onclick={() => router.goBrowse(src.baseUrl, undefined, false, src.id)}
+                  class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl"
+                  style="color: var(--accent);"
+                  title={t.sourcesBrowseBtn}
+                  aria-label={t.sourcesBrowseBtn}
+                >
+                  <ExternalLink size={14} />
+                </button>
+
+                <button
+                  type="button"
+                  use:pressable
+                  onclick={() => {
+                    if (!modalGuard.canAct()) return;
+                    modalGuard.lock();
+                    startEditSource(src);
+                  }}
+                  class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl"
+                  style="color: var(--text-muted);"
+                  title={t.sourcesEditBtn}
+                  aria-label={t.sourcesEditBtn}
+                >
+                  <Edit3 size={14} />
+                </button>
+
+                {#if confirmDeleteId === src.id}
+                  <div in:popoverPop|local={{ duration: 140, y: 0 }} class="flex items-center gap-1">
+                    <button
+                      type="button"
+                      use:pressable
+                      onclick={() => void removeSource(src.id)}
+                      class="btn-3d btn-3d-danger inline-flex min-h-[36px] items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-semibold"
+                    >
+                      <Check size={12} />
+                      <span>{t.sourcesDeleteBtn}</span>
+                    </button>
+                    <button
+                      type="button"
+                      use:pressable
+                      onclick={() => {
+                        confirmDeleteId = null;
+                      }}
+                      class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl"
+                      style="color: var(--text-muted);"
+                      aria-label={t.cancel}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                {:else}
+                  <button
+                    type="button"
+                    use:pressable
+                    onclick={() => {
+                      confirmDeleteId = src.id;
+                    }}
+                    class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl"
+                    style="color: var(--danger);"
+                    title={t.sourcesDeleteBtn}
+                    aria-label={t.sourcesDeleteBtn}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                {/if}
+              </div>
+            </article>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  {:else}
   <!-- Search & Quick Action Toolbar -->
   <div class="flex flex-col gap-2.5 sm:flex-row sm:items-center">
     <form
@@ -486,9 +627,9 @@
       {/if}
       <button
         type="submit"
+        use:pressable
         disabled={searching || !searchQuery.trim()}
-        class="gpu-press inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold disabled:opacity-45"
-        style="background-color: var(--accent); color: var(--accent-fg);"
+        class="btn-3d btn-3d-accent inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold disabled:opacity-45"
       >
         {#if searching}
           <LatticeLoader size="xs" tone="inherit" inline />
@@ -500,13 +641,14 @@
     <div class="flex shrink-0 items-center gap-2">
       <button
         type="button"
+        use:pressable
         onclick={() => {
           if (!modalGuard.canAct()) return;
           modalGuard.lock();
           addModalOpen = true;
         }}
-        class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold hover:brightness-95"
-        style="background-color: var(--accent-soft); border-color: var(--accent); color: var(--accent);"
+        class="btn-3d btn-3d-surface inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold"
+        style="color: var(--accent);"
       >
         <Plus size={14} />
         <span>{t.sourcesAddBtn}</span>
@@ -539,11 +681,11 @@
         </div>
         <button
           type="button"
+          use:pressable
           onclick={() => {
             searchResult = null;
           }}
-          class="gpu-press rounded-lg border px-2.5 py-1 text-xs font-medium"
-          style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
+          class="btn-3d btn-3d-surface rounded-xl px-3 py-1.5 text-xs font-medium"
         >
           {t.sourcesClearSearchBtn}
         </button>
@@ -577,6 +719,7 @@
 
                 <button
                   type="button"
+                  use:pressable
                   onclick={() =>
                     router.goBrowse(
                       group.source.baseUrl,
@@ -584,7 +727,7 @@
                       false,
                       group.source.id
                     )}
-                  class="gpu-press inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium hover:opacity-80"
+                  class="btn-3d btn-3d-subtle inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium"
                   style="color: var(--accent);"
                 >
                   <ExternalLink size={12} />
@@ -611,12 +754,13 @@
                       type="button"
                       use:pressable
                       disabled={openingEntryUrl !== null}
-                      onclick={() => void openCatalogEntry(entry)}
+                      onclick={(e) => void openCatalogEntry(entry, e.currentTarget)}
                       class="card-cq card-contain card-press surface-card group flex flex-col overflow-hidden rounded-2xl text-left disabled:opacity-70"
                       class:stagger-item={animateStagger}
                       style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, group.entries.length)}ms;` : undefined}
                     >
                       <div
+                        data-hero-cover-src
                         class="relative aspect-[3/4] w-full overflow-hidden"
                         style="background-color: var(--surface-hover);"
                       >
@@ -696,11 +840,11 @@
           </select>
           <button
             type="button"
+            use:pressable
             onclick={() => {
               sortDir = sortDir === "desc" ? "asc" : "desc";
             }}
-            class="gpu-press inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium"
-            style="background-color: var(--surface); border-color: var(--border); color: var(--text);"
+            class="btn-3d btn-3d-surface inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium"
             title={sortDir === "desc" ? t.sortDesc : t.sortAsc}
           >
             <ArrowDown size={13} class="chevron-rot" data-open={sortDir === "asc" ? "true" : "false"} />
@@ -790,17 +934,19 @@
                 <div class="flex items-center gap-1.5">
                   <button
                     type="button"
+                    use:pressable
                     onclick={() => router.goBrowse(src.baseUrl, undefined, false, src.id)}
-                    class="gpu-press inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold"
-                    style="background-color: var(--accent-soft); color: var(--accent);"
+                    class="btn-3d btn-3d-subtle inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold"
+                    style="background-color: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 32%, transparent); color: var(--accent);"
                   >
                     <ExternalLink size={12} />
                     <span>{t.sourcesBrowseBtn}</span>
                   </button>
                   <button
                     type="button"
+                    use:pressable
                     onclick={() => void openSourceFilters(src)}
-                    class="gpu-press inline-flex min-h-[38px] items-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-medium"
+                    class="btn-3d btn-3d-subtle inline-flex min-h-[38px] items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-medium"
                     style="border-color: {isSelectedFilter
                       ? 'var(--accent)'
                       : 'var(--border)'}; background-color: {isSelectedFilter
@@ -815,13 +961,14 @@
                 <div class="flex items-center gap-1">
                   <button
                     type="button"
+                    use:pressable
                     onclick={() => {
                       if (!modalGuard.canAct()) return;
                       modalGuard.lock();
                       startEditSource(src);
                     }}
-                    class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
-                    style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+                    class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl"
+                    style="color: var(--text-muted);"
                     title={t.sourcesEditBtn}
                     aria-label={t.sourcesEditBtn}
                   >
@@ -830,11 +977,12 @@
 
                   <button
                     type="button"
+                    use:pressable
                     onclick={() => void moveVisibility(src)}
-                    class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
-                    style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
-                    title={scope === "main" ? t.sourcesMoveToSuppBtn : t.sourcesMoveToMainBtn}
-                    aria-label={scope === "main" ? t.sourcesMoveToSuppBtn : t.sourcesMoveToMainBtn}
+                    class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl"
+                    style="color: var(--text-muted);"
+                    title={t.sourcesMoveToSuppBtn}
+                    aria-label={t.sourcesMoveToSuppBtn}
                   >
                     <ArrowLeftRight size={14} />
                   </button>
@@ -843,20 +991,21 @@
                     <div in:popoverPop|local={{ duration: 140, y: 0 }} class="flex items-center gap-1">
                       <button
                         type="button"
+                        use:pressable
                         onclick={() => void removeSource(src.id)}
-                        class="gpu-press inline-flex min-h-[36px] items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-semibold text-white"
-                        style="background-color: var(--danger);"
+                        class="btn-3d btn-3d-danger inline-flex min-h-[36px] items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-semibold"
                       >
                         <Check size={12} />
                         <span>{t.sourcesDeleteBtn}</span>
                       </button>
                       <button
                         type="button"
+                        use:pressable
                         onclick={() => {
                           confirmDeleteId = null;
                         }}
-                        class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
-                        style="border-color: var(--border); color: var(--text-muted);"
+                        class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl"
+                        style="color: var(--text-muted);"
                         aria-label={t.cancel}
                       >
                         <X size={13} />
@@ -865,11 +1014,12 @@
                   {:else}
                     <button
                       type="button"
+                      use:pressable
                       onclick={() => {
                         confirmDeleteId = src.id;
                       }}
-                      class="gpu-press flex h-9 w-9 items-center justify-center rounded-xl border"
-                      style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--danger);"
+                      class="btn-3d btn-3d-subtle flex h-9 w-9 items-center justify-center rounded-xl"
+                      style="color: var(--danger);"
                       title={t.sourcesDeleteBtn}
                       aria-label={t.sourcesDeleteBtn}
                     >
@@ -883,6 +1033,7 @@
         {/each}
       </div>
     {/if}
+  {/if}
   {/if}
 </div>
 
@@ -955,17 +1106,17 @@
       <div class="modal-footer-stack flex justify-end gap-2 pt-1">
         <button
           type="button"
+          use:pressable
           onclick={() => (addModalOpen = false)}
-          class="gpu-press min-h-[42px] rounded-xl border px-4 py-2 text-xs font-medium"
-          style="border-color: var(--border); background-color: var(--surface-subtle);"
+          class="btn-3d btn-3d-subtle min-h-[42px] rounded-xl px-4 py-2 text-xs font-medium"
         >
           {t.cancel}
         </button>
         <button
           type="submit"
+          use:pressable
           disabled={addingSource || !addUrl.trim()}
-          class="gpu-press inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
-          style="background-color: var(--accent); color: var(--accent-fg);"
+          class="btn-3d btn-3d-accent inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
         >
           {#if addingSource}
             <LatticeLoader size="xs" tone="inherit" inline />
@@ -1054,20 +1205,38 @@
         />
       </div>
 
+      {#if scope === "supplemental" && editTarget}
+        <button
+          type="button"
+          use:pressable
+          onclick={() => {
+            const target = editTarget;
+            if (!target) return;
+            editTarget = null;
+            void moveVisibility(target);
+          }}
+          class="btn-3d btn-3d-subtle inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium"
+          style="color: var(--text-muted);"
+        >
+          <ArrowLeftRight size={13} />
+          <span>{t.sourcesMoveToMainBtn}</span>
+        </button>
+      {/if}
+
       <div class="modal-footer-stack flex justify-end gap-2 pt-1">
         <button
           type="button"
+          use:pressable
           onclick={() => (editTarget = null)}
-          class="gpu-press min-h-[42px] rounded-xl border px-4 py-2 text-xs font-medium"
-          style="border-color: var(--border); background-color: var(--surface-subtle);"
+          class="btn-3d btn-3d-subtle min-h-[42px] rounded-xl px-4 py-2 text-xs font-medium"
         >
           {t.cancel}
         </button>
         <button
           type="submit"
+          use:pressable
           disabled={savingEdit}
-          class="gpu-press inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
-          style="background-color: var(--accent); color: var(--accent-fg);"
+          class="btn-3d btn-3d-accent inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
         >
           {#if savingEdit}
             <LatticeLoader size="xs" tone="inherit" inline />

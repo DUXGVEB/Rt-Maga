@@ -30,9 +30,13 @@ coverage/
 /src-tauri/gen/android/build
 /src-tauri/gen/android/app/build
 /src-tauri/gen/android/app/src/main/jniLibs
+/src-tauri/gen/android/app/src/main/assets/ai-lite/
 /src-tauri/gen/android/local.properties
 /src-tauri/gen/android/.idea
 /src-tauri/gen/schemas
+
+# Pre-fetched local Tier 1 AI ONNX assets (fetched on demand via scripts/fetch-tier1-models.ps1)
+/src-tauri/resources/ai-lite/
 
 # Local secrets, DB & OS files
 .env

@@ -637,7 +637,7 @@
                 type="button"
                 disabled={busy || isActiveFlow}
                 onclick={startSender}
-                class="gpu-press inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
+                class="btn-3d btn-3d-accent gpu-press inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
                 style="background-color: var(--accent); color: var(--accent-fg);"
               >
                 <QrCode size={15} />
@@ -807,7 +807,7 @@
                 type="button"
                 disabled={busy || isActiveFlow}
                 onclick={startSender}
-                class="gpu-press inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
+                class="btn-3d btn-3d-accent gpu-press inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-45"
                 style="background-color: var(--accent); color: var(--accent-fg);"
               >
                 <Wifi size={15} />

@@ -333,7 +333,7 @@
       type="button"
       disabled={busyAction !== null}
       onclick={() => void submitGithub()}
-      class="gpu-press inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
+      class="btn-3d btn-3d-accent gpu-press inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
       style="background-color: var(--accent); color: var(--accent-fg);"
     >
       {#if busyAction === "github"}

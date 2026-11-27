@@ -2,9 +2,10 @@
   import { AlertCircle, RotateCcw } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
   import { viewReveal } from "../motion";
-  import type { PageLoadMode } from "../readerLayout";
+  import type { NormalizedBbox, PageLoadMode } from "../readerLayout";
   import { settingsStore } from "../stores/settings.svelte";
   import LatticeLoader from "./LatticeLoader.svelte";
+  import ReaderAiOverlay from "./ReaderAiOverlay.svelte";
 
   const BACKOFF_DELAYS_MS = [600, 1500, 3000];
 
@@ -21,6 +22,10 @@
     snapStopAlways = false,
     groupPageCount = 1,
     skipBroken = false,
+    bubbleZoomEnabled = false,
+    translationEnabled = false,
+    activeBubbleKey = null,
+    onBubbleTap,
     onImageLoaded,
   }: {
     token: string;
@@ -35,10 +40,24 @@
     snapStopAlways?: boolean;
     groupPageCount?: number;
     skipBroken?: boolean;
+    bubbleZoomEnabled?: boolean;
+    translationEnabled?: boolean;
+    activeBubbleKey?: string | null;
+    onBubbleTap?: (info: {
+      pageIndex: number;
+      token: string;
+      bbox: NormalizedBbox;
+      bubbleKey: string;
+      imgEl: HTMLImageElement | null;
+    }) => void;
     onImageLoaded?: (info: { index: number; width: number; height: number }) => void;
   } = $props();
 
   let containerEl = $state<HTMLDivElement | null>(null);
+  let imgEl = $state<HTMLImageElement | null>(null);
+  let imgOverlayBox = $state<{ left: number; top: number; width: number; height: number } | null>(
+    null
+  );
   let shouldLoad = $state(false);
   let loaded = $state(false);
   let failed = $state(false);
@@ -148,6 +167,33 @@
     return "background-color: rgba(128, 128, 140, 0.10);";
   });
 
+  $effect(() => {
+    if (!loaded || (!bubbleZoomEnabled && !translationEnabled) || !imgEl) {
+      imgOverlayBox = null;
+      return;
+    }
+    const targetImg = imgEl;
+    const syncBox = () => {
+      if (!targetImg) return;
+      const w = targetImg.offsetWidth;
+      const h = targetImg.offsetHeight;
+      if (w > 16 && h > 16) {
+        imgOverlayBox = {
+          left: targetImg.offsetLeft,
+          top: targetImg.offsetTop,
+          width: w,
+          height: h,
+        };
+      }
+    };
+    syncBox();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(syncBox);
+    ro.observe(targetImg);
+    if (containerEl) ro.observe(containerEl);
+    return () => ro.disconnect();
+  });
+
   function handleLoad(e: Event) {
     const img = e.currentTarget as HTMLImageElement | null;
     if (img && img.naturalWidth === 0) {
@@ -164,6 +210,18 @@
     }
     loaded = true;
     failed = false;
+    if (img && (bubbleZoomEnabled || translationEnabled)) {
+      window.requestAnimationFrame(() => {
+        if (img.offsetWidth > 16 && img.offsetHeight > 16) {
+          imgOverlayBox = {
+            left: img.offsetLeft,
+            top: img.offsetTop,
+            width: img.offsetWidth,
+            height: img.offsetHeight,
+          };
+        }
+      });
+    }
   }
 
   function handleError() {
@@ -262,6 +320,7 @@
       </div>
     {/if}
     <img
+      bind:this={imgEl}
       {src}
       alt={settingsStore.t.pageAlt(index + 1)}
       draggable="false"
@@ -276,6 +335,29 @@
       class:hidden={!loaded}
       class:img-reveal={loaded}
     />
+    {#if loaded && (bubbleZoomEnabled || translationEnabled) && imgOverlayBox && imgOverlayBox.width > 16}
+      <div
+        class="pointer-events-none absolute"
+        style="left: {imgOverlayBox.left}px; top: {imgOverlayBox.top}px; width: {imgOverlayBox.width}px; height: {imgOverlayBox.height}px;"
+      >
+        <ReaderAiOverlay
+          pageToken={token}
+          overlayWidth={imgOverlayBox.width}
+          overlayHeight={imgOverlayBox.height}
+          {bubbleZoomEnabled}
+          {translationEnabled}
+          {activeBubbleKey}
+          onBubbleTap={(bbox, bubbleKey) =>
+            onBubbleTap?.({
+              pageIndex: index,
+              token,
+              bbox,
+              bubbleKey,
+              imgEl,
+            })}
+        />
+      </div>
+    {/if}
   {:else}
     <div
       class={horizontal

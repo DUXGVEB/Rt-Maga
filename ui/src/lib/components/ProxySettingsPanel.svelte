@@ -315,7 +315,7 @@
             type="button"
             onclick={runConnectionTest}
             disabled={testing || !proxy.defaultProxy.host.trim()}
-            class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-45"
+            class="btn-3d btn-3d-accent gpu-press inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-45"
             style="background-color: var(--accent); color: var(--accent-fg);"
           >
             <Activity size={13} class={testing ? "animate-pulse" : ""} />

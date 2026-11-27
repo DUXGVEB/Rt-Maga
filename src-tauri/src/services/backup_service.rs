@@ -8,7 +8,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,6 +19,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
 
+use crate::cache::image::CoverHydrationTarget;
 use crate::error::AppError;
 use crate::repo::{Database, now_unix_secs};
 use crate::services::app_release::CURRENT_APP_VERSION;
@@ -27,16 +28,53 @@ use crate::services::rtmaga_codec::RTMAGA_MIME_TYPE;
 use crate::services::rtmaga_codec::{
     BLOCK_MANGA, BLOCK_PREFS, BLOCK_TRACKERS, BackupBlockSelection, BackupHistoryPointer,
     BackupMangaEntry, BackupMeta, BackupPrefs, BackupTrackerEntry, CodecError, DecodedRtmagaBackup,
-    DeltaChapter, DictInterner, RtmagaPayload, decode_backup, format_backup_filename,
-    write_encoded_to,
+    DeltaChapter, DictInterner, RtmagaPayload, STREAM_CHUNK_BYTES, decode_backup_from_reader,
+    format_backup_filename, write_encoded_to,
 };
 #[cfg(test)]
-use crate::services::rtmaga_codec::{RTMAGA_HEADER_LEN, encode_backup};
+use crate::services::rtmaga_codec::{RTMAGA_HEADER_LEN, decode_backup, encode_backup};
 use crate::settings::Settings;
 use crate::state::AppState;
 
-/// Hard file size ceiling accepted before reading a `.rtmaga` file into memory (`24B + 32 MiB`).
+/// Hard file size ceiling accepted for a `.rtmaga` archive (`24B + 32 MiB`).
 const MAX_RTMAGA_FILE_BYTES: u64 = 24 + (32 * 1024 * 1024);
+
+/// RAII cleanup guard for temporary backup/staging files.
+///
+/// Always declare `TempFileGuard` **before** opening any OS `File` / `BufReader` / `BufWriter`
+/// handle on the same path so Rust's LIFO drop order closes the file handle first and unlinks
+/// the temporary file cleanly (even on Windows) on any error, early return, or panic — unless
+/// explicitly disarmed via [`Self::disarm`] after atomic commit.
+#[derive(Debug)]
+pub(crate) struct TempFileGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TempFileGuard {
+    /// Arms automatic unlink cleanup for `path`.
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    /// Returns the guarded temporary file path.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Disarms automatic deletion after the file has been atomically renamed or handed off.
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
 
 /// Conflict resolution strategy when importing a `.rtmaga` backup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -142,6 +180,7 @@ struct DbMangaExportRow {
     reader_mode_override: Option<String>,
     reader_settings_json: Option<String>,
     detected_webtoon: i64,
+    detected_layout: Option<String>,
     hidden: i64,
     source_id: Option<String>,
     canonical_url: Option<String>,
@@ -360,7 +399,7 @@ pub(crate) async fn build_payload_from_db(
                 m.id, m.url, m.site, m.title, m.cover_url,
                 m.latest_chapter_url, m.latest_chapter_name,
                 m.reader_mode_override, m.reader_settings_json,
-                m.detected_webtoon, m.hidden, m.source_id, m.canonical_url,
+                m.detected_webtoon, m.detected_layout, m.hidden, m.source_id, m.canonical_url,
                 m.authors_json, m.artists_json, m.description,
                 m.genres_json, m.tags_json, m.status, m.language, m.created_at,
                 CASE WHEN b.manga_id IS NOT NULL THEN 1 ELSE 0 END AS bookmarked,
@@ -456,6 +495,13 @@ pub(crate) async fn build_payload_from_db(
                 .filter(|u| is_valid_cover_url(u))
                 .map(|u| u.trim().to_owned());
 
+            let detected_layout = row
+                .detected_layout
+                .filter(|s| matches!(s.as_str(), "manga" | "webtoon"))
+                .or_else(|| (row.detected_webtoon != 0).then(|| "webtoon".to_owned()));
+            let detected_webtoon =
+                detected_layout.as_deref() == Some("webtoon") || row.detected_webtoon != 0;
+
             manga_entries.push(BackupMangaEntry {
                 source_idx,
                 url: row.url,
@@ -470,7 +516,8 @@ pub(crate) async fn build_payload_from_db(
                 hidden: row.hidden != 0,
                 reader_mode_override: row.reader_mode_override,
                 reader_settings_json: row.reader_settings_json,
-                detected_webtoon: row.detected_webtoon != 0,
+                detected_webtoon,
+                detected_layout,
                 genre_indices,
                 tag_indices,
                 authors: parse_json_str_vec(row.authors_json),
@@ -718,6 +765,17 @@ pub(crate) async fn apply_backup_to_db(
             let authors_json = json_vec_opt(&entry.authors);
             let artists_json = json_vec_opt(&entry.artists);
             let created_secs = entry.created_at_ms.map_or(now, ms_to_secs);
+            let incoming_layout = entry
+                .detected_layout
+                .as_deref()
+                .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+                    "manga" => Some("manga"),
+                    "webtoon" => Some("webtoon"),
+                    _ => None,
+                })
+                .or_else(|| entry.detected_webtoon.then_some("webtoon"));
+            let incoming_webtoon =
+                i64::from(incoming_layout == Some("webtoon") || entry.detected_webtoon);
 
             let manga_id = if let Some(existing_id) = matched_id {
                 sqlx::query(
@@ -736,7 +794,12 @@ pub(crate) async fn apply_backup_to_db(
                          language = COALESCE(language, ?),
                          reader_mode_override = COALESCE(reader_mode_override, ?),
                          reader_settings_json = COALESCE(reader_settings_json, ?),
-                         detected_webtoon = MAX(detected_webtoon, ?),
+                         detected_layout = COALESCE(detected_layout, ?),
+                         detected_webtoon = CASE
+                             WHEN COALESCE(detected_layout, ?) = 'webtoon' THEN 1
+                             WHEN COALESCE(detected_layout, ?) = 'manga' THEN 0
+                             ELSE MAX(detected_webtoon, ?)
+                         END,
                          updated_at = MAX(updated_at, ?)
                      WHERE id = ?",
                 )
@@ -754,7 +817,10 @@ pub(crate) async fn apply_backup_to_db(
                 .bind(entry.language.as_deref())
                 .bind(entry.reader_mode_override.as_deref())
                 .bind(entry.reader_settings_json.as_deref())
-                .bind(i64::from(entry.detected_webtoon))
+                .bind(incoming_layout)
+                .bind(incoming_layout)
+                .bind(incoming_layout)
+                .bind(incoming_webtoon)
                 .bind(now)
                 .bind(existing_id)
                 .execute(&mut *tx)
@@ -766,9 +832,10 @@ pub(crate) async fn apply_backup_to_db(
                     "INSERT INTO manga
                         (url, site, title, cover_url, latest_chapter_url, latest_chapter_name,
                          has_new, reader_mode_override, reader_settings_json, detected_webtoon,
+                         detected_layout,
                          hidden, source_id, canonical_url, authors_json, artists_json, description,
                          genres_json, tags_json, status, language, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(url_clean)
                 .bind(site_clean)
@@ -778,7 +845,8 @@ pub(crate) async fn apply_backup_to_db(
                 .bind(latest_name_clean)
                 .bind(entry.reader_mode_override.as_deref())
                 .bind(entry.reader_settings_json.as_deref())
-                .bind(i64::from(entry.detected_webtoon))
+                .bind(incoming_webtoon)
+                .bind(incoming_layout)
                 .bind(i64::from(entry.hidden))
                 .bind(entry.source_id.as_deref())
                 .bind(canon_clean)
@@ -1092,7 +1160,38 @@ async fn reconcile_manga_history(
     Ok(())
 }
 
-/// Validates and decodes a `.rtmaga` file on disk inside `spawn_blocking` and builds a UI preview.
+/// Opens a `.rtmaga` file via a buffered streaming reader (`64 KiB` chunks), validating the
+/// 24-byte header before any payload allocation and failing fast on EOF/trailing bytes/CRC32.
+fn decode_rtmaga_file_streaming(file_path: &Path) -> Result<(DecodedRtmagaBackup, u64), AppError> {
+    let meta = std::fs::metadata(file_path).map_err(|e| AppError::NotFound {
+        message: format!("cannot read backup file: {e}"),
+    })?;
+    if !meta.is_file() {
+        return Err(AppError::UnsupportedFormat {
+            message: "selected backup path is not a file".to_owned(),
+        });
+    }
+    let file_size_bytes = meta.len();
+    if file_size_bytes > MAX_RTMAGA_FILE_BYTES {
+        return Err(AppError::CorruptedData {
+            message: format!(
+                "backup file exceeds maximum allowed size ({file_size_bytes} > {MAX_RTMAGA_FILE_BYTES} bytes)"
+            ),
+        });
+    }
+    let file = File::open(file_path).map_err(|e| AppError::NotFound {
+        message: format!("failed to open backup file: {e}"),
+    })?;
+    let mut reader = BufReader::with_capacity(STREAM_CHUNK_BYTES, file);
+    let decoded = decode_backup_from_reader(&mut reader)?;
+    Ok((decoded, file_size_bytes))
+}
+
+/// Validates and decodes a `.rtmaga` file on disk inside `spawn_blocking` via fail-fast
+/// streaming `BufReader` and builds a UI preview.
+///
+/// When `origin` is [`BackupFileOrigin::TempStaging`], any validation/read error immediately closes
+/// the file handle and deletes the corrupt temporary staging file via [`TempFileGuard`].
 ///
 /// # Errors
 ///
@@ -1104,27 +1203,11 @@ pub(crate) async fn preview_rtmaga_file(
 ) -> Result<BackupPreviewView, AppError> {
     let is_temp_file = matches!(origin, BackupFileOrigin::TempStaging);
     tokio::task::spawn_blocking(move || {
-        let meta = std::fs::metadata(&file_path).map_err(|e| AppError::NotFound {
-            message: format!("cannot read backup file: {e}"),
-        })?;
-        let file_size_bytes = meta.len();
-        if file_size_bytes > MAX_RTMAGA_FILE_BYTES {
-            return Err(AppError::CorruptedData {
-                message: format!(
-                    "backup file exceeds maximum allowed size ({file_size_bytes} > {MAX_RTMAGA_FILE_BYTES} bytes)"
-                ),
-            });
-        }
-        let raw = std::fs::read(&file_path).map_err(|e| AppError::Internal {
-            message: format!("failed to read backup bytes: {e}"),
-        })?;
-        let decoded = decode_backup(&raw)?;
-        let interacted_chapter_count: usize = decoded
-            .payload
-            .manga
-            .iter()
-            .map(|m| m.chapters.len())
-            .sum();
+        // Declared BEFORE opening the file so handle drops first if preview fails or panics.
+        let mut temp_guard = is_temp_file.then(|| TempFileGuard::new(file_path.clone()));
+        let (decoded, file_size_bytes) = decode_rtmaga_file_streaming(&file_path)?;
+        let interacted_chapter_count: usize =
+            decoded.payload.manga.iter().map(|m| m.chapters.len()).sum();
         let file_name = display_name
             .filter(|s| !s.trim().is_empty())
             .or_else(|| {
@@ -1135,6 +1218,11 @@ pub(crate) async fn preview_rtmaga_file(
             })
             .unwrap_or_else(|| "backup.rtmaga".to_owned());
         let mask = decoded.payload.meta.blocks_mask;
+
+        // Keep valid staged file alive until user confirms or cancels the preview modal.
+        if let Some(guard) = temp_guard.as_mut() {
+            guard.disarm();
+        }
 
         Ok(BackupPreviewView {
             file_path: file_path.to_string_lossy().into_owned(),
@@ -1211,21 +1299,32 @@ async fn export_rtmaga_android(
         .unwrap_or_else(|_| state.data_dir.join("tmp"));
     let nonce: u64 = rand::random();
     let tmp_path = cache_dir.join(format!("rtmaga_export_{nonce:016x}.rtmaga"));
+    // Always delete temporary Android SAF staging file on success, cancellation, error, or panic.
+    let _export_guard = TempFileGuard::new(tmp_path.clone());
 
     let tmp_for_write = tmp_path.clone();
     let (compressed_bytes, uncompressed_bytes, file_size_bytes) =
         tokio::task::spawn_blocking(move || -> Result<(usize, usize, u64), AppError> {
-            if let Some(parent) = tmp_for_write.parent() {
+            let mut inner_guard = TempFileGuard::new(tmp_for_write);
+            if let Some(parent) = inner_guard.path().parent() {
                 std::fs::create_dir_all(parent).map_err(|e| AppError::Internal {
                     message: format!("failed to prepare temp backup dir: {e}"),
                 })?;
             }
-            let file = File::create(&tmp_for_write).map_err(|e| AppError::Internal {
-                message: format!("failed to create temp backup file: {e}"),
-            })?;
-            let mut writer = BufWriter::with_capacity(64 * 1024, file);
-            let (_hdr, comp, uncomp) = write_encoded_to(&payload, &mut writer)?;
-            let len = std::fs::metadata(&tmp_for_write).map_or(0, |m| m.len());
+            let (comp, uncomp) = {
+                let file = File::create(inner_guard.path()).map_err(|e| AppError::Internal {
+                    message: format!("failed to create temp backup file: {e}"),
+                })?;
+                let mut writer = BufWriter::with_capacity(STREAM_CHUNK_BYTES, file);
+                let (_hdr, comp, uncomp) = write_encoded_to(&payload, &mut writer)?;
+                writer.flush().map_err(|e| AppError::Internal {
+                    message: format!("failed to flush temp backup file: {e}"),
+                })?;
+                (comp, uncomp)
+            };
+            let len = std::fs::metadata(inner_guard.path()).map_or(0, |m| m.len());
+            // Hand ownership of cleanup back to outer `_export_guard` after SAF handoff.
+            inner_guard.disarm();
             Ok((comp, uncomp, len))
         })
         .await
@@ -1241,10 +1340,8 @@ async fn export_rtmaga_android(
         100,
         "Opening Android file saver",
     );
-    let saf_res =
-        crate::android_env::export_backup_saf(app, &tmp_path, &file_name, RTMAGA_MIME_TYPE);
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-    let reply = saf_res?;
+    let reply =
+        crate::android_env::export_backup_saf(app, &tmp_path, &file_name, RTMAGA_MIME_TYPE)?;
 
     if reply.cancelled {
         return Ok(BackupExportResult {
@@ -1278,7 +1375,7 @@ async fn export_rtmaga_android(
     })
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(any(not(target_os = "android"), test))]
 fn write_backup_atomically_to_path(
     dest_path: &Path,
     payload: &RtmagaPayload,
@@ -1290,27 +1387,23 @@ fn write_backup_atomically_to_path(
     }
     let nonce: u64 = rand::random();
     let tmp_path = dest_path.with_extension(format!("rtmaga.tmp.{nonce:08x}"));
-    let write_res = (|| -> Result<(usize, usize), AppError> {
-        let file = File::create(&tmp_path).map_err(|e| AppError::Internal {
+    // Declared BEFORE opening `File` so any error/panic drops `BufWriter<File>` before unlinking!
+    let mut temp_guard = TempFileGuard::new(tmp_path);
+    let (comp, uncomp) = {
+        let file = File::create(temp_guard.path()).map_err(|e| AppError::Internal {
             message: format!("failed to create backup file: {e}"),
         })?;
-        let mut writer = BufWriter::with_capacity(64 * 1024, file);
+        let mut writer = BufWriter::with_capacity(STREAM_CHUNK_BYTES, file);
         let (_hdr, comp, uncomp) = write_encoded_to(payload, &mut writer)?;
-        Ok((comp, uncomp))
-    })();
-    let (comp, uncomp) = match write_res {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e);
-        }
+        writer.flush().map_err(|e| AppError::Internal {
+            message: format!("failed to flush backup file: {e}"),
+        })?;
+        (comp, uncomp)
     };
-    if let Err(err) = std::fs::rename(&tmp_path, dest_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(AppError::Internal {
-            message: format!("failed to commit backup file: {err}"),
-        });
-    }
+    std::fs::rename(temp_guard.path(), dest_path).map_err(|err| AppError::Internal {
+        message: format!("failed to commit backup file: {err}"),
+    })?;
+    temp_guard.disarm();
     let size = std::fs::metadata(dest_path).map_or(0, |m| m.len());
     Ok((comp, uncomp, size))
 }
@@ -1501,6 +1594,9 @@ pub(crate) async fn import_rtmaga_file(
     progress: Channel<BackupProgressEvent>,
 ) -> Result<BackupImportReport, AppError> {
     let is_temp_file = matches!(origin, BackupFileOrigin::TempStaging);
+    // RAII cleanup for temp staging files across decode errors, DB errors, and success.
+    let _temp_guard = is_temp_file.then(|| TempFileGuard::new(file_path.to_path_buf()));
+
     emit_progress(
         Some(&progress),
         "validating",
@@ -1511,44 +1607,23 @@ pub(crate) async fn import_rtmaga_file(
     );
 
     let path_for_read = file_path.to_path_buf();
-    let decoded_res =
-        tokio::task::spawn_blocking(move || -> Result<DecodedRtmagaBackup, AppError> {
-            let meta = std::fs::metadata(&path_for_read).map_err(|e| AppError::NotFound {
-                message: format!("backup file not found: {e}"),
-            })?;
-            if meta.len() > MAX_RTMAGA_FILE_BYTES {
-                return Err(AppError::CorruptedData {
-                    message: "backup file exceeds maximum allowed size".to_owned(),
-                });
-            }
-            let bytes = std::fs::read(&path_for_read).map_err(|e| AppError::Internal {
-                message: format!("failed to read backup file: {e}"),
-            })?;
-            Ok(decode_backup(&bytes)?)
-        })
-        .await
-        .map_err(|e| AppError::Internal {
-            message: format!("backup decode worker failed: {e}"),
-        })?;
+    let decoded = tokio::task::spawn_blocking(move || -> Result<DecodedRtmagaBackup, AppError> {
+        let (decoded, _size) = decode_rtmaga_file_streaming(&path_for_read)?;
+        Ok(decoded)
+    })
+    .await
+    .map_err(|e| AppError::Internal {
+        message: format!("backup decode worker failed: {e}"),
+    })??;
 
-    let decoded = match decoded_res {
-        Ok(d) => d,
-        Err(err) => {
-            if is_temp_file {
-                let _ = tokio::fs::remove_file(file_path).await;
-            }
-            return Err(err);
-        }
-    };
-
-    let report_res = apply_backup_to_db(&state.db, &decoded, mode, Some(&progress)).await;
-    if is_temp_file {
-        let _ = tokio::fs::remove_file(file_path).await;
-    }
-    let report = report_res?;
+    let report = apply_backup_to_db(&state.db, &decoded, mode, Some(&progress)).await?;
 
     state.chapters.invalidate_all();
     state.catalogs.invalidate_all();
+
+    // Queue bounded background cover hydration into `<data_dir>/covers/` for restored titles
+    // and saved source icons so covers load offline across Home, Bookmarks, History, and Random.
+    queue_rtmaga_cover_hydration(state, &decoded.payload).await;
 
     if report.restored_prefs
         && let Ok(reloaded) = state.db.load_settings().await
@@ -1574,6 +1649,90 @@ pub(crate) async fn import_rtmaga_file(
     }
 
     Ok(report)
+}
+
+async fn queue_rtmaga_cover_hydration(state: &AppState, payload: &RtmagaPayload) {
+    let mut targets: Vec<CoverHydrationTarget> =
+        Vec::with_capacity(payload.manga.len() + payload.trackers.len());
+
+    // Look up restored manga IDs by `(site, url)` so cover cache rows carry accurate ownership.
+    let existing_rows: Vec<(i64, String, String)> =
+        sqlx::query_as("SELECT id, site, url FROM manga")
+            .fetch_all(state.db.pool())
+            .await
+            .unwrap_or_default();
+    let mut id_by_key: HashMap<(String, String), i64> = HashMap::with_capacity(existing_rows.len());
+    for (id, site, url) in existing_rows {
+        id_by_key.insert((norm_site_key(&site), norm_url_key(&url).to_owned()), id);
+    }
+
+    for entry in &payload.manga {
+        let Some(raw_cover) = entry.cover_url.as_deref().map(str::trim) else {
+            continue;
+        };
+        if raw_cover.is_empty()
+            || crate::services::comics::is_local_comic_url(raw_cover)
+            || crate::services::comics::is_tachibk_url(raw_cover)
+        {
+            continue;
+        }
+        let Ok(cover_url) = Url::parse(raw_cover) else {
+            continue;
+        };
+        if mangacore::http::validate_public_http_url(&cover_url).is_err() {
+            continue;
+        }
+        let site = usize::try_from(entry.source_idx)
+            .ok()
+            .and_then(|i| payload.dict.sources.get(i))
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        let manga_id = site.as_deref().and_then(|s| {
+            id_by_key
+                .get(&(norm_site_key(s), norm_url_key(&entry.url).to_owned()))
+                .copied()
+        });
+        let referer = Url::parse(entry.url.trim())
+            .ok()
+            .filter(|u| mangacore::http::validate_public_http_url(u).is_ok())
+            .unwrap_or_else(|| cover_url.clone());
+
+        targets.push(CoverHydrationTarget {
+            cover_url,
+            referer,
+            site,
+            manga_id,
+        });
+    }
+
+    for tr in &payload.trackers {
+        let Some(raw_icon) = tr.icon_url.as_deref().map(str::trim) else {
+            continue;
+        };
+        let Ok(icon_url) = Url::parse(raw_icon) else {
+            continue;
+        };
+        if mangacore::http::validate_public_http_url(&icon_url).is_err() {
+            continue;
+        }
+        let referer = Url::parse(tr.base_url.trim())
+            .ok()
+            .filter(|u| mangacore::http::validate_public_http_url(u).is_ok())
+            .unwrap_or_else(|| icon_url.clone());
+        let site = referer
+            .host_str()
+            .map(|h| h.trim_start_matches("www.").to_ascii_lowercase());
+        targets.push(CoverHydrationTarget {
+            cover_url: icon_url,
+            referer,
+            site,
+            manga_id: None,
+        });
+    }
+
+    state
+        .images
+        .spawn_batch_cover_hydration(state.registry.http().clone(), targets);
 }
 
 /// Deletes a temporary Android SAF import file inside the app cache directory when the user
@@ -1857,5 +2016,134 @@ mod tests {
             .expect("hist second")
             .expect("hist exists");
         assert_eq!(hist_second.page_index, 22, "max(22, 14) == 22");
+    }
+
+    #[tokio::test]
+    async fn detected_layout_round_trips_through_rtmaga_backup() {
+        let series = mk_test_series();
+        let db_src = seed_source_backup_db(&series).await;
+        let src_row = db_src
+            .get_manga_by_id(1)
+            .await
+            .expect("query src")
+            .expect("src manga exists");
+        db_src
+            .set_manga_detected_layout(src_row.id, Some("manga"))
+            .await
+            .expect("set manga detected_layout");
+
+        let bytes =
+            export_backup_bytes_from_db(&db_src, "LayoutRig", BackupBlockSelection::default())
+                .await
+                .expect("export with detected_layout");
+
+        let db_fresh = Database::open_in_memory().await.expect("open fresh db");
+        let report = import_backup_bytes_into_db(&db_fresh, &bytes, BackupImportMode::Overwrite)
+            .await
+            .expect("import into fresh db");
+        assert_eq!(report.added_manga, 1, "one manga must be added");
+        let restored = db_fresh
+            .get_manga_by_id(1)
+            .await
+            .expect("query restored")
+            .expect("restored manga exists");
+        assert_eq!(
+            restored.detected_layout.as_deref(),
+            Some("manga"),
+            "detected_layout='manga' must round-trip through .rtmaga backup"
+        );
+        assert_eq!(
+            restored.detected_webtoon, 0,
+            "detected_webtoon must remain 0 when detected_layout='manga'"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_fast_streaming_preview_and_temp_file_guard_cleanup_work() {
+        let series = mk_test_series();
+        let db_src = seed_source_backup_db(&series).await;
+        let payload =
+            build_payload_from_db(&db_src, "AtomicRig", BackupBlockSelection::default(), None)
+                .await
+                .expect("build payload");
+        let (bytes, _) = encode_backup(&payload).expect("encode backup");
+
+        let dir =
+            std::env::temp_dir().join(format!("rtmaga_failfast_backup_{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        // 1. Atomic write succeeds and leaves zero `.rtmaga.tmp.*` files behind.
+        let valid_path = dir.join("valid.rtmaga");
+        let (_comp, _uncomp, written_size) =
+            write_backup_atomically_to_path(&valid_path, &payload).expect("atomic write succeeds");
+        assert!(written_size > 24, "written backup must exceed 24B header");
+        let leftover_tmps: Vec<_> = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            leftover_tmps.is_empty(),
+            "atomic backup write must leave no temp files behind"
+        );
+
+        // 2. Valid preview over streaming BufReader succeeds.
+        let preview = preview_rtmaga_file(valid_path, None, BackupFileOrigin::UserFile)
+            .await
+            .expect("valid streaming preview must succeed");
+        assert_eq!(preview.manga_count, 1, "preview must report 1 manga");
+
+        // 3. Truncated temp staging file fails fast AND gets deleted automatically by TempFileGuard!
+        let trunc_temp = dir.join("rtmaga_import_truncated.rtmaga");
+        std::fs::write(&trunc_temp, &bytes[..bytes.len() - 4]).expect("write truncated temp");
+        let trunc_err =
+            preview_rtmaga_file(trunc_temp.clone(), None, BackupFileOrigin::TempStaging)
+                .await
+                .expect_err("truncated temp backup must fail");
+        assert!(
+            matches!(trunc_err, AppError::CorruptedData { .. }),
+            "truncated payload must yield CorruptedData, got {trunc_err:?}"
+        );
+        assert!(
+            !trunc_temp.exists(),
+            "TempFileGuard must unlink failed truncated temp file after dropping handle"
+        );
+
+        // 4. Corrupt CRC32 temp staging file fails fast AND gets deleted automatically!
+        let mut corrupt = bytes;
+        let last_idx = corrupt.len() - 1;
+        corrupt[last_idx] ^= 0xFF;
+        let corrupt_temp = dir.join("rtmaga_import_corrupt.rtmaga");
+        std::fs::write(&corrupt_temp, &corrupt).expect("write corrupt temp");
+        let crc_err =
+            preview_rtmaga_file(corrupt_temp.clone(), None, BackupFileOrigin::TempStaging)
+                .await
+                .expect_err("corrupt CRC32 temp backup must fail");
+        assert!(
+            matches!(crc_err, AppError::CorruptedData { .. }),
+            "CRC mismatch must yield CorruptedData, got {crc_err:?}"
+        );
+        assert!(
+            !corrupt_temp.exists(),
+            "TempFileGuard must unlink corrupt temp file immediately"
+        );
+
+        // 5. TempFileGuard drops open File handle BEFORE unlinking even across panic unwind (Windows-safe).
+        let panic_temp = dir.join("panic_cleanup.rtmaga.tmp");
+        let panic_path_clone = panic_temp.clone();
+        let unwind = std::panic::catch_unwind(move || {
+            let _guard = TempFileGuard::new(panic_path_clone.clone());
+            let mut file = File::create(&panic_path_clone).expect("create temp file");
+            file.write_all(b"partial backup bytes")
+                .expect("write partial bytes");
+            panic!("simulated write failure panic");
+        });
+        assert!(unwind.is_err(), "simulated panic must unwind");
+        assert!(
+            !panic_temp.exists(),
+            "TempFileGuard must close open handle first and delete partial temp file on panic"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

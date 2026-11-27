@@ -234,7 +234,7 @@
         type="button"
         onclick={pasteFromClipboard}
         disabled={loading || pasting}
-        class="gpu-press inline-flex min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:opacity-85 disabled:opacity-40 sm:min-h-[38px] sm:flex-initial"
+        class="btn-3d btn-3d-surface gpu-press inline-flex min-h-[42px] flex-1 items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:opacity-85 disabled:opacity-40 sm:min-h-[38px] sm:flex-initial"
         style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text);"
         title={t.pasteUrlBtn}
         aria-label={t.pasteUrlBtn}
@@ -248,7 +248,7 @@
         type="button"
         onclick={clearUrlInput}
         disabled={loading || (!urlInput && !errorState)}
-        class="gpu-press inline-flex min-h-[42px] min-w-[42px] shrink-0 items-center justify-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-medium hover:opacity-85 disabled:opacity-35 sm:min-h-[38px] sm:min-w-0"
+        class="btn-3d btn-3d-surface gpu-press inline-flex min-h-[42px] min-w-[42px] shrink-0 items-center justify-center gap-1 rounded-xl border px-2.5 py-1.5 text-xs font-medium hover:opacity-85 disabled:opacity-35 sm:min-h-[38px] sm:min-w-0"
         style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
         title={t.clearUrlBtn}
         aria-label={t.clearUrlBtn}
@@ -262,7 +262,7 @@
         type="submit"
         use:pressable
         disabled={loading || !urlInput.trim()}
-        class="gpu-press flex min-h-[42px] flex-1 shrink-0 items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-sm font-semibold hover:opacity-92 disabled:opacity-45 sm:min-h-[38px] sm:flex-initial"
+        class="btn-3d btn-3d-accent gpu-press flex min-h-[42px] flex-1 shrink-0 items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-sm font-semibold hover:opacity-92 disabled:opacity-45 sm:min-h-[38px] sm:flex-initial"
         style="background-color: var(--accent); color: var(--accent-fg);"
       >
         {#if loading}

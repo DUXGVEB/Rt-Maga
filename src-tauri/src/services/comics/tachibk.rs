@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Sqlite};
 use url::Url;
 
+use crate::cache::image::CoverHydrationTarget;
 use crate::error::AppError;
 use crate::image_proxy::encode_cover_token;
 use crate::repo::manga::MangaMatchCandidate;
@@ -1190,11 +1191,47 @@ pub(crate) async fn import_tachibk_backup(
         let _ = tokio::fs::remove_file(&backup_path).await;
     }
 
-    if report.is_ok() {
+    if let Ok(ref ok_report) = report {
         state.chapters.invalidate_all();
+        queue_tachibk_cover_hydration(state, &ok_report.imported_manga_ids).await;
     }
 
     report
+}
+
+async fn queue_tachibk_cover_hydration(state: &AppState, imported_manga_ids: &[i64]) {
+    if imported_manga_ids.is_empty() {
+        return;
+    }
+    let mut targets = Vec::with_capacity(imported_manga_ids.len());
+    for &manga_id in imported_manga_ids {
+        let Ok(Some(row)) = state.db.get_manga_by_id(manga_id).await else {
+            continue;
+        };
+        let Some(raw_cover) = row.cover_url.as_deref() else {
+            continue;
+        };
+        if crate::services::comics::is_local_comic_url(raw_cover) || is_tachibk_url(raw_cover) {
+            continue;
+        }
+        let Ok(cover_url) = Url::parse(raw_cover.trim()) else {
+            continue;
+        };
+        if mangacore::http::validate_public_http_url(&cover_url).is_err() {
+            continue;
+        }
+        let referer_str = cover_referer_for(&row.url, cover_url.as_str());
+        let referer = Url::parse(&referer_str).unwrap_or_else(|_| cover_url.clone());
+        targets.push(CoverHydrationTarget {
+            cover_url,
+            referer,
+            site: Some(row.site),
+            manga_id: Some(manga_id),
+        });
+    }
+    state
+        .images
+        .spawn_batch_cover_hydration(state.registry.http().clone(), targets);
 }
 
 /// Core transactional reconciliation routine (also directly exercised by unit tests with in-memory `SQLite`).
@@ -1566,13 +1603,21 @@ async fn insert_catalog_entry(
         }
     });
     let created_at = normalize_unix_secs(item.date_added).unwrap_or(now);
+    let detected_layout = crate::services::layout_detect::classify_from_metadata(
+        &genres_vec,
+        categories,
+        TACHIBK_SITE_KEY,
+    )
+    .and_then(crate::services::layout_detect::DetectedLayout::as_db_str);
+    let detected_webtoon = i64::from(detected_layout == Some("webtoon"));
 
     let res = sqlx::query(
         "INSERT INTO manga
             (url, site, title, cover_url, latest_chapter_url, latest_chapter_name, has_new,
+             detected_webtoon, detected_layout,
              source_id, canonical_url, alt_titles_json, original_title, authors_json,
              artists_json, description, genres_json, tags_json, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&series_url)
     .bind(TACHIBK_SITE_KEY)
@@ -1580,6 +1625,8 @@ async fn insert_catalog_entry(
     .bind(cover_url.as_deref())
     .bind(latest_ch_url.as_deref())
     .bind(latest_ch_name.as_deref())
+    .bind(detected_webtoon)
+    .bind(detected_layout)
     .bind(&source_id)
     .bind(&series_url)
     .bind(alt_titles_json.as_deref())

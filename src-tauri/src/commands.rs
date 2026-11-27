@@ -23,6 +23,7 @@ use crate::repo::history::LastReadingDestination;
 use crate::repo::manga::HideAction;
 use crate::repo::session::CrashRecoverySession;
 use crate::repo::sources::{SourcePlacement, VisibilityFilter, VisibilityPatch};
+use crate::services::ai::{AiDownloadProgressEvent, AiPageMode, AiStatusView, PageAiResultView};
 use crate::services::app_release::{AppReleaseInfo, CURRENT_APP_VERSION, InstallUpdateOutcome};
 use crate::services::backup_service::{
     BackupExportResult, BackupImportMode, BackupImportReport, BackupPreviewView,
@@ -44,7 +45,7 @@ use crate::services::updater::{CheckScope, UpdateSummary};
 use crate::services::{
     app_release, backup_service, comics, layout_detect, library, reader, sources, sync, updater,
 };
-use crate::settings::{ReaderSettings, Settings, SettingsSection};
+use crate::settings::{ReaderSettings, Settings, SettingsSection, TranslationModelTier};
 use crate::state::AppState;
 
 /// Resolves any pasted manga or chapter URL and persists the manga metadata locally.
@@ -353,7 +354,15 @@ async fn apply_settings_side_effects(
     state: &Arc<AppState>,
     saved: Settings,
 ) -> Result<Settings, AppError> {
-    let (schedule_changed, doh_changed, proxy_changed, conn_changed, speed_changed) = {
+    let (
+        schedule_changed,
+        doh_changed,
+        proxy_changed,
+        conn_changed,
+        speed_changed,
+        ai_tier_changed,
+        ai_disabled_now,
+    ) = {
         let mut guard = state.settings.write().await;
         let sched = guard.updates.enabled != saved.updates.enabled
             || guard.updates.interval_hours != saved.updates.interval_hours;
@@ -361,8 +370,22 @@ async fn apply_settings_side_effects(
         let prox = guard.proxy != saved.proxy;
         let conn = guard.sources.max_conn_per_host != saved.sources.max_conn_per_host;
         let speed = guard.sources.speed_limit_kbps != saved.sources.speed_limit_kbps;
+        let tier_ch = guard.accessibility.translation_model_tier
+            != saved.accessibility.translation_model_tier;
+        let was_ai_active =
+            guard.accessibility.bubble_auto_zoom || guard.accessibility.ai_translation_overlay;
+        let is_ai_active =
+            saved.accessibility.bubble_auto_zoom || saved.accessibility.ai_translation_overlay;
         *guard = saved.clone();
-        (sched, doh, prox, conn, speed)
+        (
+            sched,
+            doh,
+            prox,
+            conn,
+            speed,
+            tier_ch,
+            was_ai_active && !is_ai_active,
+        )
     };
     if doh_changed {
         state.registry.http().set_doh_config(saved.doh.clone());
@@ -381,6 +404,15 @@ async fn apply_settings_side_effects(
             .registry
             .http()
             .set_speed_limit_kbps(saved.sources.speed_limit_kbps);
+    }
+    if ai_tier_changed {
+        state
+            .ai
+            .sync_active_tier(saved.accessibility.translation_model_tier)
+            .await;
+    }
+    if ai_disabled_now {
+        let _ = state.ai.hard_unload_and_purge(Some(app)).await;
     }
     let _ = app.emit("settings://changed", &saved);
     state.images.evict_if_needed(saved.cache.max_mb).await;
@@ -1478,4 +1510,125 @@ pub(crate) async fn detect_chapter_layout(
     page_tokens: Vec<String>,
 ) -> Result<LayoutDetectionResult, AppError> {
     layout_detect::detect_chapter_layout(&state, manga_id, &page_tokens).await
+}
+
+/// Returns the live status of the 2-tier on-device AI engine, model availability, and storage path.
+#[tauri::command]
+pub(crate) async fn ai_get_status(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<AiStatusView, AppError> {
+    Ok(state.ai.status(Some(&app)).await)
+}
+
+/// Hot-switches the active AI translation model tier (`lite` or `qwen3_vl_2b`) without restart and
+/// persists the selection in user settings.
+#[tauri::command]
+pub(crate) async fn ai_set_tier(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    tier: TranslationModelTier,
+) -> Result<AiStatusView, AppError> {
+    let status = state.ai.set_tier(Some(&app), tier).await?;
+    persist_ai_tier_setting(&app, &state, status.active_tier).await?;
+    Ok(status)
+}
+
+/// Downloads and verifies the Tier 2 `Qwen3-VL-2B` GGUF + `mmproj` weights (plus Windows `llama.cpp`
+/// sidecar on Windows), streaming progress via `on_progress` and auto-switching upon completion.
+#[tauri::command]
+pub(crate) async fn ai_download_tier2(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    on_progress: Channel<AiDownloadProgressEvent>,
+) -> Result<AiStatusView, AppError> {
+    let status = state.ai.download_tier2(&app, on_progress).await?;
+    persist_ai_tier_setting(&app, &state, status.active_tier).await?;
+    Ok(status)
+}
+
+/// Cancels any active Tier 2 AI model download immediately and cleans up partial temp files.
+#[tauri::command]
+pub(crate) async fn ai_cancel_download(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<AiStatusView, AppError> {
+    Ok(state.ai.cancel_download(Some(&app)).await)
+}
+
+/// Hard-unloads Tier 2, deletes downloaded Tier 2 model weights from disk, and reverts to `lite`.
+#[tauri::command]
+pub(crate) async fn ai_delete_tier2(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<AiStatusView, AppError> {
+    let status = state.ai.delete_tier2(Some(&app)).await?;
+    persist_ai_tier_setting(&app, &state, status.active_tier).await?;
+    Ok(status)
+}
+
+/// Runs speech-bubble detection (`detect_only = true`) or full on-device manga page translation.
+#[tauri::command]
+pub(crate) async fn ai_translate_page(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    page_token: String,
+    target_lang: String,
+    detect_only: Option<bool>,
+    generation: Option<u64>,
+) -> Result<PageAiResultView, AppError> {
+    let mode = if detect_only.unwrap_or(false) {
+        AiPageMode::DetectOnly
+    } else {
+        AiPageMode::Translate
+    };
+    state
+        .ai
+        .translate_page(
+            Some(&app),
+            &state,
+            &page_token,
+            &target_lang,
+            mode,
+            generation,
+        )
+        .await
+}
+
+/// Immediately cancels all queued or in-flight page AI jobs and returns the new job generation.
+#[tauri::command]
+pub(crate) async fn ai_cancel_jobs(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<u64, AppError> {
+    Ok(state.ai.cancel_jobs(Some(&app)).await)
+}
+
+/// Cancels active AI jobs, hard-unloads all native runtimes/sidecars, clears RAM caches, and purges
+/// all transient AI disk cache files under `<data_dir>/cache/ai/`.
+#[tauri::command]
+pub(crate) async fn ai_hard_unload_and_purge(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<AiStatusView, AppError> {
+    state.ai.hard_unload_and_purge(Some(&app)).await
+}
+
+async fn persist_ai_tier_setting(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    tier: TranslationModelTier,
+) -> Result<(), AppError> {
+    let mut current = state.current_settings().await;
+    if current.accessibility.translation_model_tier == tier {
+        return Ok(());
+    }
+    current.accessibility.translation_model_tier = tier;
+    let saved = state.db.save_settings(&current).await?;
+    {
+        let mut guard = state.settings.write().await;
+        *guard = saved.clone();
+    }
+    let _ = app.emit("settings://changed", &saved);
+    Ok(())
 }

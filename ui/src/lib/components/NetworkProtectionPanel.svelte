@@ -273,7 +273,7 @@
               type="button"
               onclick={runDohTest}
               disabled={testing || missingRequiredAccountId}
-              class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+              class="btn-3d btn-3d-surface gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-50"
               style="background-color: var(--surface); border-color: var(--border);"
             >
               {#if testing}

@@ -81,6 +81,7 @@ pub(crate) struct MangaView {
     pub reader_mode_override: Option<String>,
     pub reader_settings: Option<ReaderSettings>,
     pub detected_webtoon: bool,
+    pub detected_layout: Option<String>,
     pub latest_chapter_name: Option<String>,
     pub source_id: Option<String>,
     pub canonical_url: Option<String>,
@@ -629,6 +630,16 @@ async fn finish_resolved_response(
         }
         Resolved::Manga(manga) => {
             let manga_id = state.db.upsert_manga(&manga).await?;
+            let site_key = manga.site.as_storage_key();
+            let _ = crate::services::layout_detect::classify_manga_on_import(
+                state,
+                manga_id,
+                &manga.genres,
+                &manga.tags,
+                &site_key,
+                &[],
+            )
+            .await;
             prefetch_manga_cover(state, manga_id, &manga, settings.cache.max_mb);
             if let Some(u) = submitted_url.or_else(|| Some(manga.url.clone())) {
                 spawn_auto_record_from_manga(deps, u, &manga);
@@ -644,6 +655,16 @@ async fn finish_resolved_response(
         }
         Resolved::Chapter { manga, at } => {
             let manga_id = state.db.upsert_manga(&manga).await?;
+            let site_key = manga.site.as_storage_key();
+            let _ = crate::services::layout_detect::classify_manga_on_import(
+                state,
+                manga_id,
+                &manga.genres,
+                &manga.tags,
+                &site_key,
+                &[],
+            )
+            .await;
             prefetch_manga_cover(state, manga_id, &manga, settings.cache.max_mb);
             if let Some(u) = submitted_url.or_else(|| Some(manga.url.clone())) {
                 spawn_auto_record_from_manga(deps, u, &manga);
@@ -873,6 +894,16 @@ pub(crate) async fn get_manga(
                 .db
                 .upsert_manga_with_id(Some(manga_id), refreshed_manga)
                 .await?;
+            let site_key = refreshed_manga.site.as_storage_key();
+            let _ = crate::services::layout_detect::classify_manga_on_import(
+                state,
+                manga_id,
+                &refreshed_manga.genres,
+                &refreshed_manga.tags,
+                &site_key,
+                &[],
+            )
+            .await;
             prefetch_manga_cover(state, manga_id, refreshed_manga, max_mb);
             state.db.clear_has_new(manga_id).await?;
         }
@@ -1056,9 +1087,17 @@ pub(crate) async fn delete_manga_permanently(
     state: &AppState,
     manga_id: i64,
 ) -> Result<(), AppError> {
+    let cover_url = state
+        .db
+        .get_manga_by_id(manga_id)
+        .await?
+        .and_then(|m| m.cover_url);
     crate::services::comics::delete_local_files_for_manga(&state.data_dir, state, manga_id).await;
-    let _ = state.images.clear_by_manga(manga_id).await;
     state.db.delete_manga_permanently(manga_id).await?;
+    let _ = state.images.clear_by_manga(manga_id).await;
+    if let Some(ref url) = cover_url {
+        let _ = state.images.remove_cover_if_unreferenced(url).await;
+    }
     state.chapters.invalidate_all();
     Ok(())
 }
@@ -1211,6 +1250,13 @@ fn map_manga_view(
         .and_then(|raw| serde_json::from_str::<ReaderSettings>(raw).ok())
         .map(ReaderSettings::sanitized);
 
+    let detected_layout = row
+        .detected_layout
+        .filter(|s| matches!(s.as_str(), "manga" | "webtoon"))
+        .or_else(|| (row.detected_webtoon != 0).then(|| "webtoon".to_owned()));
+    let detected_webtoon =
+        detected_layout.as_deref() == Some("webtoon") || row.detected_webtoon != 0;
+
     MangaView {
         id: row.id,
         url: row.url,
@@ -1224,7 +1270,8 @@ fn map_manga_view(
         is_completed,
         reader_mode_override: row.reader_mode_override,
         reader_settings,
-        detected_webtoon: row.detected_webtoon != 0,
+        detected_webtoon,
+        detected_layout,
         latest_chapter_name: row.latest_chapter_name,
         source_id: row.source_id,
         canonical_url: row.canonical_url,

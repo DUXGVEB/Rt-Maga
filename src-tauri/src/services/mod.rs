@@ -1,5 +1,6 @@
 //! Application services orchestrating `mangacore`, SQLite repositories, caching, and notifications.
 
+pub(crate) mod ai;
 pub(crate) mod app_release;
 pub(crate) mod backup_service;
 pub(crate) mod comics;

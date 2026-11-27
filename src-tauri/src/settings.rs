@@ -628,10 +628,54 @@ pub(crate) enum SettingsSection {
     Device,
     Reader,
     Floating,
+    Accessibility,
     Network,
     Updates,
     Sources,
     Cache,
+}
+
+/// One-handed ergonomic layout mode anchoring navigation and reader controls into a thumb zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum OneHandedMode {
+    /// Standard full-width layout without thumb-zone mirroring.
+    #[default]
+    Default,
+    /// Anchor out-of-reach triggers and floating controls to the left thumb zone.
+    Left,
+    /// Anchor out-of-reach triggers and floating controls to the right thumb zone.
+    Right,
+}
+
+/// Active on-device AI translation and speech-bubble detection model tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub(crate) enum TranslationModelTier {
+    /// Tier 1 built-in compact OCR + NMT pipeline (`PP-OCRv6_tiny` + ML Kit / ONNX).
+    #[default]
+    Lite,
+    /// Tier 2 optional high-accuracy multimodal VLM (`Qwen3-VL-2B-Instruct-IQ4_XS` + `mmproj`).
+    #[serde(rename = "qwen3_vl_2b")]
+    Qwen3Vl2B,
+}
+
+/// Accessibility, one-handed ergonomics, Bubble Auto-Zoom, and AI Translation Overlay preferences.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct AccessibilitySettings {
+    /// Ergonomic thumb-zone layout alignment (`default`, `left`, or `right`).
+    pub one_handed_mode: OneHandedMode,
+    /// Enable tap-to-zoom speech bubble focus inside the reader.
+    pub bubble_auto_zoom: bool,
+    /// Enable on-device AI translation overlay over detected speech bubbles.
+    pub ai_translation_overlay: bool,
+    /// Active AI translation engine tier (`lite` or `qwen3_vl_2b`).
+    pub translation_model_tier: TranslationModelTier,
+    /// Tracks whether the user has acknowledged the first-time AI feature disclosure prompt.
+    pub first_ai_prompt_seen: bool,
 }
 
 /// Local image disk cache limits.
@@ -664,6 +708,8 @@ pub(crate) struct Settings {
     pub reader: ReaderSettings,
     /// Floating action buttons visibility & placement settings.
     pub floating: FloatingButtonsSettings,
+    /// One-handed layout, Bubble Auto-Zoom, and on-device AI translation settings.
+    pub accessibility: AccessibilitySettings,
     /// Background chapter and app update check settings.
     pub updates: UpdateSettings,
     /// Scraper source settings.
@@ -735,6 +781,9 @@ impl Settings {
             SettingsSection::Floating => {
                 self.floating = FloatingButtonsSettings::default();
             }
+            SettingsSection::Accessibility => {
+                self.accessibility = AccessibilitySettings::default();
+            }
             SettingsSection::Network => {
                 self.doh = DohConfig::default();
                 self.proxy = ProxyConfig::default();
@@ -800,6 +849,13 @@ impl Settings {
             },
             "cache": {
                 "maxMb": self.cache.max_mb,
+            },
+            "accessibility": {
+                "oneHandedMode": self.accessibility.one_handed_mode,
+                "bubbleAutoZoom": self.accessibility.bubble_auto_zoom,
+                "aiTranslationOverlay": self.accessibility.ai_translation_overlay,
+                "translationModelTier": self.accessibility.translation_model_tier,
+                "firstAiPromptSeen": self.accessibility.first_ai_prompt_seen,
             },
         })
     }
@@ -970,5 +1026,90 @@ mod tests {
 
         let diag = resettable.redacted_for_diagnostics();
         assert_eq!(diag["ui"]["lightAccent"], DEFAULT_LIGHT_ACCENT);
+    }
+
+    #[test]
+    fn accessibility_settings_serialize_reset_and_preserve_legacy_defaults() {
+        let legacy = serde_json::from_str::<Settings>(r#"{"language":"vi"}"#)
+            .expect("legacy payload without accessibility section must parse")
+            .sanitized();
+        assert_eq!(
+            legacy.accessibility.one_handed_mode,
+            OneHandedMode::Default,
+            "default one-handed mode should be Default"
+        );
+        assert!(
+            !legacy.accessibility.bubble_auto_zoom,
+            "bubble_auto_zoom defaults to false"
+        );
+        assert!(
+            !legacy.accessibility.ai_translation_overlay,
+            "ai_translation_overlay defaults to false"
+        );
+        assert_eq!(
+            legacy.accessibility.translation_model_tier,
+            TranslationModelTier::Lite,
+            "translation_model_tier defaults to Lite"
+        );
+        assert!(
+            !legacy.accessibility.first_ai_prompt_seen,
+            "first_ai_prompt_seen defaults to false"
+        );
+
+        let payload = r#"{
+            "accessibility": {
+                "oneHandedMode": "left",
+                "bubbleAutoZoom": true,
+                "aiTranslationOverlay": true,
+                "translationModelTier": "qwen3_vl_2b",
+                "firstAiPromptSeen": true
+            }
+        }"#;
+        let parsed = serde_json::from_str::<Settings>(payload)
+            .expect("v3.3 accessibility payload must parse")
+            .sanitized();
+        assert_eq!(
+            parsed.accessibility.one_handed_mode,
+            OneHandedMode::Left,
+            "left one-handed mode round-trips"
+        );
+        assert!(parsed.accessibility.bubble_auto_zoom, "bubble zoom enabled");
+        assert!(
+            parsed.accessibility.ai_translation_overlay,
+            "ai overlay enabled"
+        );
+        assert_eq!(
+            parsed.accessibility.translation_model_tier,
+            TranslationModelTier::Qwen3Vl2B,
+            "qwen3_vl_2b tier round-trips"
+        );
+        assert!(
+            parsed.accessibility.first_ai_prompt_seen,
+            "first prompt seen flag round-trips"
+        );
+
+        let serialized = serde_json::to_value(&parsed).expect("settings serialize cleanly");
+        assert_eq!(
+            serialized["accessibility"]["translationModelTier"], "qwen3_vl_2b",
+            "Qwen3Vl2B must serialize as exact snake_case key qwen3_vl_2b"
+        );
+        assert_eq!(
+            serialized["accessibility"]["oneHandedMode"], "left",
+            "OneHandedMode::Left must serialize as left"
+        );
+
+        let diag = parsed.redacted_for_diagnostics();
+        assert_eq!(
+            diag["accessibility"]["translationModelTier"], "qwen3_vl_2b",
+            "diagnostics snapshot includes accessibility section"
+        );
+
+        let mut resettable = parsed;
+        resettable.reset_section(SettingsSection::Accessibility);
+        assert_eq!(
+            resettable.accessibility,
+            AccessibilitySettings::default(),
+            "resetting accessibility restores defaults without panicking"
+        );
     }
 }

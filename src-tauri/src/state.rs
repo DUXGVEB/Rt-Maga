@@ -10,6 +10,7 @@ use tokio::task::JoinHandle;
 
 use crate::cache::{CatalogCache, ChapterCache, ImageCache};
 use crate::repo::Database;
+use crate::services::ai::AiEngine;
 use crate::services::app_release::AppReleaseInfo;
 use crate::services::sync::SyncManager;
 use crate::settings::Settings;
@@ -47,6 +48,8 @@ pub(crate) struct AppState {
     pub chapter_load_seq: AtomicU64,
     /// Broadcast channel notifying in-flight chapter loads when a newer primary request starts.
     pub chapter_cancel_tx: watch::Sender<u64>,
+    /// Unified 2-tier on-device AI speech-bubble & translation engine.
+    pub ai: AiEngine,
 }
 
 impl AppState {
@@ -60,6 +63,7 @@ impl AppState {
         proxy_key: [u8; 32],
     ) -> Arc<Self> {
         let (chapter_cancel_tx, _rx) = watch::channel(0_u64);
+        let ai = AiEngine::new(&data_dir, settings.accessibility.translation_model_tier);
 
         Arc::new(Self {
             data_dir,
@@ -77,6 +81,7 @@ impl AppState {
             sync: SyncManager::new(),
             chapter_load_seq: AtomicU64::new(0),
             chapter_cancel_tx,
+            ai,
         })
     }
 

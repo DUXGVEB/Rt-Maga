@@ -3,6 +3,8 @@ import type { TransitionConfig } from "svelte/transition";
 
 export const MOTION_EASING = {
   snappyCss: "cubic-bezier(0.2, 0, 0, 1)",
+  tactileCss: "cubic-bezier(0.22, 1.35, 0.36, 1)",
+  heroCss: "cubic-bezier(0.22, 1, 0.36, 1)",
 } as const;
 
 export const MOTION_DURATION = {
@@ -11,6 +13,7 @@ export const MOTION_DURATION = {
   base: 175,
   overlay: 190,
   slow: 200,
+  heroFlight: 260,
   flipMax: 200,
   staggerStep: 18,
   staggerMaxTotal: 180,

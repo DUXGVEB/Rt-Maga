@@ -55,6 +55,7 @@
   let longPressFiredAt = 0;
 
   const floatingCfg = $derived(settingsStore.value.floating);
+  const oneHandedMode = $derived(settingsStore.value.accessibility.oneHandedMode);
   const t = $derived(settingsStore.t);
 
   function cancelHold() {
@@ -167,11 +168,11 @@
       deviceEnv.viewportHeight,
       deviceEnv.info.insets,
       {
-        hasBottomNav,
+        hasBottomNav: hasBottomNav || inReader,
         topToolbarHeightPx: inReader ? 58 : 52,
       }
     );
-    const placed = resolveFloatingPositions(requests, bounds);
+    const placed = resolveFloatingPositions(requests, bounds, oneHandedMode);
     return new Map(placed.map((p) => [p.id, p]));
   });
 
@@ -244,7 +245,7 @@
         onclick={(e) => handleClick("orientationLock", e, onCycleOrientationLock)}
         title={orientationTitle()}
         aria-label={orientationTitle()}
-        class="glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
+        class="btn-3d glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
         class:floating-holding={holdingId === "orientationLock"}
         style="box-shadow: var(--shadow-md); border-color: {holdingId === 'orientationLock' || orientationLock !== 'auto'
           ? 'var(--accent)'
@@ -291,7 +292,7 @@
         onclick={(e) => handleClick("readerSettings", e, onToggleReaderSettings)}
         title={readerSettingsTitle()}
         aria-label={readerSettingsTitle()}
-        class="glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
+        class="btn-3d glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
         class:floating-holding={holdingId === "readerSettings"}
         style="box-shadow: var(--shadow-md); border-color: {readerSettingsActive || holdingId === 'readerSettings'
           ? 'var(--accent)'
@@ -328,7 +329,7 @@
         onclick={(e) => handleClick("scrollToTop", e, onScrollTop)}
         title={scrollTopTitle()}
         aria-label={scrollTopTitle()}
-        class="glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
+        class="btn-3d glass-chrome gpu-press flex h-full w-full touch-manipulation items-center justify-center rounded-2xl border select-none hover:scale-105"
         class:floating-holding={holdingId === "scrollToTop"}
         style="box-shadow: var(--shadow-md); border-color: {holdingId === 'scrollToTop'
           ? 'var(--accent)'

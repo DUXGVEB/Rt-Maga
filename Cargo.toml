@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "3.2.1"
+version = "3.3.0"
 edition = "2024"
 rust-version = "1.92"
 license-file = "LICENSE"
@@ -25,10 +25,12 @@ futures = "0.3"
 hayro = "0.9"
 hmac = "0.12"
 http = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 imagesize = "0.13"
 infer = { version = "0.19", default-features = false }
 lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
 moka = { version = "0.12", features = ["future"] }
+ort = { version = "2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std", "directml", "api-17"] }
 prost = "0.13"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 quick-xml = "0.38"

@@ -63,11 +63,24 @@ export interface DeviceSettings {
 
 export type DoubleTapAction = "zoom" | "toggle_toolbar" | "next_page" | "disabled";
 
+export type OneHandedMode = "default" | "left" | "right";
+
+export type TranslationModelTier = "lite" | "qwen3_vl_2b";
+
+export interface AccessibilitySettings {
+  oneHandedMode: OneHandedMode;
+  bubbleAutoZoom: boolean;
+  aiTranslationOverlay: boolean;
+  translationModelTier: TranslationModelTier;
+  firstAiPromptSeen: boolean;
+}
+
 export type SettingsSection =
   | "appearance"
   | "device"
   | "reader"
   | "floating"
+  | "accessibility"
   | "network"
   | "updates"
   | "sources"
@@ -266,6 +279,7 @@ export interface Settings {
   device: DeviceSettings;
   reader: ReaderSettings;
   floating: FloatingButtonsSettings;
+  accessibility: AccessibilitySettings;
   updates: UpdateSettings;
   sources: SourceSettings;
   doh: DohConfig;
@@ -520,6 +534,7 @@ export interface MangaView {
   readerModeOverride: ReaderModeOverride;
   readerSettings: ReaderSettings | null;
   detectedWebtoon: boolean;
+  detectedLayout?: "manga" | "webtoon" | null;
   latestChapterName: string | null;
   sourceId: string | null;
   canonicalUrl: string | null;
@@ -1064,4 +1079,72 @@ export interface LayoutDetectionResult {
   isWebtoon: boolean;
   medianRatio: number;
   sampledPages: number;
+}
+
+export type AiModelStatus = "ready" | "not_downloaded" | "downloading" | "verifying" | "error";
+
+export interface AiModelEntryView {
+  tier: TranslationModelTier;
+  id: string;
+  displayName: string;
+  status: AiModelStatus;
+  installedBytes: number;
+  requiredBytes: number;
+  ready: boolean;
+  bundled: boolean;
+  accelerator: string;
+}
+
+export interface AiStatusView {
+  activeTier: TranslationModelTier;
+  platform: string;
+  storageDir: string;
+  tier1Ready: boolean;
+  tier2Ready: boolean;
+  downloading: boolean;
+  vulkanSupported: boolean;
+  loadedInMemory: boolean;
+  activeJobs: number;
+  models: AiModelEntryView[];
+}
+
+export type AiDownloadStage =
+  | "starting"
+  | "downloading"
+  | "verifying"
+  | "extracting"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export interface AiDownloadProgressEvent {
+  stage: AiDownloadStage;
+  assetId: string;
+  fileIndex: number;
+  fileCount: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  percent: number;
+  speedBytesPerSec: number;
+  message?: string | null;
+}
+
+export interface TranslatedRegionView {
+  text: string;
+  sourceText?: string | null;
+  bbox: [number, number, number, number];
+  confidence: number;
+}
+
+export interface PageAiResultView {
+  pageKey: string;
+  tierUsed: TranslationModelTier;
+  targetLang: string;
+  detectOnly: boolean;
+  fromCache: boolean;
+  cancelled: boolean;
+  elapsedMs: number;
+  imageWidth: number;
+  imageHeight: number;
+  regions: TranslatedRegionView[];
 }

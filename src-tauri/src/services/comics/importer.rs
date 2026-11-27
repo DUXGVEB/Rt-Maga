@@ -388,6 +388,7 @@ pub(crate) async fn import_comic_paths(
     for (series_slug, mut items) in groups {
         items.sort_by(|a, b| compare_parsed_chapters(&a.parsed, &b.parsed));
         let manga_id = persist_series_group(
+            data_dir,
             &comics_root,
             state,
             &series_slug,
@@ -560,6 +561,7 @@ fn apply_series_fallback_meta(parsed: &mut ParsedComicChapter, series_meta: &Com
     reason = "copies imported chapters, merges existing chapters, caches cover, and seeds history"
 )]
 async fn persist_series_group(
+    data_dir: &Path,
     comics_root: &Path,
     state: &AppState,
     series_slug: &str,
@@ -817,11 +819,10 @@ async fn persist_series_group(
         let cover_key = ImageCache::key_for_url(cover_url.as_str());
         state
             .images
-            .put(
+            .put_cover(
                 &cover_key,
                 &first.first_page_bytes,
                 &first.first_page_mime,
-                max_mb,
                 CacheEntryMeta {
                     site: Some(&site_key),
                     manga_id: Some(manga_id),
@@ -830,7 +831,20 @@ async fn persist_series_group(
                 },
             )
             .await;
+    } else if !crate::services::comics::is_tachibk_url(cover_url.as_str()) {
+        state.images.spawn_cover_prefetch(
+            state.registry.http().clone(),
+            cover_url.clone(),
+            series_url.clone(),
+            Some(site_key.clone()),
+            Some(manga_id),
+            max_mb,
+        );
     }
+
+    let first_chapter_probe = chapter_records
+        .first()
+        .map(|(ch_url, fmt, _, _, _)| (ch_url.clone(), ComicFormat::from_storage_str(fmt)));
 
     for (chap_url_str, format_str, rel_path, pages_json, fsize) in chapter_records {
         state
@@ -845,6 +859,40 @@ async fn persist_series_group(
             )
             .await?;
     }
+
+    // Probe the first 4–6 page headers of chapter 1 and persist Manga vs. Webtoon layout
+    // classification immediately on import (reusing page 0 bytes already extracted above).
+    let mut sampled_pages: Vec<Vec<u8>> =
+        Vec::with_capacity(crate::services::layout_detect::MAX_SNIFF_PAGES);
+    if !first.first_page_bytes.is_empty() {
+        sampled_pages.push(first.first_page_bytes.to_vec());
+    }
+    if let Some((first_ch_url, first_fmt)) = first_chapter_probe {
+        let max_pages = match first_fmt {
+            ComicFormat::Pdf => 3,
+            _ => crate::services::layout_detect::MAX_SNIFF_PAGES,
+        };
+        let encoded_ch: String =
+            url::form_urlencoded::byte_serialize(first_ch_url.as_bytes()).collect();
+        let target_count = first.pages.len().min(max_pages);
+        for page_idx in 1..target_count {
+            if let Ok(page_url) = Url::parse(&format!(
+                "https://comic.local/page/{manga_id}/{page_idx}?ch={encoded_ch}"
+            )) && let Ok((bytes, _)) = read_local_page_bytes(data_dir, state, &page_url).await
+            {
+                sampled_pages.push(bytes);
+            }
+        }
+    }
+    let _ = crate::services::layout_detect::classify_manga_on_import(
+        state,
+        manga_id,
+        &manga.genres,
+        &manga.tags,
+        &site_key,
+        &sampled_pages,
+    )
+    .await;
 
     for read_url in restored_read_urls {
         state.db.mark_chapter_read(manga_id, &read_url).await?;

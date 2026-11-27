@@ -34,9 +34,11 @@
     collapseReveal,
     createOverlayGuard,
     popoverPop,
+    pressable,
     viewReveal,
   } from "../lib/motion";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
+  import { heroTransitionStore } from "../lib/stores/heroTransition.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -63,8 +65,59 @@
   let descExpanded = $state(false);
   let tagsExpanded = $state(false);
   let titleMenuOpen = $state(false);
+  let navigatingTag = $state<string | null>(null);
   let loadSeq = 0;
   const deleteModalGuard = createOverlayGuard(200);
+  const coverHiddenByHero = $derived(heroTransitionStore.isTargetHidden(id));
+
+  function normalizeHost(rawUrl: string): string {
+    try {
+      const normalized = rawUrl.includes("://") ? rawUrl : `https://${rawUrl}`;
+      return new URL(normalized).hostname.replace(/^(www\.|m\.)/i, "").toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
+  async function handleTagClick(tagLabel: string) {
+    const clean = tagLabel.trim();
+    if (!manga || !clean || navigatingTag) return;
+
+    const rawUrl = (manga.canonicalUrl ?? manga.url ?? "").trim();
+    const isWeb =
+      !isLocalComicSite(manga.site) &&
+      !isTachibkCatalogSite(manga.site) &&
+      /^https?:\/\//i.test(rawUrl);
+
+    if (!isWeb) {
+      router.goSources(clean);
+      return;
+    }
+
+    navigatingTag = clean;
+    try {
+      const parsed = new URL(rawUrl);
+      const origin = parsed.origin;
+      const mangaHost = normalizeHost(rawUrl);
+      const siteKey = manga.site.trim().toLowerCase();
+
+      const saved = await api.listSavedSources("all").catch(() => []);
+      const matched =
+        saved.find((s) => normalizeHost(s.baseUrl) === mangaHost) ??
+        saved.find((s) => s.sourceKey.trim().toLowerCase() === siteKey) ??
+        null;
+
+      if (matched) {
+        router.goBrowse(matched.baseUrl, undefined, false, matched.id, clean);
+      } else {
+        router.goBrowse(origin, undefined, false, undefined, clean);
+      }
+    } catch {
+      router.goSources(clean);
+    } finally {
+      navigatingTag = null;
+    }
+  }
 
   onMount(() => {
     const unregisterBack = router.registerBackInterceptor(() => {
@@ -421,10 +474,11 @@
   <div class="flex flex-wrap items-center justify-between gap-2">
     <button
       type="button"
+      use:pressable
       onclick={() => {
         if (!router.goBack()) router.goHome();
       }}
-      class="gpu-press inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm hover:opacity-80"
+      class="btn-3d btn-3d-subtle inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-sm font-medium"
       style="color: var(--text-muted);"
     >
       <ArrowLeft size={16} />
@@ -445,10 +499,10 @@
         {:else}
           <button
             type="button"
+            use:pressable
             onclick={refresh}
             disabled={refreshing}
-            class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium"
-            style="background-color: var(--surface); border-color: var(--border);"
+            class="btn-3d btn-3d-surface inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
           >
             <RefreshCw size={14} class={refreshing ? "animate-spin" : ""} />
             <span>{refreshing ? t.refreshing : t.refreshChapters}</span>
@@ -456,20 +510,21 @@
         {/if}
         <button
           type="button"
+          use:pressable
           onclick={hideManga}
           disabled={hiding}
-          class="gpu-press inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:opacity-85 disabled:opacity-50"
-          style="background-color: var(--surface); border-color: var(--border); color: var(--text-muted);"
-          title={t.hideMangaDesc}
+          class="btn-3d btn-3d-surface inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+          style="color: var(--text-muted);"
         >
           <EyeOff size={14} />
           <span>{t.hideMangaBtn}</span>
         </button>
         <button
           type="button"
+          use:pressable
           onclick={openDeleteModal}
-          class="gpu-press inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:opacity-85"
-          style="background-color: var(--surface); border-color: var(--border); color: var(--danger);"
+          class="btn-3d btn-3d-surface inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
+          style="color: var(--danger);"
         >
           <Trash2 size={14} />
           <span>{t.deleteMangaBtn}</span>
@@ -479,16 +534,30 @@
   </div>
 
   {#if loading}
-    <div class="flex gap-6">
-      <div
-        class="h-60 w-44 shrink-0 animate-pulse rounded-xl"
-        style="background-color: var(--surface-hover);"
-      ></div>
-      <div class="flex flex-1 flex-col gap-3 pt-2">
+    <section
+      class="surface-card relative flex flex-col gap-5 overflow-hidden rounded-2xl p-4 sm:flex-row sm:gap-6 sm:p-6"
+    >
+      <div class="relative z-10 flex items-start gap-4 sm:block sm:shrink-0">
+        <div
+          data-hero-cover-target="manga-{id}"
+          class="aspect-[3/4] w-28 shrink-0 rounded-xl border shadow-md sm:h-60 sm:w-44 {coverHiddenByHero
+            ? ''
+            : 'animate-pulse'}"
+          style="background-color: var(--surface-hover); border-color: var(--border); opacity: {coverHiddenByHero
+            ? 0
+            : 1};"
+        ></div>
+        <div class="flex flex-1 flex-col gap-2.5 pt-1 sm:hidden">
+          <div class="h-5 w-4/5 animate-pulse rounded" style="background-color: var(--surface-hover);"></div>
+          <div class="h-3.5 w-1/2 animate-pulse rounded" style="background-color: var(--surface-hover);"></div>
+        </div>
+      </div>
+      <div class="hidden flex-1 flex-col gap-3 pt-2 sm:flex">
         <div class="h-7 w-2/3 animate-pulse rounded" style="background-color: var(--surface-hover);"></div>
         <div class="h-4 w-1/3 animate-pulse rounded" style="background-color: var(--surface-hover);"></div>
+        <div class="mt-2 h-16 w-full animate-pulse rounded-xl" style="background-color: var(--surface-hover);"></div>
       </div>
-    </div>
+    </section>
   {:else if errorState}
     <SourceDiagnosticCard
       error={errorState}
@@ -502,7 +571,7 @@
       onOpenNetworkSettings={() => router.goSettings("network")}
     />
   {:else if manga}
-    <div in:viewReveal|local={{ duration: 170, y: 6 }} class="flex flex-col gap-6">
+    <div class="flex flex-col gap-6">
       {#if refreshErrorState}
         <div transition:collapseReveal|local>
           <SourceDiagnosticCard
@@ -536,8 +605,11 @@
       <!-- Mobile compact top strip (cover + primary headline side-by-side); stacks as left column on sm+ -->
       <div class="relative z-10 flex items-start gap-4 sm:block sm:shrink-0">
         <div
+          data-hero-cover-target="manga-{id}"
           class="aspect-[3/4] w-28 shrink-0 overflow-hidden rounded-xl border shadow-md sm:h-60 sm:w-44"
-          style="background-color: var(--surface-subtle); border-color: var(--border);"
+          style="background-color: var(--surface-subtle); border-color: var(--border); opacity: {coverHiddenByHero
+            ? 0
+            : 1};"
         >
           {#if manga.coverToken && !coverError}
             <img
@@ -557,7 +629,10 @@
         </div>
 
         <!-- Mobile-only side header summary beside cover so zero wasted horizontal space on phones -->
-        <div class="flex min-w-0 flex-1 flex-col gap-1.5 sm:hidden">
+        <div
+          class="hero-emerge flex min-w-0 flex-1 flex-col gap-1.5 sm:hidden"
+          style="--stagger-delay: 25ms;"
+        >
           <div class="flex flex-wrap items-center gap-1.5">
             <span
               class="rounded-md px-2 py-0.5 text-[11px] font-semibold"
@@ -598,7 +673,6 @@
                 titleMenuOpen = !titleMenuOpen;
               }}
               aria-expanded={titleMenuOpen}
-              title={t.mangaTitleMenuHint}
               class="group inline-flex max-w-full items-start gap-1 rounded-lg text-left transition-opacity hover:opacity-85"
             >
               <h1 class="text-lg font-bold leading-snug tracking-tight group-hover:underline">
@@ -620,9 +694,10 @@
                 <button
                   type="button"
                   role="menuitem"
+                  use:pressable
                   onclick={searchMangaInSources}
-                  class="gpu-press flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold hover:opacity-90"
-                  style="background-color: var(--accent-soft); color: var(--accent);"
+                  class="btn-3d btn-3d-subtle flex min-h-[40px] w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold"
+                  style="background-color: var(--accent-soft); border-color: transparent; color: var(--accent);"
                 >
                   <Search size={14} class="shrink-0" />
                   <span>{t.mangaTitleSearchInSources}</span>
@@ -630,9 +705,10 @@
                 <button
                   type="button"
                   role="menuitem"
+                  use:pressable
                   onclick={() => void copyMangaTitle()}
-                  class="gpu-press flex min-h-[38px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium hover:opacity-85"
-                  style="color: var(--text);"
+                  class="btn-3d btn-3d-subtle flex min-h-[38px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium"
+                  style="background-color: var(--surface); border-color: transparent; color: var(--text);"
                 >
                   <Copy size={13} class="shrink-0" style="color: var(--text-muted);" />
                   <span>{t.mangaTitleCopyTitle}</span>
@@ -657,7 +733,7 @@
       <div class="relative z-10 flex min-w-0 flex-1 flex-col justify-between gap-4">
         <div class="flex flex-col gap-2">
           <!-- Desktop/Tablet headline block (hidden on <640px since rendered beside cover above) -->
-          <div class="hidden flex-col gap-2 sm:flex">
+          <div class="hero-emerge hidden flex-col gap-2 sm:flex" style="--stagger-delay: 25ms;">
             <div class="flex flex-wrap items-center gap-2">
               <span
                 class="rounded-md px-2 py-0.5 text-xs font-medium"
@@ -701,7 +777,6 @@
                   titleMenuOpen = !titleMenuOpen;
                 }}
                 aria-expanded={titleMenuOpen}
-                title={t.mangaTitleMenuHint}
                 class="group inline-flex max-w-full items-center gap-1.5 rounded-lg text-left transition-opacity hover:opacity-85"
               >
                 <h1 class="text-2xl font-bold leading-tight tracking-tight group-hover:underline">
@@ -723,9 +798,10 @@
                   <button
                     type="button"
                     role="menuitem"
+                    use:pressable
                     onclick={searchMangaInSources}
-                    class="gpu-press flex min-h-[38px] w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold hover:opacity-90"
-                    style="background-color: var(--accent-soft); color: var(--accent);"
+                    class="btn-3d btn-3d-subtle flex min-h-[38px] w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold"
+                    style="background-color: var(--accent-soft); border-color: transparent; color: var(--accent);"
                   >
                     <Search size={14} class="shrink-0" />
                     <span>{t.mangaTitleSearchInSources}</span>
@@ -733,9 +809,10 @@
                   <button
                     type="button"
                     role="menuitem"
+                    use:pressable
                     onclick={() => void copyMangaTitle()}
-                    class="gpu-press flex min-h-[36px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium hover:opacity-85"
-                    style="color: var(--text);"
+                    class="btn-3d btn-3d-subtle flex min-h-[36px] w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium"
+                    style="background-color: var(--surface); border-color: transparent; color: var(--text);"
                   >
                     <Copy size={13} class="shrink-0" style="color: var(--text-muted);" />
                     <span>{t.mangaTitleCopyTitle}</span>
@@ -750,13 +827,19 @@
             {/if}
           </div>
           {#if manga.altTitles.length > 0}
-            <div class="text-xs leading-relaxed" style="color: var(--text-muted);">
+            <div
+              class="hero-emerge text-xs leading-relaxed"
+              style="--stagger-delay: 55ms; color: var(--text-muted);"
+            >
               <span class="font-semibold">{t.mangaAltTitlesLabel}:</span>
               {manga.altTitles.slice(0, 4).join(" · ")}
             </div>
           {/if}
 
-          <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" style="color: var(--text-muted);">
+          <div
+            class="hero-emerge flex flex-wrap items-center gap-x-4 gap-y-1 text-xs"
+            style="--stagger-delay: 65ms; color: var(--text-muted);"
+          >
             {#if manga.authors.length > 0}
               <span>
                 <strong style="color: var(--text);">{t.mangaAuthorsLabel}:</strong>
@@ -780,7 +863,7 @@
           </div>
 
           {#if manga.description}
-            <div class="flex flex-col items-start gap-1">
+            <div class="hero-emerge flex flex-col items-start gap-1" style="--stagger-delay: 90ms;">
               <p
                 class="{descExpanded ? '' : 'line-clamp-4'} text-xs leading-relaxed whitespace-pre-line"
                 style="color: var(--text-muted);"
@@ -805,26 +888,39 @@
           {#if combinedTags().length > 0}
             {@const allTags = combinedTags()}
             {@const visibleTags = tagsExpanded ? allTags : allTags.slice(0, 24)}
-            <div class="flex flex-wrap items-center gap-1.5 pt-0.5">
+            <div
+              class="hero-emerge flex flex-wrap items-center gap-1.5 pt-0.5"
+              style="--stagger-delay: 115ms;"
+            >
               {#each visibleTags as item (item.label)}
-                <span
-                  class="rounded-md px-2 py-0.5 text-[11px] {item.isGenre ? 'font-medium' : ''}"
+                {@const isBusyTag = navigatingTag === item.label}
+                <button
+                  type="button"
+                  use:pressable
+                  disabled={navigatingTag !== null}
+                  onclick={() => void handleTagClick(item.label)}
+                  class="pill-3d inline-flex items-center rounded-lg border px-2.5 py-0.5 text-[11px] disabled:opacity-60 {item.isGenre
+                    ? 'font-semibold'
+                    : 'font-medium'}"
                   style="background-color: {item.isGenre
                     ? 'var(--accent-soft)'
-                    : 'var(--surface-subtle)'}; color: {item.isGenre
+                    : 'var(--surface-subtle)'}; border-color: {item.isGenre
+                    ? 'color-mix(in srgb, var(--accent) 32%, transparent)'
+                    : 'var(--border)'}; color: {item.isGenre
                     ? 'var(--accent)'
-                    : 'var(--text-muted)'};"
+                    : 'var(--text)'}; opacity: {isBusyTag ? 0.65 : 1};"
                 >
                   {item.label}
-                </span>
+                </button>
               {/each}
               {#if allTags.length > 24}
                 <button
                   type="button"
+                  use:pressable
                   onclick={() => {
                     tagsExpanded = !tagsExpanded;
                   }}
-                  class="gpu-press rounded-md border px-2 py-0.5 text-[11px] font-semibold"
+                  class="pill-3d rounded-lg border px-2.5 py-0.5 text-[11px] font-semibold"
                   style="border-color: var(--border); background-color: var(--surface); color: var(--accent);"
                 >
                   {tagsExpanded ? t.showLessTags : t.showMoreTags(allTags.length - 24)}
@@ -839,36 +935,33 @@
               type="button"
               onclick={() => void handleOpenExternal(extUrl)}
               title={t.mangaOpenExternalSourceTooltip}
-              class="gpu-press inline-flex max-w-full items-center gap-1.5 self-start rounded-lg px-1.5 py-1 text-left text-[11px] font-medium hover:underline hover:opacity-100"
-              style="color: var(--accent);"
+              class="hero-emerge gpu-press inline-flex max-w-full items-center gap-1.5 self-start rounded-lg px-1.5 py-1 text-left text-[11px] font-medium hover:underline hover:opacity-100"
+              style="--stagger-delay: 130ms; color: var(--accent);"
             >
               <ExternalLink size={12} class="shrink-0" />
               <span class="truncate">{extUrl}</span>
             </button>
           {:else}
-            <div class="truncate text-[11px] opacity-75" style="color: var(--text-muted);">
-              {manga.canonicalUrl ?? manga.url}
-            </div>
-          {/if}
-
-          {#if isTachibkCatalogSite(manga.site)}
             <div
-              class="rounded-xl border px-3 py-2 text-xs leading-relaxed"
-              style="background-color: var(--surface-subtle); border-color: var(--border); color: var(--text-muted);"
+              class="hero-emerge truncate text-[11px] opacity-75"
+              style="--stagger-delay: 130ms; color: var(--text-muted);"
             >
-              {t.tachibkCatalogBanner}
+              {manga.canonicalUrl ?? manga.url}
             </div>
           {/if}
         </div>
 
         <!-- Primary Action Bar: Full-width thumb CTA on mobile, inline row on sm+ -->
-        <div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+        <div
+          class="hero-emerge flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3"
+          style="--stagger-delay: 150ms;"
+        >
           <button
             type="button"
+            use:pressable
             onclick={startPrimary}
             disabled={manga.chapters.length === 0}
-            class="gpu-press inline-flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold hover:opacity-92 disabled:opacity-45 sm:min-h-[42px] sm:w-auto"
-            style="background-color: var(--accent); color: var(--accent-fg);"
+            class="btn-3d btn-3d-accent inline-flex min-h-[46px] w-full items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold disabled:opacity-45 sm:min-h-[42px] sm:w-auto"
           >
             <Play size={16} fill="currentColor" />
             <span class="truncate">
@@ -883,13 +976,14 @@
           <div class="flex w-full items-center gap-2 sm:w-auto">
             <button
               type="button"
+              use:pressable
               onclick={toggleBookmark}
-              class="gpu-press inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium sm:min-h-[42px] sm:flex-initial"
+              class="btn-3d btn-3d-surface inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-medium sm:min-h-[42px] sm:flex-initial"
               style="border-color: {manga.bookmarked
                 ? 'var(--accent)'
-                : 'var(--border)'}; background-color: {manga.bookmarked
+                : 'var(--border-strong)'}; background-color: {manga.bookmarked
                 ? 'var(--accent-soft)'
-                : 'var(--surface-subtle)'}; color: {manga.bookmarked
+                : 'var(--surface)'}; color: {manga.bookmarked
                 ? 'var(--accent)'
                 : 'var(--text)'};"
             >
@@ -904,6 +998,7 @@
             {#if manga.progress && manga.chapters.length > 0 && !isTachibkCatalogSite(manga.site)}
               <button
                 type="button"
+                use:pressable
                 onclick={() => {
                   if (!manga) return;
                   const firstReadable = manga.chapters.find((c) => !isMetadataOnlyChapterUrl(c.url));
@@ -913,8 +1008,7 @@
                   }
                   router.goReader(manga.id, firstReadable.url, 0, 0);
                 }}
-                class="gpu-press min-h-[44px] flex-1 rounded-xl border px-4 py-2.5 text-sm font-medium sm:min-h-[42px] sm:flex-initial"
-                style="border-color: var(--border); background-color: var(--surface-subtle);"
+                class="btn-3d btn-3d-surface min-h-[44px] flex-1 rounded-xl px-4 py-2.5 text-sm font-medium sm:min-h-[42px] sm:flex-initial"
               >
                 {t.readFromFirst}
               </button>
@@ -947,8 +1041,8 @@
             />
             <button
               type="submit"
-              class="gpu-press inline-flex min-h-[30px] items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold hover:opacity-90"
-              style="background-color: var(--accent); color: var(--accent-fg);"
+              use:pressable
+              class="btn-3d btn-3d-accent inline-flex min-h-[30px] items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold"
               title={t.quickChapterJump}
             >
               <CornerDownLeft size={12} />
@@ -972,11 +1066,11 @@
 
           <button
             type="button"
+            use:pressable
             onclick={() => {
               newestFirst = !newestFirst;
             }}
-            class="gpu-press inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium"
-            style="background-color: var(--surface); border-color: var(--border);"
+            class="btn-3d btn-3d-surface inline-flex min-h-[40px] items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
           >
             <ArrowDownUp size={14} class="chevron-rot" data-open={newestFirst ? "false" : "true"} />
             <span>{newestFirst ? t.newestFirst : t.oldestFirst}</span>
@@ -991,10 +1085,11 @@
           </span>
           <button
             type="button"
+            use:pressable
             onclick={() => {
               selectedChapterLang = "all";
             }}
-            class="gpu-press rounded-lg border px-2.5 py-1 text-xs font-medium"
+            class="pill-3d rounded-lg border px-2.5 py-1 text-xs font-medium"
             style="border-color: {activeChapterLang() === 'all'
               ? 'var(--accent)'
               : 'var(--border)'}; background-color: {activeChapterLang() === 'all'
@@ -1009,10 +1104,11 @@
             {@const count = manga.chapters.filter((c) => (c.language ?? "").toLowerCase() === lang).length}
             <button
               type="button"
+              use:pressable
               onclick={() => {
                 selectedChapterLang = lang;
               }}
-              class="gpu-press rounded-lg border px-2.5 py-1 text-xs font-medium uppercase"
+              class="pill-3d rounded-lg border px-2.5 py-1 text-xs font-medium uppercase"
               style="border-color: {activeChapterLang() === lang
                 ? 'var(--accent)'
                 : 'var(--border)'}; background-color: {activeChapterLang() === lang
@@ -1145,19 +1241,19 @@
       <div class="modal-footer-stack flex items-center justify-end gap-2 pt-1">
         <button
           type="button"
+          use:pressable
           disabled={deleting}
           onclick={closeDeleteModal}
-          class="gpu-press min-h-[40px] rounded-xl border px-4 py-2 text-xs font-medium"
-          style="border-color: var(--border); background-color: var(--surface-subtle);"
+          class="btn-3d btn-3d-subtle min-h-[40px] rounded-xl px-4 py-2 text-xs font-medium"
         >
           {t.cancel}
         </button>
         <button
           type="button"
+          use:pressable
           disabled={deleting}
           onclick={confirmDeleteManga}
-          class="gpu-press inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
-          style="background-color: var(--danger);"
+          class="btn-3d btn-3d-danger inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold disabled:opacity-50"
         >
           {#if deleting}
             <LatticeLoader size="xs" tone="inherit" inline />
