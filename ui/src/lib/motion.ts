@@ -222,6 +222,33 @@ export function viewReveal(
   };
 }
 
+/**
+ * Directional GPU-only horizontal slide transition for switching between the 5 main tabs
+ * (`home`, `sources`, `bookmarks`, `history`, `settings`), aligned with the user's tab order.
+ */
+export function tabSlide(
+  _node: Element,
+  params: { dir?: -1 | 0 | 1; duration?: number; distance?: number } = {}
+): TransitionConfig {
+  if (prefersReducedMotion()) {
+    return { duration: 0 };
+  }
+  const dir = params.dir ?? 0;
+  if (dir === 0) {
+    return viewReveal(_node, { duration: params.duration ?? 155, y: 6 });
+  }
+  const duration = Math.min(220, Math.max(140, params.duration ?? 190));
+  const distance = params.distance ?? 40;
+  return {
+    duration,
+    easing: easeOutQuart,
+    css: (t, u) => {
+      const opacity = Math.min(1, 0.35 + t * 0.65);
+      return `opacity: ${opacity.toFixed(3)}; transform: translate3d(${(u * dir * distance).toFixed(2)}px, 0, 0);`;
+    },
+  };
+}
+
 /** GPU-only slide + scale entrance/exit for toast notifications. */
 export function toastSlide(
   _node: Element,

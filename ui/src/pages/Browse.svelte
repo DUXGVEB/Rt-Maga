@@ -19,7 +19,9 @@
     staggerDelay,
     viewReveal,
   } from "../lib/motion";
+  import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { heroTransitionStore } from "../lib/stores/heroTransition.svelte";
+  import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
@@ -356,6 +358,7 @@
         if (res.startAt) {
           router.goReader(res.manga.id, res.startAt.url);
         } else {
+          libraryCache.setMangaDetail(res.manga);
           heroTransitionStore.captureFromElement(
             coverEl,
             res.manga.coverToken ?? entry.coverToken,
@@ -545,11 +548,18 @@
       toasts.push(formatAppError(err, settingsStore.value.language).detail, "error");
     }
   }
+  const browseOneHanded = $derived(
+    deviceEnv.isMobile ? settingsStore.value.accessibility.oneHandedMode : "default"
+  );
 </script>
 
 <div class="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-5 sm:px-8 sm:py-7">
   <!-- Top Bar -->
-  <div class="flex flex-wrap items-center justify-between gap-2">
+  <div
+    class="flex flex-wrap items-center justify-between gap-2 {browseOneHanded === 'right'
+      ? 'flex-row-reverse'
+      : ''}"
+  >
     <button
       type="button"
       use:pressable

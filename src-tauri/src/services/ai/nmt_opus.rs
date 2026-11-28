@@ -444,10 +444,23 @@ fn build_cpu_session(
     env: &ort::environment::Environment,
     model_path: &Path,
 ) -> Result<ort::session::Session, AppError> {
-    ort::session::Session::builder(env)
+    let intra_threads =
+        (std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get) / 2)
+            .clamp(1, 4);
+
+    let builder = ort::session::Session::builder(env).map_err(|e| AppError::Internal {
+        message: format!("failed to build OPUS-MT ONNX session: {e}"),
+    })?;
+    let mut builder = builder
+        .with_intra_threads(intra_threads)
         .map_err(|e| AppError::Internal {
-            message: format!("failed to build OPUS-MT ONNX session: {e}"),
+            message: format!("failed to configure OPUS-MT intra threads: {e}"),
         })?
+        .with_inter_threads(1)
+        .map_err(|e| AppError::Internal {
+            message: format!("failed to configure OPUS-MT inter threads: {e}"),
+        })?;
+    builder
         .commit_from_file(model_path)
         .map_err(|e| AppError::Internal {
             message: format!(

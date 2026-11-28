@@ -10,16 +10,6 @@ use tauri::AppHandle;
 #[cfg(not(target_os = "android"))]
 use crate::error::AppError;
 
-/// Execution mode for Tier 1 on-device OCR/bubble detection.
-#[cfg(target_os = "android")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Tier1RunMode {
-    /// Detect speech-bubble bounding boxes only (Bubble Auto-Zoom without translation).
-    DetectOnly,
-    /// Run full OCR + translation pipeline.
-    OcrAndTranslate,
-}
-
 /// Hardware and native AI runtime capabilities reported by the platform bridge.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -32,6 +22,24 @@ pub(crate) struct AiRuntimeCapabilities {
     pub ml_kit_ready: bool,
     pub llama_jni_ready: bool,
     pub vulkan_supported: bool,
+}
+
+/// Grouped speech bubble bounding box with its constituent `DBNet` text-line boxes.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct AndroidBubbleGroup {
+    pub bbox: [u16; 4],
+    pub lines: Vec<[u16; 4]>,
+}
+
+/// Response returned by Android `AiRuntimePlugin.detectTier1BubbleGroups`.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct AndroidDetectGroupsReply {
+    pub groups: Vec<AndroidBubbleGroup>,
+    pub error: Option<String>,
 }
 
 /// Single speech-bubble / translated region returned by Android `AiRuntimePlugin`.
@@ -225,9 +233,10 @@ mod imp {
     use tauri::{AppHandle, Manager, Runtime};
 
     use super::{
-        AiRuntimeCapabilities, AndroidMlKitModelsReply, AndroidTier1Reply, AndroidTier2Reply,
-        DeviceEnvInfo, GallerySaveReply, NotificationPermissionInfo, OrientationLockReply,
-        SafExportReply, SafPickReply, Tier1RunMode,
+        AiRuntimeCapabilities, AndroidBubbleGroup, AndroidDetectGroupsReply,
+        AndroidMlKitModelsReply, AndroidTier1Reply, AndroidTier2Reply, DeviceEnvInfo,
+        GallerySaveReply, NotificationPermissionInfo, OrientationLockReply, SafExportReply,
+        SafPickReply,
     };
     use crate::error::AppError;
 
@@ -298,26 +307,46 @@ mod imp {
             .unwrap_or_default()
     }
 
-    pub(crate) fn run_tier1_ocr_and_translate(
+    pub(crate) fn detect_tier1_bubble_groups(
         app: &AppHandle,
         image_path: &Path,
-        target_lang: &str,
-        mode: Tier1RunMode,
-    ) -> Result<AndroidTier1Reply, AppError> {
+        focus_y: u16,
+    ) -> Result<AndroidDetectGroupsReply, AppError> {
         let state = app.state::<AiRuntimeState<tauri::Wry>>();
-        let detect_only = matches!(mode, Tier1RunMode::DetectOnly);
         state
             .0
             .run_mobile_plugin(
-                "runTier1OcrAndTranslate",
+                "detectTier1BubbleGroups",
                 serde_json::json!({
                     "imagePath": image_path.to_string_lossy(),
-                    "targetLang": target_lang,
-                    "detectOnly": detect_only,
+                    "focusY": focus_y,
                 }),
             )
             .map_err(|e| AppError::Internal {
-                message: format!("Android Tier 1 AI inference failed: {e}"),
+                message: format!("Android Tier 1 bubble detection failed: {e}"),
+            })
+    }
+
+    pub(crate) fn translate_tier1_bubble_chunk(
+        app: &AppHandle,
+        image_path: &Path,
+        target_lang: &str,
+        groups: &[AndroidBubbleGroup],
+    ) -> Result<AndroidTier1Reply, AppError> {
+        let state = app.state::<AiRuntimeState<tauri::Wry>>();
+        let groups_json = serde_json::to_string(groups).unwrap_or_else(|_| "[]".to_owned());
+        state
+            .0
+            .run_mobile_plugin(
+                "translateTier1BubbleChunk",
+                serde_json::json!({
+                    "imagePath": image_path.to_string_lossy(),
+                    "targetLang": target_lang,
+                    "groupsJson": groups_json,
+                }),
+            )
+            .map_err(|e| AppError::Internal {
+                message: format!("Android Tier 1 chunk translation failed: {e}"),
             })
     }
 
@@ -581,12 +610,12 @@ mod imp {
 #[cfg(target_os = "android")]
 pub(crate) use imp::{
     cancel_active_ai_jobs, check_notification_permission, delete_ml_kit_model,
-    download_ml_kit_model, export_backup_saf, get_ai_storage_dir, get_device_env,
-    get_runtime_capabilities, hard_unload_all_ai, init_ai_plugin, init_plugin, list_ml_kit_models,
-    open_external_url_android, pick_backup_saf, read_clipboard_text,
-    request_notification_permission, run_tier1_ocr_and_translate, run_tier2_vlm,
-    save_image_to_gallery, send_android_notification, set_immersive, set_keep_screen_on,
-    set_orientation_lock,
+    detect_tier1_bubble_groups, download_ml_kit_model, export_backup_saf, get_ai_storage_dir,
+    get_device_env, get_runtime_capabilities, hard_unload_all_ai, init_ai_plugin, init_plugin,
+    list_ml_kit_models, open_external_url_android, pick_backup_saf, read_clipboard_text,
+    request_notification_permission, run_tier2_vlm, save_image_to_gallery,
+    send_android_notification, set_immersive, set_keep_screen_on, set_orientation_lock,
+    translate_tier1_bubble_chunk,
 };
 
 #[cfg(not(target_os = "android"))]

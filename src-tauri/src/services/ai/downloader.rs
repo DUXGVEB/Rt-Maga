@@ -1222,7 +1222,7 @@ fn read_and_verify_zip_entry(
 fn build_download_client(proxy: Option<&ProxyConfig>) -> Result<Client, AppError> {
     let mut builder = Client::builder()
         .connect_timeout(Duration::from_secs(20))
-        .user_agent("RtMaga/3.3.1");
+        .user_agent("RtMaga/3.3.2");
 
     if let Some(cfg) = proxy
         && cfg.enabled

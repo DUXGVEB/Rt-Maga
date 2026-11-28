@@ -33,6 +33,7 @@
   } from "../motion";
   import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { heroTransitionStore } from "../stores/heroTransition.svelte";
+  import { libraryCache } from "../stores/libraryCache.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
@@ -63,8 +64,12 @@
     initialQuery?: string;
   } = $props();
 
-  let sources = $state<SavedSourceView[]>([]);
-  let loadingSources = $state(true);
+  const visibilityFilter = $derived(
+    scope === "supplemental" ? ("supplemental_only" as const) : ("main_only" as const)
+  );
+  const sources = $derived(libraryCache.sourcesByScope[visibilityFilter] ?? []);
+  let loadingSources = $state(false);
+  let sourcesLoadSeq = 0;
   let filterText = $state("");
   let sortField = $state<LibrarySortField>("added");
   let sortDir = $state<SortDirection>("desc");
@@ -99,9 +104,6 @@
 
   let lastInitQuery = "";
   const t = $derived(settingsStore.t);
-  const visibilityFilter = $derived(
-    scope === "supplemental" ? ("supplemental_only" as const) : ("main_only" as const)
-  );
 
   function isLikelyDirectLink(raw: string): boolean {
     const trimmed = raw.trim();
@@ -132,20 +134,28 @@
     return "";
   });
 
-  async function loadSources() {
-    loadingSources = true;
+  async function loadSources(showSpinner = !libraryCache.sourcesLoaded[visibilityFilter]) {
+    const filter = visibilityFilter;
+    const seq = ++sourcesLoadSeq;
+    if (showSpinner) loadingSources = true;
     try {
-      sources = await api.listSavedSources(visibilityFilter);
+      const fresh = await api.listSavedSources(filter);
+      if (seq !== sourcesLoadSeq) return;
+      libraryCache.setSources(filter, fresh);
     } catch (err) {
-      toasts.push(formatAppError(err, settingsStore.value.language).detail, "error");
+      if (seq === sourcesLoadSeq && !libraryCache.sourcesLoaded[filter]) {
+        toasts.push(formatAppError(err, settingsStore.value.language).detail, "error");
+      }
     } finally {
-      loadingSources = false;
+      if (seq === sourcesLoadSeq) {
+        loadingSources = false;
+      }
     }
   }
 
   $effect(() => {
-    void scope;
-    void loadSources();
+    const filter = visibilityFilter;
+    void loadSources(!libraryCache.sourcesLoaded[filter]);
   });
 
   $effect(() => {

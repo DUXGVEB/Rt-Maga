@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
+import android.os.Process
 import androidx.annotation.Keep
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -36,10 +37,27 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import org.json.JSONArray
+
+@Keep
+@InvokeArg
+class DetectGroupsArgs {
+  var imagePath: String = ""
+  var focusY: Int = 500
+}
+
+@Keep
+@InvokeArg
+class TranslateChunkArgs {
+  var imagePath: String = ""
+  var targetLang: String = "en"
+  var groupsJson: String = "[]"
+}
 
 @Keep
 @InvokeArg
@@ -144,10 +162,10 @@ private data class Tier1PipelineOutput(
 @TauriPlugin
 class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
   companion object {
-    private const val MAX_INFER_SIDE = 1024
-    private const val DET_MAX_SIDE = 960
+    private const val MAX_INFER_SIDE = 832
+    private const val DET_MAX_SIDE = 704
     private const val REC_HEIGHT = 48
-    private const val REC_MAX_WIDTH = 640
+    private const val REC_MAX_WIDTH = 512
     private const val MAX_REGIONS_PER_PAGE = 28
 
     @Volatile
@@ -165,7 +183,10 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private val aiExecutor = Executors.newSingleThreadExecutor { runnable ->
-    Thread(runnable, "rtmaga-ai-worker").apply { isDaemon = true }
+    Thread({
+      runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
+      runnable.run()
+    }, "rtmaga-ai-worker").apply { isDaemon = true }
   }
 
   private val runtimeLock = Any()
@@ -177,6 +198,8 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
   private var detSession: OrtSession? = null
   private var recSession: OrtSession? = null
   private var recCharDict: List<String>? = null
+  private var lastBitmapPath: String? = null
+  private var lastBitmap: Bitmap? = null
   private val translators = HashMap<String, Translator>()
 
   init {
@@ -245,6 +268,210 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(res)
       } catch (ex: Exception) {
         invoke.reject(ex.message ?: ex.toString())
+      }
+    }
+  }
+
+  @Command
+  fun detectTier1BubbleGroups(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(DetectGroupsArgs::class.java)
+    } catch (ex: Exception) {
+      invoke.reject(ex.message ?: "Invalid detectTier1BubbleGroups arguments")
+      return
+    }
+
+    val myGen = jobGeneration.incrementAndGet()
+    cancelFlag.set(false)
+
+    aiExecutor.execute {
+      try {
+        if (isCancelled(myGen)) {
+          invoke.resolve(encodeBubbleGroupsReply(emptyList()))
+          return@execute
+        }
+        val imageFile = File(args.imagePath)
+        if (args.imagePath.isBlank() || !imageFile.isFile) {
+          invoke.reject("Input page image does not exist: ${args.imagePath}")
+          return@execute
+        }
+        val bitmap = getOrDecodeCachedBitmap(imageFile, MAX_INFER_SIDE)
+          ?: throw IllegalStateException("Failed to decode image for Tier-1 bubble detection")
+        if (isCancelled(myGen)) {
+          invoke.resolve(encodeBubbleGroupsReply(emptyList()))
+          return@execute
+        }
+
+        val detPair = runCatching { ensureDetSession() }.getOrNull()
+        val lineBoxes = if (detPair != null) {
+          detectTextBoxesOnnx(detPair.first, detPair.second, bitmap, myGen)
+        } else {
+          detectFallbackSpeechBubbles(bitmap, myGen)
+        }
+        if (isCancelled(myGen) || lineBoxes.isEmpty()) {
+          invoke.resolve(encodeBubbleGroupsReply(emptyList()))
+          return@execute
+        }
+
+        val focusY = args.focusY.coerceIn(0, 1000)
+        val grouped = groupLineBoxesIntoBubbleGroups(lineBoxes, focusY)
+        invoke.resolve(encodeBubbleGroupsReply(grouped))
+      } catch (ex: Exception) {
+        if (isCancelled(myGen)) {
+          invoke.resolve(encodeBubbleGroupsReply(emptyList()))
+        } else {
+          invoke.reject(ex.message ?: ex.toString())
+        }
+      }
+    }
+  }
+
+  @Command
+  fun translateTier1BubbleChunk(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(TranslateChunkArgs::class.java)
+    } catch (ex: Exception) {
+      invoke.reject(ex.message ?: "Invalid translateTier1BubbleChunk arguments")
+      return
+    }
+
+    val myGen = jobGeneration.incrementAndGet()
+    cancelFlag.set(false)
+
+    aiExecutor.execute {
+      try {
+        if (isCancelled(myGen)) {
+          invoke.resolve(encodeRegionsReply(emptyList()))
+          return@execute
+        }
+        val imageFile = File(args.imagePath)
+        if (args.imagePath.isBlank() || !imageFile.isFile) {
+          invoke.reject("Input page image does not exist: ${args.imagePath}")
+          return@execute
+        }
+        val bitmap = getOrDecodeCachedBitmap(imageFile, MAX_INFER_SIDE)
+          ?: throw IllegalStateException("Failed to decode image for Tier-1 chunk translation")
+
+        val parsedGroups = parseBubbleGroupsJson(args.groupsJson)
+        if (parsedGroups.isEmpty() || isCancelled(myGen)) {
+          invoke.resolve(encodeRegionsReply(emptyList()))
+          return@execute
+        }
+
+        val recBundle = runCatching { ensureRecSession() }.getOrNull()
+          ?: run {
+            invoke.resolve(
+              encodeRegionsReply(
+                parsedGroups.map { (b, _) ->
+                  NormalizedRegion(text = "", sourceText = "", x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3])
+                },
+                error = "Built-in Lite OCR recognition model (rec.onnx) failed to initialize"
+              )
+            )
+            return@execute
+          }
+
+        val (env, recSess, charDict) = recBundle
+        val dstMlKitLang = mapToMlKitLanguage(args.targetLang)
+        if (dstMlKitLang == null) {
+          invoke.resolve(
+            encodeRegionsReply(
+              parsedGroups.map { (b, _) ->
+                NormalizedRegion(text = "", sourceText = "", x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3])
+              },
+              error = "Unsupported target language for ML Kit Translate: ${args.targetLang}"
+            )
+          )
+          return@execute
+        }
+
+        val recognizedBubbles = ArrayList<Pair<IntArray, String>>(parsedGroups.size)
+        for ((bubbleBox, lineBoxes) in parsedGroups) {
+          if (isCancelled(myGen)) {
+            invoke.resolve(encodeRegionsReply(emptyList()))
+            return@execute
+          }
+          val orderedLines = orderLinesInsideBubble(lineBoxes.ifEmpty { listOf(bubbleBox) })
+          val sb = StringBuilder()
+          for (lb in orderedLines) {
+            if (isCancelled(myGen)) {
+              invoke.resolve(encodeRegionsReply(emptyList()))
+              return@execute
+            }
+            val seg = recognizeBoxAdaptiveOnnx(env, recSess, charDict, bitmap, lb).trim()
+            if (seg.isEmpty()) continue
+            if (sb.isNotEmpty()) {
+              val prev = sb[sb.length - 1]
+              val next = seg[0]
+              if (!(isCjkOrKanaChar(prev) && isCjkOrKanaChar(next))) {
+                sb.append(' ')
+              }
+            }
+            sb.append(seg)
+          }
+          recognizedBubbles.add(bubbleBox to sb.toString())
+        }
+
+        val downloadedModels = getDownloadedMlKitLanguages(myGen)
+        val missingLangs = LinkedHashSet<String>()
+        for ((_, srcText) in recognizedBubbles) {
+          if (srcText.isBlank()) continue
+          val srcMlKitLang = detectScriptLanguage(srcText)
+          if (srcMlKitLang == dstMlKitLang) continue
+          if (srcMlKitLang !in downloadedModels) missingLangs.add(srcMlKitLang)
+          if (dstMlKitLang !in downloadedModels) missingLangs.add(dstMlKitLang)
+        }
+        if (missingLangs.isNotEmpty()) {
+          invoke.resolve(
+            encodeRegionsReply(
+              recognizedBubbles.map { (b, src) ->
+                NormalizedRegion(text = "", sourceText = src, x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3])
+              },
+              missingLanguages = missingLangs.toList()
+            )
+          )
+          return@execute
+        }
+
+        val results = ArrayList<NormalizedRegion>(recognizedBubbles.size)
+        var firstError: String? = null
+        for ((box, sourceText) in recognizedBubbles) {
+          if (isCancelled(myGen)) {
+            invoke.resolve(encodeRegionsReply(emptyList()))
+            return@execute
+          }
+          val translated = if (sourceText.isBlank()) {
+            ""
+          } else {
+            val srcMlKitLang = detectScriptLanguage(sourceText)
+            if (srcMlKitLang == dstMlKitLang) {
+              sourceText
+            } else {
+              val out = translateOfflineWithMlKit(sourceText, srcMlKitLang, dstMlKitLang, myGen)
+              if (out == null && firstError == null) {
+                firstError = "Offline ML Kit translation failed for $srcMlKitLang -> $dstMlKitLang"
+              }
+              out ?: ""
+            }
+          }
+          results.add(
+            NormalizedRegion(
+              text = translated,
+              sourceText = sourceText,
+              x1 = box[0],
+              y1 = box[1],
+              x2 = box[2],
+              y2 = box[3]
+            )
+          )
+        }
+        invoke.resolve(encodeRegionsReply(results, emptyList(), firstError))
+      } catch (ex: Exception) {
+        if (isCancelled(myGen)) {
+          invoke.resolve(encodeRegionsReply(emptyList()))
+        } else {
+          invoke.reject(ex.message ?: ex.toString())
+        }
       }
     }
   }
@@ -528,6 +755,10 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
       recCharDict = null
       ortEnv = null
 
+      runCatching { lastBitmap?.recycle() }
+      lastBitmap = null
+      lastBitmapPath = null
+
       translators.values.forEach { translator ->
         runCatching { translator.close() }
       }
@@ -653,8 +884,147 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
     return null
   }
 
+  private fun getOrDecodeCachedBitmap(file: File, maxSide: Int): Bitmap? {
+    val path = file.absolutePath
+    synchronized(runtimeLock) {
+      val cached = lastBitmap
+      if (lastBitmapPath == path && cached != null && !cached.isRecycled) {
+        return cached
+      }
+    }
+    val decoded = decodeDownscaledBitmap(file, maxSide) ?: return null
+    synchronized(runtimeLock) {
+      val prev = lastBitmap
+      if (prev != null && prev !== decoded && !prev.isRecycled) {
+        runCatching { prev.recycle() }
+      }
+      lastBitmapPath = path
+      lastBitmap = decoded
+    }
+    return decoded
+  }
+
+  private fun encodeBubbleGroupsReply(
+    groups: List<Pair<IntArray, List<IntArray>>>,
+    error: String? = null
+  ): JSObject {
+    val groupsArr = JSArray()
+    for ((bbox, lines) in groups) {
+      val bboxArr = JSArray().apply {
+        put(bbox[0]); put(bbox[1]); put(bbox[2]); put(bbox[3])
+      }
+      val linesArr = JSArray()
+      for (ln in lines) {
+        linesArr.put(JSArray().apply {
+          put(ln[0]); put(ln[1]); put(ln[2]); put(ln[3])
+        })
+      }
+      val item = JSObject()
+      item.put("bbox", bboxArr)
+      item.put("lines", linesArr)
+      groupsArr.put(item)
+    }
+    val res = JSObject()
+    res.put("groups", groupsArr)
+    if (!error.isNullOrBlank()) {
+      res.put("error", error)
+    }
+    return res
+  }
+
+  private fun parseBubbleGroupsJson(raw: String): List<Pair<IntArray, List<IntArray>>> {
+    val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+    val out = ArrayList<Pair<IntArray, List<IntArray>>>(arr.length())
+    for (i in 0 until arr.length()) {
+      val obj = arr.optJSONObject(i) ?: continue
+      val bArr = obj.optJSONArray("bbox") ?: continue
+      if (bArr.length() != 4) continue
+      val bbox = intArrayOf(
+        bArr.optInt(0).coerceIn(0, 1000),
+        bArr.optInt(1).coerceIn(0, 1000),
+        bArr.optInt(2).coerceIn(0, 1000),
+        bArr.optInt(3).coerceIn(0, 1000)
+      )
+      if (bbox[2] <= bbox[0] || bbox[3] <= bbox[1]) continue
+      val linesOut = ArrayList<IntArray>()
+      val lArr = obj.optJSONArray("lines")
+      if (lArr != null) {
+        for (j in 0 until lArr.length()) {
+          val ln = lArr.optJSONArray(j) ?: continue
+          if (ln.length() != 4) continue
+          val lb = intArrayOf(
+            ln.optInt(0).coerceIn(0, 1000),
+            ln.optInt(1).coerceIn(0, 1000),
+            ln.optInt(2).coerceIn(0, 1000),
+            ln.optInt(3).coerceIn(0, 1000)
+          )
+          if (lb[2] > lb[0] && lb[3] > lb[1]) {
+            linesOut.add(lb)
+          }
+        }
+      }
+      out.add(bbox to linesOut)
+    }
+    return out
+  }
+
+  private fun groupLineBoxesIntoBubbleGroups(
+    boxes: List<IntArray>,
+    focusY: Int
+  ): List<Pair<IntArray, List<IntArray>>> {
+    if (boxes.isEmpty()) return emptyList()
+    val groups = boxes.map { mutableListOf(it.copyOf()) }.toMutableList()
+    val groupBoxes = boxes.map { it.copyOf() }.toMutableList()
+
+    var changed = true
+    while (changed) {
+      changed = false
+      var i = 0
+      while (i < groups.size) {
+        var j = i + 1
+        while (j < groups.size) {
+          if (boxesBelongToSameBubble(groupBoxes[i], groupBoxes[j])) {
+            groups[i].addAll(groups.removeAt(j))
+            val b = groupBoxes.removeAt(j)
+            val a = groupBoxes[i]
+            a[0] = min(a[0], b[0])
+            a[1] = min(a[1], b[1])
+            a[2] = max(a[2], b[2])
+            a[3] = max(a[3], b[3])
+            changed = true
+          } else {
+            j++
+          }
+        }
+        i++
+      }
+    }
+
+    return groupBoxes.indices
+      .map { idx -> groupBoxes[idx] to groups[idx].toList() }
+      .sortedWith(
+        compareBy<Pair<IntArray, List<IntArray>>>(
+          { abs(((it.first[1] + it.first[3]) / 2) - focusY) },
+          { it.first[1] },
+          { -it.first[0] }
+        )
+      )
+      .take(MAX_REGIONS_PER_PAGE)
+  }
+
+  private fun orderLinesInsideBubble(lines: List<IntArray>): List<IntArray> {
+    if (lines.size <= 1) return lines
+    val verticalCount = lines.count { b -> (b[3] - b[1]) * 10 > (b[2] - b[0]) * 13 }
+    return if (verticalCount * 2 > lines.size) {
+      lines.sortedWith(compareBy<IntArray>({ -it[0] }, { it[1] }))
+    } else {
+      lines.sortedWith(compareBy<IntArray>({ it[1] / 18 }, { it[0] }))
+    }
+  }
+
   private fun buildOrtSessionOptions(): OrtSession.SessionOptions {
-    val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+    // Cap to at most 2 background threads on mobile so WebView scrolling stays 60/120fps smooth.
+    val threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 2)
     return OrtSession.SessionOptions().apply {
       setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
       setIntraOpNumThreads(threads)

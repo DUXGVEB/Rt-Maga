@@ -82,6 +82,15 @@
   }
 
   function goMangaWithHero(item: BookmarkItemView, triggerEl?: HTMLElement | null) {
+    libraryCache.setMangaPreview({
+      id: item.mangaId,
+      title: item.title,
+      coverToken: item.coverToken,
+      site: item.site,
+      isCompleted: item.isCompleted,
+      unreadCount: item.unreadCount,
+      bookmarked: true,
+    });
     const coverEl =
       triggerEl?.closest("[data-hero-card]")?.querySelector<HTMLElement>("[data-hero-cover-src]") ??
       null;

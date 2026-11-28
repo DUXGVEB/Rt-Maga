@@ -26,7 +26,7 @@
   import Sidebar from "./lib/components/Sidebar.svelte";
   import ToastContainer from "./lib/components/ToastContainer.svelte";
   import UpdatePromptModal from "./lib/components/UpdatePromptModal.svelte";
-  import { backdropFade, badgePop, popoverPop, viewReveal } from "./lib/motion";
+  import { backdropFade, badgePop, popoverPop, tabSlide, viewReveal } from "./lib/motion";
   import { aiTranslateStore } from "./lib/stores/aiTranslate.svelte";
   import { appReleaseStore } from "./lib/stores/appRelease.svelte";
   import { deviceEnv } from "./lib/stores/deviceEnv.svelte";
@@ -149,6 +149,15 @@
     }
   });
 
+  // Re-tapping an already-active primary tab (e.g. Home) smoothly scrolls to top without reloading.
+  $effect(() => {
+    const pulse = router.scrollTopPulse;
+    if (pulse <= 0) return;
+    if (mainEl && !isReader) {
+      mainEl.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  });
+
   function handleMainScroll() {
     if (!mainEl || isReader) {
       showMainScrollTop = false;
@@ -261,8 +270,8 @@
       bind:this={mainEl}
       onscroll={handleMainScroll}
       class="relative min-h-0 min-w-0 flex-1 {isReader
-        ? 'overflow-hidden'
-        : 'main-scroll-area overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y'}"
+        ? 'overflow-hidden overscroll-none'
+        : 'main-scroll-area overflow-y-auto overflow-x-hidden overscroll-none touch-pan-y'}"
     >
       {#if !isReader && !appReleaseStore.promptOpen && appReleaseStore.shouldShowBanner && appReleaseStore.release}
         <div
@@ -322,9 +331,14 @@
         {#key routeViewKey()}
           <div
             data-route-shell
-            in:viewReveal|local={{
-              duration: router.current.name === "manga" && heroTransitionStore.active !== null ? 120 : 155,
-              y: router.current.name === "manga" && heroTransitionStore.active !== null ? 0 : 6,
+            in:tabSlide|local={{
+              dir: router.lastTabSlideDir,
+              duration:
+                router.current.name === "manga" && heroTransitionStore.active !== null
+                  ? 120
+                  : router.lastTabSlideDir !== 0
+                    ? 190
+                    : 155,
             }}
             class="min-h-full w-full"
           >

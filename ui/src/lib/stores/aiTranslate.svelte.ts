@@ -78,6 +78,7 @@ class AiTranslateStore {
 
   private initialized = false;
   private inFlightPromises = new Map<string, Promise<PageAiResultView | null>>();
+  private completedKeys = new Set<string>();
   private cacheOrder: string[] = [];
   private purgePromise: Promise<void> | null = null;
   private dismissedNmtPromptSig = "";
@@ -201,6 +202,7 @@ class AiTranslateStore {
       const oldest = this.cacheOrder.shift();
       if (oldest) {
         delete nextCache[oldest];
+        this.completedKeys.delete(oldest);
       }
     }
     this.pageCache = nextCache;
@@ -212,6 +214,7 @@ class AiTranslateStore {
     this.pageErrors = {};
     this.pageMissingPacks = {};
     this.inFlightPromises.clear();
+    this.completedKeys.clear();
     this.cacheOrder = [];
   }
 
@@ -567,6 +570,8 @@ class AiTranslateStore {
     const nextCache = { ...this.pageCache };
     delete nextCache[fullKey];
     delete nextCache[detectKey];
+    this.completedKeys.delete(fullKey);
+    this.completedKeys.delete(detectKey);
     this.pageCache = nextCache;
     this.clearPageError(pageToken);
     this.clearPageMissingPacks(pageToken);
@@ -574,9 +579,19 @@ class AiTranslateStore {
     return this.processPage(pageToken, { detectOnly });
   }
 
+  isPageDone(pageToken: string, detectOnly: boolean): boolean {
+    if (!pageToken) return false;
+    const fullKey = this.cacheKey(pageToken, false);
+    if (this.completedKeys.has(fullKey)) return true;
+    if (detectOnly) {
+      return this.completedKeys.has(this.cacheKey(pageToken, true));
+    }
+    return false;
+  }
+
   async processPage(
     pageToken: string,
-    opts: { detectOnly: boolean }
+    opts: { detectOnly: boolean; focusY?: number }
   ): Promise<PageAiResultView | null> {
     if (!pageToken) return null;
     const a11y = settingsStore.value.accessibility;
@@ -586,16 +601,21 @@ class AiTranslateStore {
 
     const effectiveDetectOnly = opts.detectOnly || !a11y.aiTranslationOverlay;
     const fullKey = this.cacheKey(pageToken, false);
-    if (this.pageCache[fullKey]) return this.pageCache[fullKey];
+    if (this.completedKeys.has(fullKey) && this.pageCache[fullKey]) {
+      return this.pageCache[fullKey];
+    }
 
     const key = this.cacheKey(pageToken, effectiveDetectOnly);
-    if (this.pageCache[key]) return this.pageCache[key];
+    if (this.completedKeys.has(key) && this.pageCache[key]) {
+      return this.pageCache[key];
+    }
 
     const existing = this.inFlightPromises.get(key);
     if (existing) return existing;
 
     const gen = this.generation;
     const targetLang = this.effectiveTargetLang;
+    const focusY = Math.max(0, Math.min(1000, Math.round(opts.focusY ?? 500)));
 
     this.clearPageError(pageToken);
     this.clearPageMissingPacks(pageToken);
@@ -613,12 +633,27 @@ class AiTranslateStore {
         ) {
           return null;
         }
-        const res = await api.aiTranslatePage({
-          pageToken,
-          targetLang,
-          detectOnly: effectiveDetectOnly,
-          generation: gen,
-        });
+        const res = await api.aiTranslatePage(
+          {
+            pageToken,
+            targetLang,
+            detectOnly: effectiveDetectOnly,
+            generation: gen,
+            focusY,
+          },
+          (partial) => {
+            const cur = settingsStore.value.accessibility;
+            if (
+              partial.cancelled ||
+              gen !== this.generation ||
+              (!cur.aiTranslationOverlay && !cur.bubbleAutoZoom)
+            ) {
+              return;
+            }
+            // Stream each translated bubble immediately onto the page as soon as it finishes.
+            this.putCache(key, partial);
+          }
+        );
         const cur = settingsStore.value.accessibility;
         if (
           res.cancelled ||
@@ -630,9 +665,11 @@ class AiTranslateStore {
 
         const missing = res.missingNmtPacks ?? [];
         if (missing.length > 0) {
-          // Cache detected bubble bounding boxes under detectOnly so Bubble Auto-Zoom works
+          // Cache detected bubble bounding boxes under detectOnly so Bubble Magnifier works
           // immediately without claiming translation succeeded.
-          this.putCache(this.cacheKey(pageToken, true), { ...res, detectOnly: true });
+          const detKey = this.cacheKey(pageToken, true);
+          this.putCache(detKey, { ...res, detectOnly: true });
+          this.completedKeys.add(detKey);
           this.pageMissingPacks = { ...this.pageMissingPacks, [pageToken]: missing };
           const sig = missing.map((p) => p.id).sort().join(",");
           if (!effectiveDetectOnly && !this.downloading && sig !== this.dismissedNmtPromptSig) {
@@ -645,12 +682,13 @@ class AiTranslateStore {
           this.pageErrors = { ...this.pageErrors, [pageToken]: res.error };
           this.lastError = res.error;
           if (res.regions.length > 0) {
-            this.putCache(this.cacheKey(pageToken, true), { ...res, detectOnly: true });
+            this.putCache(key, res);
           }
           return res;
         }
 
         this.putCache(key, res);
+        this.completedKeys.add(key);
         return res;
       } catch (err) {
         if (gen === this.generation) {

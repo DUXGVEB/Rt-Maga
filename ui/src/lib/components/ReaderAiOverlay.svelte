@@ -61,6 +61,7 @@
         <div
           data-ai-bubble={bubbleZoomEnabled ? "true" : undefined}
           data-bubble-key={bubbleZoomEnabled ? key : undefined}
+          data-bubble-idx={bubbleZoomEnabled ? String(idx) : undefined}
           data-bbox={bubbleZoomEnabled ? region.bbox.join(",") : undefined}
           class="pointer-events-none absolute flex items-center justify-center overflow-hidden rounded-lg text-center transition-[box-shadow,background-color,opacity] duration-150"
           style="{regionRectStyle(region.bbox)} {showText

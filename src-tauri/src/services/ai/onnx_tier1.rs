@@ -13,13 +13,14 @@ use std::path::Path;
 #[cfg(not(target_os = "android"))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_os = "android"))]
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use image::RgbImage;
 use tauri::AppHandle;
 #[cfg(not(target_os = "android"))]
 use tauri::Manager;
-#[cfg(not(target_os = "android"))]
-use tokio::sync::Mutex;
 use tokio::sync::watch;
 
 use crate::error::AppError;
@@ -49,7 +50,7 @@ const DBNET_UNCLIP_PAD_RATIO: f64 = 0.16;
 
 /// Maximum input side for `DBNet` `PP-OCRv6_tiny_det` (rounded to multiple of 32).
 #[cfg(not(target_os = "android"))]
-const DBNET_MAX_SIDE: u32 = 960;
+const DBNET_MAX_SIDE: u32 = 768;
 
 /// Fixed input height for `PP-OCRv6_tiny_rec`.
 #[cfg(not(target_os = "android"))]
@@ -93,7 +94,7 @@ impl std::fmt::Debug for OrtTier1Runtime {
 pub(crate) struct Tier1OnnxBackend {
     loaded: AtomicBool,
     #[cfg(not(target_os = "android"))]
-    runtime: Mutex<Option<OrtTier1Runtime>>,
+    runtime: Arc<StdMutex<Option<OrtTier1Runtime>>>,
 }
 
 impl Tier1OnnxBackend {
@@ -102,7 +103,7 @@ impl Tier1OnnxBackend {
         Self {
             loaded: AtomicBool::new(false),
             #[cfg(not(target_os = "android"))]
-            runtime: Mutex::new(None),
+            runtime: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -177,56 +178,135 @@ impl Tier1OnnxBackend {
             self.loaded.store(true, Ordering::Relaxed);
             let h = handle.clone();
             let img_path = tmp_file.path().to_path_buf();
-            let lang = req.target_lang.to_owned();
-            let mode = if detect_only {
-                crate::android_env::Tier1RunMode::DetectOnly
-            } else {
-                crate::android_env::Tier1RunMode::OcrAndTranslate
-            };
-            let reply = tokio::task::spawn_blocking(move || {
-                crate::android_env::run_tier1_ocr_and_translate(&h, &img_path, &lang, mode)
+            let focus_y = req.focus_y;
+
+            let detected = tokio::task::spawn_blocking(move || {
+                crate::android_env::detect_tier1_bubble_groups(&h, &img_path, focus_y)
             })
             .await
             .map_err(|e| AppError::Internal {
-                message: format!("Android Tier 1 worker failed: {e}"),
+                message: format!("Android Tier 1 detector worker failed: {e}"),
             })??;
-            drop(tmp_file);
+
             if *cancel_rx.borrow() != expected_gen {
+                drop(tmp_file);
                 return Ok(None);
             }
 
-            let mut regions = Vec::with_capacity(reply.regions.len());
-            for item in reply.regions {
-                if let Some(bbox) = validate_normalized_bbox(item.bbox) {
-                    regions.push(TranslatedRegionView {
-                        text: if detect_only {
-                            String::new()
-                        } else {
-                            item.text
-                        },
-                        source_text: if detect_only {
-                            None
-                        } else {
-                            item.source_text.filter(|s| !s.is_empty())
-                        },
-                        bbox,
-                        confidence: 0.88,
-                    });
-                }
-            }
-
-            let missing_nmt_packs: Vec<AiNmtPackView> = reply
-                .missing_languages
+            let valid_groups: Vec<crate::android_env::AndroidBubbleGroup> = detected
+                .groups
                 .into_iter()
-                .map(|code| {
-                    crate::services::ai::engine::android_mlkit_pack_view(&code, false, None)
+                .filter_map(|mut g| {
+                    g.bbox = validate_normalized_bbox(g.bbox)?;
+                    Some(g)
                 })
                 .collect();
 
+            if valid_groups.is_empty() || detect_only {
+                drop(tmp_file);
+                let regions = valid_groups
+                    .into_iter()
+                    .map(|g| TranslatedRegionView {
+                        text: String::new(),
+                        source_text: None,
+                        bbox: g.bbox,
+                        confidence: 0.88,
+                    })
+                    .collect();
+                return Ok(Some(BackendPageResult {
+                    regions,
+                    missing_nmt_packs: Vec::new(),
+                    error: detected.error.filter(|s| !s.trim().is_empty()),
+                }));
+            }
+
+            let mut regions: Vec<TranslatedRegionView> = valid_groups
+                .iter()
+                .map(|g| TranslatedRegionView {
+                    text: String::new(),
+                    source_text: None,
+                    bbox: g.bbox,
+                    confidence: 0.88,
+                })
+                .collect();
+
+            if let Some(cb) = &req.on_partial {
+                cb(regions.clone());
+            }
+
+            let mut first_error: Option<String> = detected.error.filter(|s| !s.trim().is_empty());
+            let mut cursor = 0_usize;
+            for chunk in valid_groups.chunks(2) {
+                if *cancel_rx.borrow() != expected_gen {
+                    drop(tmp_file);
+                    return Ok(None);
+                }
+                let h_chunk = handle.clone();
+                let img_chunk = tmp_file.path().to_path_buf();
+                let lang_chunk = req.target_lang.to_owned();
+                let chunk_vec = chunk.to_vec();
+                let reply = tokio::task::spawn_blocking(move || {
+                    crate::android_env::translate_tier1_bubble_chunk(
+                        &h_chunk,
+                        &img_chunk,
+                        &lang_chunk,
+                        &chunk_vec,
+                    )
+                })
+                .await
+                .map_err(|e| AppError::Internal {
+                    message: format!("Android Tier 1 chunk worker failed: {e}"),
+                })??;
+
+                if *cancel_rx.borrow() != expected_gen {
+                    drop(tmp_file);
+                    return Ok(None);
+                }
+
+                if let Some(err) = reply.error.filter(|s| !s.trim().is_empty())
+                    && first_error.is_none()
+                {
+                    first_error = Some(err);
+                }
+
+                for (offset, item) in reply.regions.into_iter().enumerate() {
+                    if let Some(slot) = regions.get_mut(cursor + offset) {
+                        slot.text = item.text;
+                        slot.source_text = item.source_text.filter(|s| !s.is_empty());
+                    }
+                }
+
+                if !reply.missing_languages.is_empty() {
+                    drop(tmp_file);
+                    let missing_nmt_packs: Vec<AiNmtPackView> = reply
+                        .missing_languages
+                        .into_iter()
+                        .map(|code| {
+                            crate::services::ai::engine::android_mlkit_pack_view(&code, false, None)
+                        })
+                        .collect();
+                    return Ok(Some(BackendPageResult {
+                        regions,
+                        missing_nmt_packs,
+                        error: first_error,
+                    }));
+                }
+
+                if let Some(cb) = &req.on_partial {
+                    cb(regions.clone());
+                }
+
+                cursor = cursor.saturating_add(chunk.len());
+                if cursor < valid_groups.len() {
+                    tokio::time::sleep(Duration::from_millis(28)).await;
+                }
+            }
+
+            drop(tmp_file);
             return Ok(Some(BackendPageResult {
                 regions,
-                missing_nmt_packs,
-                error: reply.error.filter(|s| !s.trim().is_empty()),
+                missing_nmt_packs: Vec::new(),
+                error: first_error,
             }));
         }
 
@@ -244,10 +324,6 @@ impl Tier1OnnxBackend {
     }
 
     #[cfg(not(target_os = "android"))]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "orchestrates DBNet line detection, per-line CTC OCR, bubble clustering, and offline OPUS-MT translation"
-    )]
     async fn infer_desktop(
         &self,
         req: &InferenceRequest<'_>,
@@ -258,197 +334,40 @@ impl Tier1OnnxBackend {
         let mut init_error: Option<String> = None;
 
         if let Some(model_dir) = locate_tier1_model_dir(req.storage_root, req.app) {
-            let mut guard = self.runtime.lock().await;
+            let rt_arc = Arc::clone(&self.runtime);
+            let rgb_det = req.page.rgb.clone();
+            let focus_y = req.focus_y;
+            let det_out = tokio::task::spawn_blocking(move || {
+                desktop_detect_bubble_groups(&rt_arc, &model_dir, &rgb_det, focus_y)
+            })
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("Tier 1 detection worker failed: {e}"),
+            })?;
+
             if *cancel_rx.borrow() != expected_gen {
                 return Ok(None);
             }
-            if guard.is_none() {
-                match try_init_ort_runtime(&model_dir) {
-                    Ok(rt) => {
-                        *guard = Some(rt);
-                        self.loaded.store(true, Ordering::Relaxed);
-                    }
-                    Err(err) => {
-                        init_error = Some(err.to_string());
-                    }
+
+            match det_out {
+                Ok(groups) if !groups.is_empty() => {
+                    self.loaded.store(true, Ordering::Relaxed);
+                    return self
+                        .stream_desktop_bubble_groups(req, groups, &cancel_rx, expected_gen)
+                        .await;
                 }
-            }
-
-            if let Some(ref mut rt) = *guard {
-                let det_res = run_ort_dbnet_det(&mut rt.det_session, &req.page.rgb);
-                if *cancel_rx.borrow() != expected_gen {
-                    return Ok(None);
-                }
-
-                match det_res {
-                    Ok(line_boxes) if !line_boxes.is_empty() => {
-                        if detect_only {
-                            let bubble_boxes = group_boxes_into_bubbles(&line_boxes);
-                            return Ok(Some(BackendPageResult {
-                                regions: fallback_boxes_to_regions(bubble_boxes),
-                                missing_nmt_packs: Vec::new(),
-                                error: None,
-                            }));
-                        }
-
-                        let mut recognized_lines: Vec<RecognizedLine> =
-                            Vec::with_capacity(line_boxes.len());
-                        for bbox in line_boxes {
-                            if *cancel_rx.borrow() != expected_gen {
-                                return Ok(None);
-                            }
-                            let (rec_text, conf) = if let Some(ref mut rec_sess) = rt.rec_session {
-                                run_ort_ctc_rec_adaptive(rec_sess, &req.page.rgb, bbox, &rt.dict)
-                                    .unwrap_or_else(|_| (String::new(), 0.0))
-                            } else {
-                                (String::new(), 0.0)
-                            };
-                            let cleaned = rec_text.trim().to_owned();
-                            if !cleaned.is_empty() {
-                                recognized_lines.push(RecognizedLine {
-                                    bbox,
-                                    text: cleaned,
-                                    confidence: conf,
-                                });
-                            }
-                        }
-
-                        if recognized_lines.is_empty() {
-                            return Ok(Some(BackendPageResult {
-                                regions: Vec::new(),
-                                missing_nmt_packs: Vec::new(),
-                                error: None,
-                            }));
-                        }
-
-                        let bubbles = group_recognized_lines_into_bubbles(&recognized_lines);
-                        let mut missing_ids: Vec<String> = Vec::new();
-                        let mut missing_seen: HashSet<String> = HashSet::new();
-                        let mut translate_error: Option<String> = None;
-
-                        // Pre-flight check which OPUS-MT packs are required for this page.
-                        let mut bubble_chains: Vec<Option<Vec<&'static str>>> =
-                            Vec::with_capacity(bubbles.len());
-                        for bubble in &bubbles {
-                            let src_lang = detect_script_language(&bubble.text);
-                            match resolve_opus_pack_chain(src_lang, req.target_lang) {
-                                Ok(chain) => {
-                                    for &pack_id in &chain {
-                                        if !is_opus_pack_installed(req.storage_root, pack_id)
-                                            && missing_seen.insert(pack_id.to_owned())
-                                        {
-                                            missing_ids.push(pack_id.to_owned());
-                                        }
-                                    }
-                                    bubble_chains.push(Some(chain));
-                                }
-                                Err(msg) => {
-                                    if translate_error.is_none() {
-                                        translate_error = Some(msg);
-                                    }
-                                    bubble_chains.push(None);
-                                }
-                            }
-                        }
-
-                        if !missing_ids.is_empty() {
-                            let missing_views: Vec<AiNmtPackView> = missing_ids
-                                .iter()
-                                .filter_map(|id| build_opus_pack_view(req.storage_root, id, None))
-                                .collect();
-                            // Return detected bubble boxes with empty text so Bubble Auto-Zoom
-                            // remains interactive while the user confirms pack download.
-                            let regions = bubbles
-                                .into_iter()
-                                .map(|b| TranslatedRegionView {
-                                    text: String::new(),
-                                    source_text: Some(b.text),
-                                    bbox: b.bbox,
-                                    confidence: b.confidence,
-                                })
-                                .collect();
-                            return Ok(Some(BackendPageResult {
-                                regions,
-                                missing_nmt_packs: missing_views,
-                                error: None,
-                            }));
-                        }
-
-                        let mut regions = Vec::with_capacity(bubbles.len());
-                        for (bubble, chain_opt) in bubbles.into_iter().zip(bubble_chains) {
-                            if *cancel_rx.borrow() != expected_gen {
-                                return Ok(None);
-                            }
-                            let translated = match chain_opt {
-                                Some(chain) if chain.is_empty() => bubble.text.clone(),
-                                Some(chain) => {
-                                    let mut cur = bubble.text.clone();
-                                    let mut step_failed = false;
-                                    for pack_id in chain {
-                                        if !rt.nmt_sessions.contains_key(pack_id) {
-                                            match OpusMtSession::load(
-                                                &rt.env,
-                                                req.storage_root,
-                                                pack_id,
-                                            ) {
-                                                Ok(sess) => {
-                                                    rt.nmt_sessions
-                                                        .insert(pack_id.to_owned(), sess);
-                                                }
-                                                Err(err) => {
-                                                    if translate_error.is_none() {
-                                                        translate_error = Some(err.to_string());
-                                                    }
-                                                    step_failed = true;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        if let Some(sess) = rt.nmt_sessions.get_mut(pack_id) {
-                                            match sess.translate(&cur) {
-                                                Ok(next_txt) => cur = next_txt,
-                                                Err(err) => {
-                                                    if translate_error.is_none() {
-                                                        translate_error = Some(err.to_string());
-                                                    }
-                                                    step_failed = true;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if step_failed { String::new() } else { cur }
-                                }
-                                None => String::new(),
-                            };
-
-                            regions.push(TranslatedRegionView {
-                                text: translated,
-                                source_text: Some(bubble.text),
-                                bbox: bubble.bbox,
-                                confidence: bubble.confidence,
-                            });
-                        }
-
+                Ok(_) => {
+                    self.loaded.store(true, Ordering::Relaxed);
+                    if !detect_only {
                         return Ok(Some(BackendPageResult {
-                            regions,
+                            regions: Vec::new(),
                             missing_nmt_packs: Vec::new(),
-                            error: translate_error,
+                            error: None,
                         }));
                     }
-                    Ok(_) => {
-                        // Zero text detected by DBNet on this page.
-                        if !detect_only {
-                            return Ok(Some(BackendPageResult {
-                                regions: Vec::new(),
-                                missing_nmt_packs: Vec::new(),
-                                error: None,
-                            }));
-                        }
-                    }
-                    Err(err) => {
-                        init_error = Some(err.to_string());
-                    }
+                }
+                Err(err) => {
+                    init_error = Some(err.to_string());
                 }
             }
         } else if !detect_only {
@@ -480,6 +399,95 @@ impl Tier1OnnxBackend {
         }))
     }
 
+    #[cfg(not(target_os = "android"))]
+    async fn stream_desktop_bubble_groups(
+        &self,
+        req: &InferenceRequest<'_>,
+        groups: Vec<BubbleGroupEntry>,
+        cancel_rx: &watch::Receiver<u64>,
+        expected_gen: u64,
+    ) -> Result<Option<BackendPageResult>, AppError> {
+        let mut regions: Vec<TranslatedRegionView> = groups
+            .iter()
+            .map(|(bbox, _)| TranslatedRegionView {
+                text: String::new(),
+                source_text: None,
+                bbox: *bbox,
+                confidence: 0.88,
+            })
+            .collect();
+
+        if req.mode.is_detect_only() {
+            return Ok(Some(BackendPageResult {
+                regions,
+                missing_nmt_packs: Vec::new(),
+                error: None,
+            }));
+        }
+
+        if let Some(cb) = &req.on_partial {
+            cb(regions.clone());
+        }
+
+        let mut first_error: Option<String> = None;
+        let total_groups = groups.len();
+        for (idx, (_bbox, member_lines)) in groups.into_iter().enumerate() {
+            if *cancel_rx.borrow() != expected_gen {
+                return Ok(None);
+            }
+            let rt_step = Arc::clone(&self.runtime);
+            let rgb_step = req.page.rgb.clone();
+            let storage_step = req.storage_root.to_path_buf();
+            let lang_step = req.target_lang.to_owned();
+            let step = tokio::task::spawn_blocking(move || {
+                desktop_translate_single_bubble(
+                    &rt_step,
+                    &rgb_step,
+                    &storage_step,
+                    &lang_step,
+                    &member_lines,
+                )
+            })
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("Tier 1 bubble worker failed: {e}"),
+            })?;
+
+            if *cancel_rx.borrow() != expected_gen {
+                return Ok(None);
+            }
+
+            if let Some(slot) = regions.get_mut(idx) {
+                slot.text = step.translated;
+                slot.source_text = step.source_text;
+                slot.confidence = step.confidence;
+            }
+            if first_error.is_none() && step.error.is_some() {
+                first_error = step.error;
+            }
+            if !step.missing_packs.is_empty() {
+                return Ok(Some(BackendPageResult {
+                    regions,
+                    missing_nmt_packs: step.missing_packs,
+                    error: first_error,
+                }));
+            }
+
+            if let Some(cb) = &req.on_partial {
+                cb(regions.clone());
+            }
+            if idx + 1 < total_groups {
+                tokio::time::sleep(Duration::from_millis(16)).await;
+            }
+        }
+
+        Ok(Some(BackendPageResult {
+            regions,
+            missing_nmt_packs: Vec::new(),
+            error: first_error,
+        }))
+    }
+
     /// Signals cancellation of active Tier 1 work.
     pub(crate) fn cancel_active(&self, app: Option<&AppHandle>) {
         #[cfg(target_os = "android")]
@@ -495,8 +503,13 @@ impl Tier1OnnxBackend {
         #[cfg(not(target_os = "android"))]
         {
             let _ = app;
-            let mut guard = self.runtime.lock().await;
-            *guard = None;
+            let rt_arc = Arc::clone(&self.runtime);
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(mut guard) = rt_arc.lock() {
+                    *guard = None;
+                }
+            })
+            .await;
         }
         #[cfg(target_os = "android")]
         if let Some(handle) = app {
@@ -506,42 +519,54 @@ impl Tier1OnnxBackend {
     }
 }
 
+/// Grouped speech bubble bounding box paired with its member `DBNet` text-line boxes.
 #[cfg(any(not(target_os = "android"), test))]
-#[derive(Debug, Clone)]
-pub(crate) struct RecognizedLine {
-    pub bbox: [u16; 4],
-    pub text: String,
-    pub confidence: f32,
+type BubbleGroupEntry = ([u16; 4], Vec<[u16; 4]>);
+
+/// Sorts speech-bubble items by vertical distance from the reader's current viewport center
+/// (`focus_y` in `0..=1000`), breaking ties in traditional top-to-bottom / right-to-left order.
+#[cfg(any(not(target_os = "android"), test))]
+pub(crate) fn sort_by_focus_y<T>(items: &mut [T], bbox_of: impl Fn(&T) -> [u16; 4], focus_y: u16) {
+    items.sort_by(|a, b| {
+        let ba = bbox_of(a);
+        let bb = bbox_of(b);
+        let cy_a = u32::midpoint(u32::from(ba[1]), u32::from(ba[3]));
+        let cy_b = u32::midpoint(u32::from(bb[1]), u32::from(bb[3]));
+        let dist_a = cy_a.abs_diff(u32::from(focus_y));
+        let dist_b = cy_b.abs_diff(u32::from(focus_y));
+        dist_a
+            .cmp(&dist_b)
+            .then_with(|| ba[1].cmp(&bb[1]))
+            .then_with(|| bb[0].cmp(&ba[0]))
+    });
 }
 
 #[cfg(any(not(target_os = "android"), test))]
-#[derive(Debug, Clone)]
-pub(crate) struct BubbleCluster {
-    pub bbox: [u16; 4],
-    pub text: String,
-    pub confidence: f32,
-}
-
-/// Groups nearby detected text-line boxes into speech-bubble bounding boxes for Bubble Auto-Zoom.
-#[cfg(any(not(target_os = "android"), test))]
-pub(crate) fn group_boxes_into_bubbles(boxes: &[[u16; 4]]) -> Vec<[u16; 4]> {
-    if boxes.len() <= 1 {
-        return boxes.to_vec();
+pub(crate) fn group_line_boxes_into_bubble_groups(
+    boxes: &[[u16; 4]],
+    focus_y: u16,
+) -> Vec<BubbleGroupEntry> {
+    if boxes.is_empty() {
+        return Vec::new();
     }
-    let mut clusters: Vec<[u16; 4]> = boxes.to_vec();
+    let mut groups: Vec<Vec<[u16; 4]>> = boxes.iter().map(|&b| vec![b]).collect();
+    let mut group_boxes: Vec<[u16; 4]> = boxes.to_vec();
+
     let mut changed = true;
     while changed {
         changed = false;
         let mut i = 0_usize;
-        while i < clusters.len() {
+        while i < groups.len() {
             let mut j = i + 1;
-            while j < clusters.len() {
-                if boxes_belong_to_same_bubble(clusters[i], clusters[j]) {
-                    let b = clusters.remove(j);
-                    clusters[i][0] = clusters[i][0].min(b[0]);
-                    clusters[i][1] = clusters[i][1].min(b[1]);
-                    clusters[i][2] = clusters[i][2].max(b[2]);
-                    clusters[i][3] = clusters[i][3].max(b[3]);
+            while j < groups.len() {
+                if boxes_belong_to_same_bubble(group_boxes[i], group_boxes[j]) {
+                    let other_lines = groups.remove(j);
+                    let other_box = group_boxes.remove(j);
+                    groups[i].extend(other_lines);
+                    group_boxes[i][0] = group_boxes[i][0].min(other_box[0]);
+                    group_boxes[i][1] = group_boxes[i][1].min(other_box[1]);
+                    group_boxes[i][2] = group_boxes[i][2].max(other_box[2]);
+                    group_boxes[i][3] = group_boxes[i][3].max(other_box[3]);
                     changed = true;
                 } else {
                     j += 1;
@@ -550,14 +575,243 @@ pub(crate) fn group_boxes_into_bubbles(boxes: &[[u16; 4]]) -> Vec<[u16; 4]> {
             i += 1;
         }
     }
-    sort_manga_reading_order(&mut clusters);
-    clusters.truncate(32);
-    clusters
+
+    let mut combined: Vec<BubbleGroupEntry> = group_boxes.into_iter().zip(groups).collect();
+    sort_by_focus_y(&mut combined, |entry| entry.0, focus_y);
+    combined.truncate(28);
+    combined
+}
+
+#[cfg(not(target_os = "android"))]
+struct DesktopBubbleStep {
+    translated: String,
+    source_text: Option<String>,
+    confidence: f32,
+    missing_packs: Vec<AiNmtPackView>,
+    error: Option<String>,
+}
+
+#[cfg(not(target_os = "android"))]
+fn desktop_detect_bubble_groups(
+    runtime: &StdMutex<Option<OrtTier1Runtime>>,
+    model_dir: &Path,
+    rgb: &RgbImage,
+    focus_y: u16,
+) -> Result<Vec<BubbleGroupEntry>, AppError> {
+    let mut guard = runtime.lock().map_err(|_| AppError::Internal {
+        message: "Tier 1 ONNX runtime mutex poisoned".to_owned(),
+    })?;
+    if guard.is_none() {
+        *guard = Some(try_init_ort_runtime(model_dir)?);
+    }
+    let Some(rt) = guard.as_mut() else {
+        return Ok(Vec::new());
+    };
+    let line_boxes = run_ort_dbnet_det(&mut rt.det_session, rgb)?;
+    Ok(group_line_boxes_into_bubble_groups(&line_boxes, focus_y))
+}
+
+#[cfg(not(target_os = "android"))]
+fn desktop_translate_single_bubble(
+    runtime: &StdMutex<Option<OrtTier1Runtime>>,
+    rgb: &RgbImage,
+    storage_root: &Path,
+    target_lang: &str,
+    member_lines: &[[u16; 4]],
+) -> DesktopBubbleStep {
+    let Ok(mut guard) = runtime.lock() else {
+        return DesktopBubbleStep {
+            translated: String::new(),
+            source_text: None,
+            confidence: 0.0,
+            missing_packs: Vec::new(),
+            error: Some("Tier 1 ONNX runtime mutex poisoned".to_owned()),
+        };
+    };
+    let Some(rt) = guard.as_mut() else {
+        return DesktopBubbleStep {
+            translated: String::new(),
+            source_text: None,
+            confidence: 0.0,
+            missing_packs: Vec::new(),
+            error: None,
+        };
+    };
+
+    let (joined, confidence) = recognize_ordered_bubble_lines(rt, rgb, member_lines);
+    if joined.is_empty() {
+        return DesktopBubbleStep {
+            translated: String::new(),
+            source_text: None,
+            confidence: 0.0,
+            missing_packs: Vec::new(),
+            error: None,
+        };
+    }
+
+    translate_bubble_text_with_opus(rt, storage_root, target_lang, joined, confidence)
+}
+
+#[cfg(not(target_os = "android"))]
+fn recognize_ordered_bubble_lines(
+    rt: &mut OrtTier1Runtime,
+    rgb: &RgbImage,
+    member_lines: &[[u16; 4]],
+) -> (String, f32) {
+    let mut ordered_lines: Vec<[u16; 4]> = member_lines.to_vec();
+    let vertical_count = ordered_lines
+        .iter()
+        .filter(|b| {
+            u32::from(b[3].saturating_sub(b[1])) * 10 > u32::from(b[2].saturating_sub(b[0])) * 13
+        })
+        .count();
+    if vertical_count * 2 > ordered_lines.len() {
+        ordered_lines.sort_by(|a, b| b[0].cmp(&a[0]).then_with(|| a[1].cmp(&b[1])));
+    } else {
+        ordered_lines.sort_by(|a, b| (a[1] / 18).cmp(&(b[1] / 18)).then_with(|| a[0].cmp(&b[0])));
+    }
+
+    let mut joined = String::new();
+    let mut conf_sum = 0.0_f32;
+    let mut rec_count = 0_u32;
+    for line_bbox in ordered_lines {
+        let (rec_text, conf) = if let Some(ref mut rec_sess) = rt.rec_session {
+            run_ort_ctc_rec_adaptive(rec_sess, rgb, line_bbox, &rt.dict)
+                .unwrap_or_else(|_| (String::new(), 0.0))
+        } else {
+            (String::new(), 0.0)
+        };
+        let cleaned = rec_text.trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+        if !joined.is_empty() && needs_space_between(&joined, cleaned) {
+            joined.push(' ');
+        }
+        joined.push_str(cleaned);
+        conf_sum += conf;
+        rec_count = rec_count.saturating_add(1);
+    }
+
+    let confidence = (conf_sum / u32_to_f32(rec_count.max(1))).clamp(0.0, 1.0);
+    (joined, confidence)
+}
+
+#[cfg(not(target_os = "android"))]
+fn translate_bubble_text_with_opus(
+    rt: &mut OrtTier1Runtime,
+    storage_root: &Path,
+    target_lang: &str,
+    joined: String,
+    confidence: f32,
+) -> DesktopBubbleStep {
+    let src_lang = detect_script_language(&joined);
+    let chain = match resolve_opus_pack_chain(src_lang, target_lang) {
+        Ok(c) => c,
+        Err(msg) => {
+            return DesktopBubbleStep {
+                translated: String::new(),
+                source_text: Some(joined),
+                confidence,
+                missing_packs: Vec::new(),
+                error: Some(msg),
+            };
+        }
+    };
+
+    let mut missing_seen: HashSet<String> = HashSet::new();
+    let mut missing_views: Vec<AiNmtPackView> = Vec::new();
+    for &pack_id in &chain {
+        if !is_opus_pack_installed(storage_root, pack_id)
+            && missing_seen.insert(pack_id.to_owned())
+            && let Some(view) = build_opus_pack_view(storage_root, pack_id, None)
+        {
+            missing_views.push(view);
+        }
+    }
+    if !missing_views.is_empty() {
+        return DesktopBubbleStep {
+            translated: String::new(),
+            source_text: Some(joined),
+            confidence,
+            missing_packs: missing_views,
+            error: None,
+        };
+    }
+
+    if chain.is_empty() {
+        return DesktopBubbleStep {
+            translated: joined.clone(),
+            source_text: Some(joined),
+            confidence,
+            missing_packs: Vec::new(),
+            error: None,
+        };
+    }
+
+    let mut cur = joined.clone();
+    for pack_id in chain {
+        if !rt.nmt_sessions.contains_key(pack_id) {
+            match OpusMtSession::load(&rt.env, storage_root, pack_id) {
+                Ok(sess) => {
+                    rt.nmt_sessions.insert(pack_id.to_owned(), sess);
+                }
+                Err(err) => {
+                    return DesktopBubbleStep {
+                        translated: String::new(),
+                        source_text: Some(joined),
+                        confidence,
+                        missing_packs: Vec::new(),
+                        error: Some(err.to_string()),
+                    };
+                }
+            }
+        }
+        if let Some(sess) = rt.nmt_sessions.get_mut(pack_id) {
+            match sess.translate(&cur) {
+                Ok(next_txt) => cur = next_txt,
+                Err(err) => {
+                    return DesktopBubbleStep {
+                        translated: String::new(),
+                        source_text: Some(joined),
+                        confidence,
+                        missing_packs: Vec::new(),
+                        error: Some(err.to_string()),
+                    };
+                }
+            }
+        }
+    }
+
+    DesktopBubbleStep {
+        translated: cur,
+        source_text: Some(joined),
+        confidence,
+        missing_packs: Vec::new(),
+        error: None,
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct RecognizedLine {
+    pub bbox: [u16; 4],
+    pub text: String,
+    pub confidence: f32,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct BubbleCluster {
+    pub bbox: [u16; 4],
+    pub text: String,
+    #[expect(dead_code, reason = "verified in bubble clustering unit tests")]
+    pub confidence: f32,
 }
 
 /// Groups individually recognized text lines into coherent speech-bubble clusters in reading order
 /// so NMT translates full sentences instead of isolated fragments.
-#[cfg(any(not(target_os = "android"), test))]
+#[cfg(test)]
 pub(crate) fn group_recognized_lines_into_bubbles(lines: &[RecognizedLine]) -> Vec<BubbleCluster> {
     if lines.is_empty() {
         return Vec::new();
@@ -1126,9 +1380,15 @@ fn create_ort_session(
     use ort::ep;
     use ort::session::Session;
 
-    // Prefer DirectML GPU acceleration on Windows, falling back cleanly to CPU EP.
+    let intra_threads =
+        (std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get) / 2)
+            .clamp(1, 4);
+
+    // Prefer DirectML GPU acceleration on Windows, falling back cleanly to capped-thread CPU EP.
     #[cfg(target_os = "windows")]
     if let Ok(builder) = Session::builder(env)
+        && let Ok(builder) = builder.with_intra_threads(intra_threads)
+        && let Ok(builder) = builder.with_inter_threads(1)
         && let Ok(mut with_dml) =
             builder.with_execution_providers([ep::DirectML::default().build()])
         && let Ok(session) = with_dml.commit_from_file(model_path)
@@ -1139,6 +1399,14 @@ fn create_ort_session(
     Session::builder(env)
         .map_err(|e| AppError::Internal {
             message: format!("failed to create ONNX SessionBuilder: {e}"),
+        })?
+        .with_intra_threads(intra_threads)
+        .map_err(|e| AppError::Internal {
+            message: format!("failed to configure ONNX intra threads: {e}"),
+        })?
+        .with_inter_threads(1)
+        .map_err(|e| AppError::Internal {
+            message: format!("failed to configure ONNX inter threads: {e}"),
         })?
         .commit_from_file(model_path)
         .map_err(|e| AppError::Internal {
@@ -1611,5 +1879,34 @@ PostProcess:
             .expect("rec session already verified present");
         let _ = run_ort_ctc_rec_crop(rec_session, &rec_crop, &runtime.dict)
             .expect("CTC recognition ONNX inference must succeed on synthetic crop");
+    }
+
+    #[test]
+    fn bubble_groups_prioritize_bubbles_closest_to_viewport_focus_y() {
+        let lines = vec![
+            [100_u16, 50, 260, 120],
+            [105, 130, 255, 190], // clusters with top bubble (~center y=120)
+            [620, 460, 820, 560], // middle bubble (~center y=510)
+            [200, 840, 420, 930], // bottom bubble (~center y=885)
+        ];
+
+        let mid_first = group_line_boxes_into_bubble_groups(&lines, 500);
+        assert_eq!(
+            mid_first.len(),
+            3,
+            "two nearby top lines merge into one bubble"
+        );
+        assert_eq!(
+            mid_first[0].0,
+            [620, 460, 820, 560],
+            "bubble closest to viewport center (y=500) must translate first"
+        );
+
+        let bottom_first = group_line_boxes_into_bubble_groups(&lines, 900);
+        assert_eq!(
+            bottom_first[0].0,
+            [200, 840, 420, 930],
+            "bubble closest to bottom viewport (y=900) must translate first"
+        );
     }
 }

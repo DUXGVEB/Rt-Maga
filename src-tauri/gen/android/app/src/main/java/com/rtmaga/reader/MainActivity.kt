@@ -69,7 +69,9 @@ class MainActivity : TauriActivity() {
     webViewRef = webView
     webView.isVerticalScrollBarEnabled = false
     webView.isHorizontalScrollBarEnabled = false
-    webView.clearCache(true)
+    // Preserve WebView HTTP disk cache across launches: chapter pages already send
+    // `Cache-Control: no-store`, so only small persistent covers reside in WebView cache
+    // and render instantly (<16ms) instead of round-tripping through img:// on every launch.
     mainHandler.postDelayed({
       applyImmersiveMode()
       pushEnvToWebView(orientationChanged = false)
@@ -78,7 +80,6 @@ class MainActivity : TauriActivity() {
 
   override fun onStop() {
     super.onStop()
-    webViewRef?.clearCache(true)
     if (isFinishing) {
       StorageCleaner.purgeTransientPageCache(applicationContext)
     }
@@ -128,7 +129,6 @@ class MainActivity : TauriActivity() {
   override fun onDestroy() {
     mainHandler.removeCallbacksAndMessages(null)
     AiRuntimePlugin.hardUnloadActiveInstance()
-    webViewRef?.clearCache(true)
     StorageCleaner.purgeTransientPageCache(applicationContext)
     restoreSystemBars()
     super.onDestroy()

@@ -1,24 +1,44 @@
+<script module lang="ts">
+  const DECODED_COVERS_MAX = 400;
+  const decodedCoverTokens = new Set<string>();
+
+  function markCoverDecoded(token: string) {
+    if (!token) return;
+    if (decodedCoverTokens.size >= DECODED_COVERS_MAX) {
+      const first = decodedCoverTokens.values().next().value;
+      if (first) decodedCoverTokens.delete(first);
+    }
+    decodedCoverTokens.add(token);
+  }
+</script>
+
 <script lang="ts">
   import { Bookmark, BookOpen, CheckCircle2, Sparkles } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
   import { isMetadataOnlyChapterUrl, isTachibkCatalogSite } from "../comicFormats";
   import { badgePop, pressable } from "../motion";
   import { heroTransitionStore } from "../stores/heroTransition.svelte";
+  import { libraryCache } from "../stores/libraryCache.svelte";
   import { router } from "../stores/router.svelte";
   import { settingsStore } from "../stores/settings.svelte";
   import { toasts } from "../stores/toast.svelte";
   import type { HistoryItemView } from "../types";
 
-  let { item }: { item: HistoryItemView } = $props();
+  let { item, priority = false }: { item: HistoryItemView; priority?: boolean } = $props();
   let coverError = $state(false);
   let coverLoaded = $state(false);
   let coverBoxEl = $state<HTMLDivElement | null>(null);
+  let coverImgEl = $state<HTMLImageElement | null>(null);
   const t = $derived(settingsStore.t);
 
   $effect(() => {
-    void item.coverToken;
+    const tok = item.coverToken;
     coverError = false;
-    coverLoaded = false;
+    coverLoaded = Boolean(
+      tok &&
+        (decodedCoverTokens.has(tok) ||
+          (coverImgEl && coverImgEl.complete && coverImgEl.naturalWidth > 0))
+    );
   });
 
   const progressPct = $derived(() => {
@@ -31,8 +51,21 @@
   const isCompletedOnly = $derived(item.isCompleted && !item.hasNew);
   const isCatalogOnly = $derived(isTachibkCatalogSite(item.site));
 
+  function seedPreview() {
+    libraryCache.setMangaPreview({
+      id: item.mangaId,
+      title: item.title,
+      coverToken: item.coverToken,
+      site: item.site,
+      isCompleted: item.isCompleted,
+      unreadCount: item.unreadCount,
+      bookmarked: item.bookmarked,
+    });
+  }
+
   function openContinue() {
     if (isCatalogOnly || isMetadataOnlyChapterUrl(item.chapterUrl)) {
+      seedPreview();
       heroTransitionStore.captureFromElement(coverBoxEl, item.coverToken, item.mangaId);
       router.goManga(item.mangaId);
       return;
@@ -46,6 +79,7 @@
 
   function openDetail(e?: MouseEvent) {
     e?.stopPropagation();
+    seedPreview();
     heroTransitionStore.captureFromElement(coverBoxEl, item.coverToken, item.mangaId);
     router.goManga(item.mangaId);
   }
@@ -68,17 +102,20 @@
     >
       {#if item.coverToken && !coverError}
         <img
+          bind:this={coverImgEl}
           src={imgProxyUrl(item.coverToken)}
           alt={item.title}
-          loading="lazy"
+          loading={priority ? "eager" : "lazy"}
+          fetchpriority={priority ? "high" : undefined}
           decoding="async"
           onload={() => {
+            if (item.coverToken) markCoverDecoded(item.coverToken);
             coverLoaded = true;
           }}
           onerror={() => {
             coverError = true;
           }}
-          class="h-full w-full object-cover transition-[transform,opacity] duration-200 ease-out group-hover:scale-[1.03] {coverLoaded
+          class="h-full w-full object-cover transition-[transform,opacity] duration-150 ease-out group-hover:scale-[1.03] {coverLoaded
             ? 'opacity-100'
             : 'opacity-0'}"
         />

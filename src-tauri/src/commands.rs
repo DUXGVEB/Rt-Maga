@@ -1597,8 +1597,13 @@ pub(crate) async fn ai_delete_tier2(
     Ok(status)
 }
 
-/// Runs speech-bubble detection (`detect_only = true`) or full on-device manga page translation.
+/// Runs speech-bubble detection (`detect_only = true`) or progressive viewport-first on-device
+/// manga page translation, streaming bubbles over `on_progress` as each bubble finishes.
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Tauri IPC command exposes optional streaming channel and viewport focus coordinate"
+)]
 pub(crate) async fn ai_translate_page(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -1606,6 +1611,8 @@ pub(crate) async fn ai_translate_page(
     target_lang: String,
     detect_only: Option<bool>,
     generation: Option<u64>,
+    focus_y: Option<u16>,
+    on_progress: Channel<PageAiResultView>,
 ) -> Result<PageAiResultView, AppError> {
     let mode = if detect_only.unwrap_or(false) {
         AiPageMode::DetectOnly
@@ -1621,6 +1628,8 @@ pub(crate) async fn ai_translate_page(
             &target_lang,
             mode,
             generation,
+            focus_y.unwrap_or(500).min(1000),
+            Some(on_progress),
         )
         .await
 }

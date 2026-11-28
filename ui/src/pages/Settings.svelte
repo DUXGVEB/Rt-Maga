@@ -91,6 +91,7 @@
   import { appReleaseStore } from "../lib/stores/appRelease.svelte";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { heroTransitionStore } from "../lib/stores/heroTransition.svelte";
+  import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { router, type SettingsSubTarget } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -800,6 +801,13 @@
   }
 
   function openHiddenManga(item: HiddenMangaView, triggerEl?: HTMLElement | null) {
+    libraryCache.setMangaPreview({
+      id: item.id,
+      title: item.title,
+      coverToken: item.coverToken,
+      site: item.site,
+      hidden: true,
+    });
     const coverEl = triggerEl?.querySelector<HTMLElement>("[data-hidden-cover]") ?? null;
     if (coverEl && item.coverToken) {
       heroTransitionStore.captureFromElement(coverEl, item.coverToken, item.id);
@@ -872,19 +880,30 @@
     "storage",
     "system",
   ];
+  const settingsOneHanded = $derived(
+    deviceEnv.isMobile ? s.accessibility.oneHandedMode : "default"
+  );
 </script>
 
 <div class="settings-shell mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-4 px-4 py-4 sm:px-6 sm:py-5">
   <!-- ==================== COMPACT HEADER BAR ==================== -->
   <header class="flex flex-wrap items-center justify-between gap-3">
-    <!-- Left: Desktop title OR Mobile Hub/Back title -->
-    <div class="flex min-w-0 items-center gap-2.5">
+    <!-- Left (or Right in Right-Handed mobile mode): Desktop title OR Mobile Hub/Back title -->
+    <div
+      class="flex min-w-0 items-center gap-2.5 {mobileScreen !== 'hub' && !isSearching
+        ? settingsOneHanded === 'right'
+          ? 'w-full justify-end md:w-auto md:justify-start'
+          : 'w-full justify-start md:w-auto'
+        : ''}"
+    >
       {#if mobileScreen !== "hub" && !isSearching}
         <span in:popoverPop|local={{ duration: 150, y: 0 }} class="inline-flex md:hidden">
           <button
             type="button"
             onclick={backToMobileHub}
-            class="gpu-press inline-flex min-h-10 items-center gap-1 rounded-xl border px-2.5 py-1.5 text-sm font-semibold"
+            class="gpu-press inline-flex min-h-10 items-center gap-1 rounded-xl border px-2.5 py-1.5 text-sm font-semibold {settingsOneHanded === 'right'
+              ? 'flex-row-reverse'
+              : ''}"
             style="border-color: var(--border); background-color: var(--surface);"
           >
             <ChevronLeft size={17} />
@@ -2746,8 +2765,11 @@
               />
             </div>
 
-            <!-- 4. Target Translation Language Picker -->
-            <div class="flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5" style="border-color: var(--border); background-color: var(--surface-subtle);">
+            <!-- 4. Target Translation Language Picker (stacks cleanly on narrow mobile screens) -->
+            <div
+              class="flex min-w-0 flex-col gap-2 rounded-xl border px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
+              style="border-color: var(--border); background-color: var(--surface-subtle);"
+            >
               <label for="a11y-target-lang" class="flex min-w-0 items-center gap-2 text-xs font-semibold sm:text-sm">
                 <Globe size={15} class="shrink-0" style="color: var(--accent);" />
                 <span class="truncate">{t.a11yTargetLangTitle}</span>
@@ -2759,7 +2781,7 @@
                   const val = (e.currentTarget as HTMLSelectElement).value;
                   aiTranslateStore.setTargetLanguage(val ? (val as Language) : null);
                 }}
-                class="max-w-[55%] rounded-lg border px-2.5 py-1.5 text-xs font-medium outline-none"
+                class="w-full min-w-0 truncate rounded-lg border px-2.5 py-2 text-xs font-medium outline-none sm:w-auto sm:max-w-[55%] sm:py-1.5"
                 style="border-color: var(--border); background-color: var(--surface); color: var(--text);"
               >
                 <option value="">{t.a11yTargetLangAuto} ({activeLanguageLabel})</option>

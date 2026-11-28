@@ -40,6 +40,7 @@
   } from "../lib/motion";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
   import { heroTransitionStore } from "../lib/stores/heroTransition.svelte";
+  import { libraryCache } from "../lib/stores/libraryCache.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
   import { router } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
@@ -48,8 +49,51 @@
 
   let { id }: { id: number } = $props();
 
+  function buildInstantPreview(targetId: number): MangaView | null {
+    const cachedDetail = libraryCache.getMangaDetail(targetId);
+    if (cachedDetail) return cachedDetail;
+    const preview = libraryCache.getMangaPreview(targetId);
+    const flightToken =
+      heroTransitionStore.active?.mangaId === targetId
+        ? heroTransitionStore.active.coverToken
+        : null;
+    if (!preview && !flightToken) return null;
+    return {
+      id: targetId,
+      url: "",
+      site: preview?.site ?? "",
+      title: preview?.title ?? "",
+      coverToken: preview?.coverToken ?? flightToken,
+      hasNew: false,
+      bookmarked: preview?.bookmarked ?? false,
+      hidden: preview?.hidden ?? false,
+      unreadCount: preview?.unreadCount ?? 0,
+      isCompleted: preview?.isCompleted ?? false,
+      readerModeOverride: null,
+      readerSettings: null,
+      detectedWebtoon: false,
+      detectedLayout: null,
+      latestChapterName: null,
+      sourceId: null,
+      canonicalUrl: null,
+      altTitles: [],
+      originalTitle: null,
+      authors: [],
+      artists: [],
+      description: null,
+      genres: [],
+      tags: [],
+      status: null,
+      language: null,
+      availableLanguages: [],
+      chapters: [],
+      progress: null,
+    };
+  }
+
   let manga = $state<MangaView | null>(null);
   let loading = $state(true);
+  let chaptersHydrating = $state(false);
   let refreshing = $state(false);
   let verifying = $state(false);
   let loggingIn = $state(false);
@@ -70,6 +114,9 @@
   let loadSeq = 0;
   const deleteModalGuard = createOverlayGuard(200);
   const coverHiddenByHero = $derived(heroTransitionStore.isTargetHidden(id));
+  const oneHandedMode = $derived(
+    deviceEnv.isMobile ? settingsStore.value.accessibility.oneHandedMode : "default"
+  );
 
   function normalizeHost(rawUrl: string): string {
     try {
@@ -219,7 +266,17 @@
 
   async function load(targetId: number) {
     const seq = ++loadSeq;
-    loading = true;
+    const cachedDetail = libraryCache.getMangaDetail(targetId);
+    const seed = buildInstantPreview(targetId);
+    if (seed) {
+      manga = seed;
+      loading = false;
+      chaptersHydrating = !cachedDetail;
+    } else {
+      manga = null;
+      loading = true;
+      chaptersHydrating = false;
+    }
     errorState = null;
     refreshErrorState = null;
     coverError = false;
@@ -230,12 +287,18 @@
       const loaded = await api.getManga(targetId);
       if (seq !== loadSeq) return;
       manga = loaded;
+      libraryCache.setMangaDetail(loaded);
     } catch (err) {
       if (seq !== loadSeq) return;
-      errorState = formatAppError(err, settingsStore.value.language);
+      if (!manga) {
+        errorState = formatAppError(err, settingsStore.value.language);
+      } else {
+        refreshErrorState = formatAppError(err, settingsStore.value.language);
+      }
     } finally {
       if (seq === loadSeq) {
         loading = false;
+        chaptersHydrating = false;
       }
     }
   }
@@ -250,6 +313,7 @@
       const updated = await api.refreshManga(targetId);
       if (seq !== loadSeq) return;
       manga = updated;
+      libraryCache.setMangaDetail(updated);
       coverError = false;
       toasts.push(t.toastChaptersUpdated, "success");
     } catch (err) {
@@ -444,10 +508,12 @@
       if (manga.hidden) {
         await api.setMangaHidden(manga.id, "unhide");
         manga = { ...manga, hidden: false };
+        libraryCache.setMangaDetail(manga);
         void notificationsStore.refresh();
         toasts.push(t.toastMangaUnhidden(manga.title), "success", 2400);
       } else {
         await api.setMangaHidden(manga.id, "hide");
+        libraryCache.removeMangaDetail(manga.id);
         void notificationsStore.refresh();
         toasts.push(t.toastMangaHidden, "info", 2800);
         router.goHome();
@@ -465,6 +531,7 @@
     deleting = true;
     try {
       await api.deleteMangaPermanently(manga.id);
+      libraryCache.removeMangaDetail(manga.id);
       void notificationsStore.refresh();
       showDeleteModal = false;
       toasts.push(t.toastMangaDeleted, "info", 2800);
@@ -479,14 +546,20 @@
 </script>
 
 <div class="mx-auto flex w-full max-w-5xl flex-col gap-6 px-5 py-6 sm:px-8 sm:py-8">
-  <div class="flex flex-wrap items-center justify-between gap-2">
+  <!-- Single-row fixed-height top bar: prevents 1-row->2-row vertical shift during Hero cover flight
+       and aligns the Back button with the active One-Handed thumb side (left or right). -->
+  <div
+    class="flex min-h-[38px] flex-nowrap items-center justify-between gap-2 {oneHandedMode === 'right'
+      ? 'flex-row-reverse'
+      : ''}"
+  >
     <button
       type="button"
       use:pressable
       onclick={() => {
         if (!router.goBack()) router.goHome();
       }}
-      class="btn-3d btn-3d-subtle inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-sm font-medium"
+      class="btn-3d btn-3d-subtle inline-flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-xl px-3 py-1.5 text-sm font-medium"
       style="color: var(--text-muted);"
     >
       <ArrowLeft size={16} />
@@ -494,13 +567,14 @@
     </button>
 
     {#if manga}
-      <div in:viewReveal|local={{ duration: 150, y: 0 }} class="flex flex-wrap items-center gap-2">
+      <div class="flex shrink-0 items-center gap-1.5 sm:gap-2 {oneHandedMode === 'right' ? 'flex-row-reverse' : ''}">
         {#if isLocalComicSite(manga.site)}
           <CbzDropZone
             compact
             targetMangaId={manga.id}
             onImported={(updated) => {
               manga = updated;
+              libraryCache.setMangaDetail(updated);
               coverError = false;
             }}
           />
@@ -510,10 +584,12 @@
             use:pressable
             onclick={refresh}
             disabled={refreshing}
-            class="btn-3d btn-3d-surface inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
+            title={refreshing ? t.refreshing : t.refreshChapters}
+            aria-label={refreshing ? t.refreshing : t.refreshChapters}
+            class="btn-3d btn-3d-surface inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium sm:px-3"
           >
             <RefreshCw size={14} class={refreshing ? "animate-spin" : ""} />
-            <span>{refreshing ? t.refreshing : t.refreshChapters}</span>
+            <span class="hidden sm:inline">{refreshing ? t.refreshing : t.refreshChapters}</span>
           </button>
         {/if}
         <button
@@ -521,26 +597,30 @@
           use:pressable
           onclick={hideManga}
           disabled={hiding}
-          class="btn-3d btn-3d-surface inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+          title={manga.hidden ? t.unhideMangaBtn : t.hideMangaBtn}
+          aria-label={manga.hidden ? t.unhideMangaBtn : t.hideMangaBtn}
+          class="btn-3d btn-3d-surface inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium disabled:opacity-50 sm:px-3"
           style="color: {manga.hidden ? 'var(--accent)' : 'var(--text-muted)'};"
         >
           {#if manga.hidden}
             <Eye size={14} />
-            <span>{t.unhideMangaBtn}</span>
+            <span class="hidden sm:inline">{t.unhideMangaBtn}</span>
           {:else}
             <EyeOff size={14} />
-            <span>{t.hideMangaBtn}</span>
+            <span class="hidden sm:inline">{t.hideMangaBtn}</span>
           {/if}
         </button>
         <button
           type="button"
           use:pressable
           onclick={openDeleteModal}
-          class="btn-3d btn-3d-surface inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium"
+          title={t.deleteMangaBtn}
+          aria-label={t.deleteMangaBtn}
+          class="btn-3d btn-3d-surface inline-flex min-h-[38px] items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium sm:px-3"
           style="color: var(--danger);"
         >
           <Trash2 size={14} />
-          <span>{t.deleteMangaBtn}</span>
+          <span class="hidden sm:inline">{t.deleteMangaBtn}</span>
         </button>
       </div>
     {/if}
@@ -626,7 +706,7 @@
             <img
               src={imgProxyUrl(manga.coverToken)}
               alt={manga.title}
-              decoding="async"
+              decoding="sync"
               onerror={() => {
                 coverError = true;
               }}
@@ -1133,9 +1213,19 @@
       {/if}
 
       <div
-        class="max-h-[55dvh] overflow-y-auto rounded-2xl border p-3"
+        class="max-h-[55dvh] overflow-y-auto overscroll-contain rounded-2xl border p-3"
         style="background-color: var(--surface); border-color: var(--border);"
       >
+        {#if chaptersHydrating && manga.chapters.length === 0}
+          <div class="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+            {#each Array(6) as _, i (i)}
+              <div
+                class="h-[42px] animate-pulse rounded-xl"
+                style="background-color: var(--surface-subtle);"
+              ></div>
+            {/each}
+          </div>
+        {:else}
         {#key `${newestFirst}:${activeChapterLang()}`}
           <div
             in:viewReveal|local={{ duration: 130, y: 3 }}
@@ -1205,6 +1295,7 @@
             {/each}
           </div>
         {/key}
+        {/if}
       </div>
     </section>
     </div>

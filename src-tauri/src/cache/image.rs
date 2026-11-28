@@ -15,6 +15,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use mangacore::HttpClient;
+use moka::future::Cache as MokaCache;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, watch};
@@ -191,6 +192,10 @@ fn infer_content_type_from_bytes(bytes: &[u8]) -> String {
         .unwrap_or_else(|| "image/jpeg".to_owned())
 }
 
+/// Maximum byte budget for the hot in-RAM cover cache (`24 MiB` holds ~200–400 small covers
+/// so Home, Bookmarks, History, Sources, and Manga detail paint covers with zero disk/SQLite lag).
+const COVER_RAM_CACHE_MAX_BYTES: u64 = 24 * 1024 * 1024;
+
 /// Manages local image files across two strictly separated stores:
 /// - **Persistent shared cover store** (`<data_dir>/covers/<xx>/<sha256>`): immune to LRU
 ///   eviction and transient cache clears; only unreferenced covers are pruned on permanent
@@ -204,6 +209,7 @@ pub(crate) struct ImageCache {
     db: Database,
     in_flight: Arc<DashMap<String, watch::Sender<bool>>>,
     index_mem: Arc<DashMap<String, CachedIndexEntry>>,
+    cover_ram: MokaCache<String, CachedImage>,
 }
 
 impl ImageCache {
@@ -277,12 +283,20 @@ impl ImageCache {
             );
         }
 
+        let cover_ram = MokaCache::builder()
+            .max_capacity(COVER_RAM_CACHE_MAX_BYTES)
+            .weigher(|_k: &String, v: &CachedImage| {
+                u32::try_from(v.bytes.len().max(1)).unwrap_or(u32::MAX)
+            })
+            .build();
+
         let cache = Self {
             dir,
             covers_dir,
             db,
             in_flight: Arc::new(DashMap::new()),
             index_mem,
+            cover_ram,
         };
         cache.migrate_legacy_covers_dir().await;
         Ok(cache)
@@ -453,45 +467,60 @@ impl ImageCache {
         meta.is_cover = true;
         meta.chapter_url = None;
 
+        if let Some(hit) = self.cover_ram.get(key).await {
+            return Some(hit);
+        }
+
         let data = self.read_or_migrate_cover_file(key).await?;
         let now = now_unix_secs();
 
         if let Some(mut entry) = self.load_or_fetch_index_entry(key).await {
-            if entry.needs_db_update(&meta, now) {
-                let _ = sqlx::query(
-                    "UPDATE image_cache
-                     SET last_access = ?,
-                         site = COALESCE(site, ?),
-                         manga_id = COALESCE(manga_id, ?),
-                         is_cover = 1,
-                         chapter_url = NULL
-                     WHERE key = ?",
-                )
-                .bind(now)
-                .bind(meta.site)
-                .bind(meta.manga_id)
-                .bind(key)
-                .execute(self.db.pool())
-                .await;
-                entry.apply_meta(&meta, now);
-                self.index_mem.insert(key.to_owned(), entry.clone());
-            }
-            return Some(CachedImage {
+            let cached = CachedImage {
                 bytes: Bytes::from(data),
-                content_type: entry.content_type,
-            });
+                content_type: entry.content_type.clone(),
+            };
+            self.cover_ram.insert(key.to_owned(), cached.clone()).await;
+
+            if entry.needs_db_update(&meta, now) {
+                entry.apply_meta(&meta, now);
+                self.index_mem.insert(key.to_owned(), entry);
+                let db = self.db.clone();
+                let key_owned = key.to_owned();
+                let site_owned = meta.site.map(str::to_owned);
+                let manga_id = meta.manga_id;
+                tokio::spawn(async move {
+                    let _ = sqlx::query(
+                        "UPDATE image_cache
+                         SET last_access = ?,
+                             site = COALESCE(site, ?),
+                             manga_id = COALESCE(manga_id, ?),
+                             is_cover = 1,
+                             chapter_url = NULL
+                         WHERE key = ?",
+                    )
+                    .bind(now)
+                    .bind(site_owned)
+                    .bind(manga_id)
+                    .bind(key_owned)
+                    .execute(db.pool())
+                    .await;
+                });
+            }
+            return Some(cached);
         }
 
         // Disk-hit recovery: file exists in persistent `<data_dir>/covers/` without an index row.
         let content_type = infer_content_type_from_bytes(&data);
         let size = i64::try_from(data.len()).unwrap_or(i64::MAX);
+        let cached = CachedImage {
+            bytes: Bytes::from(data),
+            content_type: content_type.clone(),
+        };
+        self.cover_ram.insert(key.to_owned(), cached.clone()).await;
         self.upsert_index_row(key, &content_type, size, now, &meta)
             .await;
 
-        Some(CachedImage {
-            bytes: Bytes::from(data),
-            content_type,
-        })
+        Some(cached)
     }
 
     /// Writes a cover image atomically into the persistent shared cover store
@@ -505,6 +534,16 @@ impl ImageCache {
     ) {
         meta.is_cover = true;
         meta.chapter_url = None;
+
+        self.cover_ram
+            .insert(
+                key.to_owned(),
+                CachedImage {
+                    bytes: bytes.clone(),
+                    content_type: content_type.to_owned(),
+                },
+            )
+            .await;
 
         let path = self.cover_file_path(key);
         if !write_file_atomically(&path, bytes).await {
@@ -1264,6 +1303,7 @@ impl ImageCache {
     }
 
     async fn remove_all_locations(&self, key: &str) {
+        self.cover_ram.invalidate(key).await;
         let _ = tokio::fs::remove_file(self.page_file_path(key)).await;
         let _ = tokio::fs::remove_file(self.cover_file_path(key)).await;
         if let Some(legacy_cover) = self.legacy_cover_file_path(key) {

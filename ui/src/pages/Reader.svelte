@@ -10,20 +10,25 @@
     ChevronRight,
     Download,
     ExternalLink,
+    Hand,
     Image as ImageIcon,
     List,
     Loader2,
     Maximize,
     Minimize,
+    PanelLeft,
+    PanelRight,
     RotateCcw,
     Search,
     SlidersHorizontal,
+    Smartphone,
     Sparkles,
     X,
     ZoomOut,
   } from "lucide-svelte";
   import { flushSync, tick, untrack } from "svelte";
   import { api, formatAppError, imgProxyUrl } from "../lib/api";
+  import BubbleMagnifierCard from "../lib/components/BubbleMagnifierCard.svelte";
   import FloatingControls from "../lib/components/FloatingControls.svelte";
   import LatticeLoader from "../lib/components/LatticeLoader.svelte";
   import PageImage from "../lib/components/PageImage.svelte";
@@ -42,7 +47,6 @@
   import {
     clampZoomPan,
     computeAnchoredZoom,
-    computeBubbleZoom,
     computeFocusedZoom,
     computeHorizontalTrackMetrics,
     computeNavStepCooldownMs,
@@ -53,7 +57,6 @@
     focusBrightness,
     partitionPages,
     resolveHorizontalTapAction,
-    type NormalizedBbox,
     type PageDimensionSample,
     type RectBox,
   } from "../lib/readerLayout";
@@ -70,6 +73,7 @@
     FormattedAppError,
     HorizontalDirection,
     MangaView,
+    OneHandedMode,
     OrientationLockMode,
     ReaderBg,
     ReaderModeOverride,
@@ -129,6 +133,8 @@
     openQuickCat = null;
     quickFloatConfig = null;
     aiPillOpen = false;
+    activeBubbleCallout = null;
+    activeBubbleKey = null;
     imageMenuTarget = null;
   }
 
@@ -146,8 +152,44 @@
   let chapterDetectedLayout = $state<"manga" | "webtoon" | null>(null);
   let aiPillOpen = $state(false);
   let activeBubbleKey = $state<string | null>(null);
+  let activeBubbleCallout = $state<{
+    token: string;
+    regionIndex: number;
+    imgEl: HTMLImageElement | null;
+  } | null>(null);
+  const activeBubbleCalloutRegions = $derived(
+    activeBubbleCallout ? (aiTranslateStore.getPageResult(activeBubbleCallout.token)?.regions ?? []) : []
+  );
   let aiPageDispatchTimer: number | null = null;
+  let aiScrollSettling = $state(false);
+  let aiScrollSettleTimer: number | null = null;
   let lastAiFocusKey = "";
+
+  function notifyAiScrollActivity() {
+    if (!aiBubbleZoom && !aiTranslateOn) return;
+    aiScrollSettling = true;
+    if (aiScrollSettleTimer !== null) {
+      window.clearTimeout(aiScrollSettleTimer);
+    }
+    aiScrollSettleTimer = window.setTimeout(() => {
+      aiScrollSettleTimer = null;
+      aiScrollSettling = false;
+    }, 360);
+  }
+
+  function measureActivePageFocusY(pageIdx: number): number {
+    if (isHorizontal || !scrollEl || !activeUrl) return 450;
+    const pageEl = scrollEl.querySelector<HTMLElement>(
+      `[data-page-key="${CSS.escape(`${activeUrl}:${pageIdx}`)}"]`
+    );
+    if (!pageEl) return 450;
+    const vpRect = scrollEl.getBoundingClientRect();
+    const pRect = pageEl.getBoundingClientRect();
+    if (pRect.height < 16) return 450;
+    const vpMidY = vpRect.top + vpRect.height * 0.48;
+    const ratio = (vpMidY - pRect.top) / pRect.height;
+    return Math.max(0, Math.min(1000, Math.round(ratio * 1000)));
+  }
 
   // Double-tap / double-click focused zoom & 2-finger pinch-to-zoom state (`1.0` .. `3.0`).
   const ZOOM_TARGET_SCALE = 2.0;
@@ -701,6 +743,7 @@
     commitPendingVerticalZoom();
     const wasZoomed = zoomScale > 1.01;
     const prevScale = zoomScale;
+    activeBubbleCallout = null;
     activeBubbleKey = null;
     zoomPanning = false;
     zoomPinching = false;
@@ -1060,6 +1103,7 @@
       zoomFocusSettleTimer,
       longPressTimer,
       aiPageDispatchTimer,
+      aiScrollSettleTimer,
     ]) {
       if (timer !== null) window.clearTimeout(timer);
     }
@@ -1073,6 +1117,8 @@
     longPressTimer = null;
     longPressPointerId = null;
     aiPageDispatchTimer = null;
+    aiScrollSettleTimer = null;
+    aiScrollSettling = false;
     if (focusRaf !== null) {
       window.cancelAnimationFrame(focusRaf);
       focusRaf = null;
@@ -1344,6 +1390,11 @@
     }
 
     const unregisterBack = router.registerBackInterceptor(() => {
+      if (activeBubbleCallout !== null) {
+        activeBubbleCallout = null;
+        activeBubbleKey = null;
+        return true;
+      }
       if (imageMenuTarget !== null) {
         if (!imageActionBusy) imageMenuTarget = null;
         return true;
@@ -1592,7 +1643,9 @@
     };
   });
 
-  // Reactive AI Translation & Bubble Detection driver with fast-swipe job cancellation.
+  // Reactive progressive AI driver: pauses while actively scrolling so 60/120fps reading stays
+  // completely fluid, translates ONLY the visible page first (prioritizing bubbles closest to the
+  // viewport center), and gently warms page +1 only after the active page finishes while idle.
   $effect(() => {
     const enabled = aiBubbleZoom || aiTranslateOn;
     const translateMode = aiTranslateOn;
@@ -1603,6 +1656,7 @@
     const tier = aiTranslateStore.activeTier;
     const lang = aiTranslateStore.effectiveTargetLang;
     const loading = loadingInitial;
+    const scrolling = aiScrollSettling;
     const gen = aiTranslateStore.generation;
     void gen;
 
@@ -1612,11 +1666,12 @@
     }
 
     if (!enabled) {
+      activeBubbleCallout = null;
       activeBubbleKey = null;
       lastAiFocusKey = "";
       return;
     }
-    if (loading || !chap || chap.images.length === 0) return;
+    if (loading || scrolling || !chap || chap.images.length === 0) return;
 
     const activeTokens =
       horiz && grp && grp.items.length > 0
@@ -1626,8 +1681,6 @@
           : [];
     if (activeTokens.length === 0) return;
 
-    // In vertical scrolling mode, also warm-process the immediate next page so scrolling
-    // into the next panel already has bubbles / translations ready.
     const warmNextToken =
       !horiz && pageIdx + 1 < chap.images.length ? chap.images[pageIdx + 1] : null;
 
@@ -1641,15 +1694,29 @@
       aiTranslateStore.cancelJobs();
     }
 
+    const focusY = measureActivePageFocusY(pageIdx);
     aiPageDispatchTimer = window.setTimeout(() => {
       aiPageDispatchTimer = null;
-      for (const tok of activeTokens) {
-        void aiTranslateStore.processPage(tok, { detectOnly: !translateMode });
-      }
+      if (aiScrollSettling || lastAiFocusKey !== focusKey) return;
+      const runTasks = activeTokens.map((tok) =>
+        aiTranslateStore.processPage(tok, { detectOnly: !translateMode, focusY })
+      );
       if (warmNextToken && !activeTokens.includes(warmNextToken)) {
-        void aiTranslateStore.processPage(warmNextToken, { detectOnly: !translateMode });
+        void Promise.all(runTasks).then(() => {
+          if (
+            lastAiFocusKey !== focusKey ||
+            aiScrollSettling ||
+            aiTranslateStore.isPageDone(warmNextToken, !translateMode)
+          ) {
+            return;
+          }
+          void aiTranslateStore.processPage(warmNextToken, {
+            detectOnly: !translateMode,
+            focusY: 180,
+          });
+        });
       }
-    }, movedPage ? 140 : 40);
+    }, movedPage ? 220 : 80);
   });
 
   let prevLayoutSig = "";
@@ -2598,6 +2665,11 @@
   }
 
   function dismissHorizontalOverlayIfOpen(): boolean {
+    if (activeBubbleCallout !== null) {
+      activeBubbleCallout = null;
+      activeBubbleKey = null;
+      return true;
+    }
     if (imageMenuTarget !== null) {
       if (!imageActionBusy) imageMenuTarget = null;
       return true;
@@ -2623,86 +2695,28 @@
   }
 
   function handleBubbleTap(info: {
-    pageIndex: number;
     token: string;
-    bbox: NormalizedBbox;
+    regionIndex: number;
     bubbleKey: string;
     imgEl: HTMLImageElement | null;
   }) {
-    if (!aiBubbleZoom || !scrollEl || !info.imgEl) return;
+    if (!aiBubbleZoom || !info.token) return;
     wakeFloatingControls();
 
-    // Tapping the already zoomed bubble toggles back cleanly to 1x.
-    if (zoomScale > 1.01 && activeBubbleKey === info.bubbleKey) {
-      resetZoom();
+    // Tapping the same bubble toggles the floating magnifier card closed cleanly.
+    if (activeBubbleCallout !== null && activeBubbleKey === info.bubbleKey) {
+      activeBubbleCallout = null;
+      activeBubbleKey = null;
       return;
     }
 
-    const vpRect = scrollEl.getBoundingClientRect();
-    const imgRect = info.imgEl.getBoundingClientRect();
-    if (imgRect.width <= 12 || imgRect.height <= 12) return;
-
-    const prevScale = zoomScale > 1.01 ? zoomScale : 1;
-    const unscaledImageRect: RectBox = isHorizontal
-      ? {
-          left: (imgRect.left - vpRect.left - zoomTx) / prevScale,
-          top: (imgRect.top - vpRect.top - zoomTy) / prevScale,
-          width: imgRect.width / prevScale,
-          height: imgRect.height / prevScale,
-        }
-      : {
-          left: (imgRect.left - vpRect.left - zoomTx) / prevScale,
-          top: (imgRect.top - vpRect.top) / prevScale,
-          width: imgRect.width / prevScale,
-          height: imgRect.height / prevScale,
-        };
-
-    const box = measureZoomTargetBox(info.imgEl);
-    zoomContentRect = box.rect;
-    zoomOriginLeft = box.originLeft;
-    zoomOriginTop = box.originTop;
-
-    const next = computeBubbleZoom(
-      info.bbox,
-      unscaledImageRect,
-      vpRect.width,
-      vpRect.height,
-      box.rect,
-      box.originLeft,
-      box.originTop
-    );
-
-    if (zoomFocusSettleTimer !== null) {
-      window.clearTimeout(zoomFocusSettleTimer);
-      zoomFocusSettleTimer = null;
-    }
-
+    // Open crisp Floating Text/Bubble Callout card WITHOUT zooming or shifting the underlying page.
     activeBubbleKey = info.bubbleKey;
-
-    if (isHorizontal) {
-      zoomTransitionLockUntil = Date.now() + ZOOM_ANIM_MS + 30;
-      zoomScale = next.scale;
-      zoomTx = next.tx;
-      zoomTy = next.ty;
-      zoomFocusSettleTimer = window.setTimeout(() => {
-        zoomFocusSettleTimer = null;
-        zoomTransitionLockUntil = 0;
-        updateFocusNow();
-      }, ZOOM_ANIM_MS + 20);
-    } else {
-      commitPendingVerticalZoom();
-      const contentTopScaled = verticalContentEl?.getBoundingClientRect().top ?? vpRect.top;
-      const unscaledImgTopInDoc = (imgRect.top - contentTopScaled) / prevScale;
-      const unscaledImgHeight = imgRect.height / prevScale;
-      const bubbleMidYRatio = (info.bbox[1] + info.bbox[3]) / 2000;
-      const unscaledDocY = unscaledImgTopInDoc + bubbleMidYRatio * unscaledImgHeight;
-      const baseHeight = verticalContentEl?.offsetHeight ?? scrollEl.scrollHeight;
-      const desiredScrollTop = Math.max(
-        0,
-        Math.round(unscaledDocY * next.scale - vpRect.height * 0.5)
-      );
-      animateVerticalZoomTo(next.scale, next.tx, desiredScrollTop, baseHeight);
-    }
+    activeBubbleCallout = {
+      token: info.token,
+      regionIndex: info.regionIndex,
+      imgEl: info.imgEl,
+    };
   }
 
   function hitTestBubbleAtPoint(clientX: number, clientY: number): boolean {
@@ -2736,18 +2750,17 @@
     if (!bestEl) return false;
 
     const bubbleKey = bestEl.dataset.bubbleKey ?? "";
-    const rawBbox = (bestEl.dataset.bbox ?? "").split(",").map((v) => Number(v));
-    if (!bubbleKey || rawBbox.length !== 4 || rawBbox.some((n) => !Number.isFinite(n))) {
+    const regionIndex = Number(bestEl.dataset.bubbleIdx ?? 0);
+    if (!bubbleKey || !Number.isFinite(regionIndex)) {
       return false;
     }
     const pageBox = bestEl.closest<HTMLElement>("[data-page-idx]");
     const imgEl = pageBox?.querySelector<HTMLImageElement>("img") ?? null;
-    if (!pageBox || !imgEl) return false;
+    if (!pageBox) return false;
 
     handleBubbleTap({
-      pageIndex: Number(pageBox.dataset.pageIdx ?? 0),
       token: pageBox.dataset.pageToken ?? "",
-      bbox: [rawBbox[0], rawBbox[1], rawBbox[2], rawBbox[3]],
+      regionIndex: Math.max(0, Math.floor(regionIndex)),
       bubbleKey,
       imgEl,
     });
@@ -2774,10 +2787,6 @@
 
     const runSingleAction = () => {
       if (aiBubbleZoom && hitTestBubbleAtPoint(tapX, tapY)) {
-        return;
-      }
-      if (activeBubbleKey !== null && zoomScale > 1.01) {
-        resetZoom();
         return;
       }
       if (!readerSettings.tapZonesEnabled) {
@@ -2979,6 +2988,11 @@
       didPanDrag = false;
       return;
     }
+    if (activeBubbleCallout !== null) {
+      activeBubbleCallout = null;
+      activeBubbleKey = null;
+      return;
+    }
     if (imageMenuTarget !== null) {
       if (!imageActionBusy) imageMenuTarget = null;
       return;
@@ -3011,13 +3025,8 @@
     const tapX = e.clientX;
     const tapY = e.clientY;
     const runSingleTap = () => {
-      // Bubble Auto-Zoom: single tap on any detected bubble focuses it (or resets if tapped again).
+      // Bubble Magnifier: single tap on any detected speech bubble opens the Floating Text Callout.
       if (aiBubbleZoom && hitTestBubbleAtPoint(tapX, tapY)) {
-        return;
-      }
-      // Tapping outside a bubble while bubble-zoomed smoothly resets to 1x.
-      if (activeBubbleKey !== null && zoomScale > 1.01) {
-        resetZoom(tapY);
         return;
       }
       executeSingleTap(tapX, tapY);
@@ -3165,6 +3174,7 @@
     if (isHorizontal || !scrollEl || strip.length === 0 || loadingInitial) return;
 
     wakeFloatingControls();
+    notifyAiScrollActivity();
     if (Date.now() >= zoomTransitionLockUntil) {
       scheduleFocusUpdate();
     }
@@ -3426,7 +3436,10 @@
 
     if (e.key === "Escape") {
       e.preventDefault();
-      if (imageMenuTarget !== null) {
+      if (activeBubbleCallout !== null) {
+        activeBubbleCallout = null;
+        activeBubbleKey = null;
+      } else if (imageMenuTarget !== null) {
         if (!imageActionBusy) imageMenuTarget = null;
       } else if (aiPillOpen) aiPillOpen = false;
       else if (chapterJumpOpen) chapterJumpOpen = false;
@@ -3595,9 +3608,9 @@
   class="relative flex h-full w-full flex-col overflow-hidden"
   style="background-color: {readerBackdrop()};"
 >
-  <!-- Top Auto-Hide Toolbar (frosted glass, GPU transform/opacity only, never overlaps corner tap zones) -->
+  <!-- Top Auto-Hide Toolbar (frosted glass, GPU transform/opacity only; Back tracks active One-Handed thumb side) -->
   <header
-    class="glass-chrome fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 transition-[opacity,transform] duration-200 sm:px-4 {oneHandedMode === 'left'
+    class="glass-chrome fixed top-0 right-0 left-0 z-30 flex items-center justify-between gap-2 border-b px-3 py-2 transition-[opacity,transform] duration-200 sm:px-4 {oneHandedMode === 'right'
       ? 'flex-row-reverse'
       : ''}"
     style="padding-top: calc(0.5rem + var(--safe-top)); padding-left: max(0.75rem, var(--safe-left)); padding-right: max(0.75rem, var(--safe-right)); border-color: var(--border); opacity: {toolbarVisible
@@ -3606,7 +3619,7 @@
       ? '0px'
       : '-8px'}, 0);"
   >
-    <div class="flex min-w-0 items-center gap-2 {oneHandedMode === 'left' ? 'flex-row-reverse' : ''}">
+    <div class="flex min-w-0 items-center gap-2 {oneHandedMode === 'right' ? 'flex-row-reverse' : ''}">
       <button
         type="button"
         onclick={exitReader}
@@ -3618,10 +3631,10 @@
       </button>
 
       <div
-        class="min-w-0 {oneHandedMode === 'left' ? 'border-r pr-2.5 text-right' : 'border-l pl-2.5'}"
+        class="min-w-0 {oneHandedMode === 'right' ? 'border-r pr-2.5 text-right' : 'border-l pl-2.5'}"
         style="border-color: var(--border);"
       >
-        <div class="flex items-center gap-1.5 {oneHandedMode === 'left' ? 'justify-end' : ''}">
+        <div class="flex items-center gap-1.5 {oneHandedMode === 'right' ? 'justify-end' : ''}">
           <div class="truncate text-sm font-semibold">{manga?.title ?? t.readingFallback}</div>
           {#if isAutoWebtoonActive}
             <span
@@ -3653,7 +3666,7 @@
       </div>
     </div>
 
-    <div class="flex shrink-0 items-center gap-1 {oneHandedMode === 'left' ? 'flex-row-reverse' : ''}">
+    <div class="flex shrink-0 items-center gap-1 {oneHandedMode === 'right' ? 'flex-row-reverse' : ''}">
       {#if zoomScale > 1.01}
         <span transition:badgePop|local class="inline-flex">
           <button
@@ -4196,6 +4209,46 @@
             class="flex flex-col gap-3 border-t p-3"
             style="border-color: var(--border); background-color: var(--surface);"
           >
+            {#if deviceEnv.isMobile}
+              <div class="flex flex-col gap-1.5">
+                <div class="flex items-center gap-1.5 font-medium">
+                  <Hand size={13} style="color: var(--accent);" />
+                  <span>{t.a11yOneHandedTitle}</span>
+                </div>
+                <div class="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label={t.a11yOneHandedTitle}>
+                  {#each [
+                    ["left", t.a11yOneHandedLeft],
+                    ["right", t.a11yOneHandedRight],
+                    ["default", t.a11yOneHandedDefault],
+                  ] as [mode, label] (mode)}
+                    {@const active = settingsStore.value.accessibility.oneHandedMode === mode}
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onclick={() =>
+                        settingsStore.update((d) => {
+                          d.accessibility.oneHandedMode = mode as OneHandedMode;
+                        })}
+                      class="gpu-press flex min-h-[36px] items-center justify-center gap-1 rounded-lg border px-2 py-1 font-medium"
+                      style="border-color: {active ? 'var(--accent)' : 'var(--border)'}; background-color: {active
+                        ? 'var(--accent-soft)'
+                        : 'var(--surface-subtle)'}; color: {active ? 'var(--accent)' : 'var(--text)'};"
+                    >
+                      {#if mode === "left"}
+                        <PanelLeft size={12} />
+                      {:else if mode === "right"}
+                        <PanelRight size={12} />
+                      {:else}
+                        <Smartphone size={12} />
+                      {/if}
+                      <span class="truncate">{label}</span>
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
             <div class="flex items-center justify-between">
               <span class="font-medium">{t.keepScreenOnLabel}</span>
               <SquishSwitch
@@ -4458,8 +4511,8 @@
     onclick={handleViewportClick}
     ontouchstart={wakeFloatingControls}
     class={isHorizontal
-      ? "reader-no-scrollbar relative flex h-full w-full select-none overflow-hidden"
-      : "reader-no-scrollbar relative h-full w-full select-none overflow-y-auto"}
+      ? "reader-no-scrollbar relative flex h-full w-full select-none overflow-hidden overscroll-none"
+      : "reader-no-scrollbar relative h-full w-full select-none overflow-y-auto overscroll-none"}
     style={zoomPinching
       ? "touch-action: none;"
       : isHorizontal
@@ -5199,6 +5252,27 @@
         </button>
       {/if}
     </footer>
+  {/if}
+
+  {#if activeBubbleCallout && activeBubbleCalloutRegions.length > 0}
+    <BubbleMagnifierCard
+      regions={activeBubbleCalloutRegions}
+      regionIndex={activeBubbleCallout.regionIndex}
+      imgEl={activeBubbleCallout.imgEl}
+      showTranslation={aiTranslateOn && !aiPeekOriginal}
+      onSelectIndex={(nextIdx) => {
+        if (!activeBubbleCallout) return;
+        const reg = activeBubbleCalloutRegions[nextIdx];
+        activeBubbleCallout = { ...activeBubbleCallout, regionIndex: nextIdx };
+        activeBubbleKey = reg
+          ? `${activeBubbleCallout.token}:${nextIdx}:${reg.bbox[0]},${reg.bbox[1]},${reg.bbox[2]},${reg.bbox[3]}`
+          : null;
+      }}
+      onClose={() => {
+        activeBubbleCallout = null;
+        activeBubbleKey = null;
+      }}
+    />
   {/if}
 
   {#if !loadingInitial && !errorState && activeChapter}

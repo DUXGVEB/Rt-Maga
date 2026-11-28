@@ -212,13 +212,13 @@
         </div>
       {/if}
 
-      <!-- Target Language Compact Select -->
+      <!-- Target Language Compact Select (stacked to prevent mobile overflow inside compact popover) -->
       <div
-        class="flex items-center justify-between gap-2 rounded-xl border px-2.5 py-1.5"
+        class="flex flex-col gap-1.5 rounded-xl border px-2.5 py-2"
         style="border-color: var(--border); background-color: var(--surface-subtle);"
       >
-        <span class="inline-flex shrink-0 items-center gap-1.5 font-medium" style="color: var(--text-muted);">
-          <Globe size={13} style="color: var(--accent);" />
+        <span class="inline-flex min-w-0 items-center gap-1.5 font-medium" style="color: var(--text-muted);">
+          <Globe size={13} class="shrink-0" style="color: var(--accent);" />
           <span class="truncate">{t.a11yTargetLangTitle}</span>
         </span>
         <select
@@ -228,7 +228,7 @@
             const val = (e.currentTarget as HTMLSelectElement).value;
             aiTranslateStore.setTargetLanguage(val ? (val as Language) : null);
           }}
-          class="max-w-[54%] rounded-md border px-1.5 py-0.5 text-[11px] font-medium outline-none"
+          class="w-full min-w-0 truncate rounded-md border px-2 py-1 text-[11px] font-medium outline-none"
           style="border-color: var(--border); background-color: var(--surface); color: var(--text);"
         >
           <option value="">{t.a11yTargetLangAuto}</option>

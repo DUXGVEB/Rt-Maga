@@ -50,8 +50,10 @@ const MLKIT_MODEL_APPROX_BYTES: u64 = 30 * 1024 * 1024;
 #[cfg(target_os = "android")]
 const ANDROID_MLKIT_MANAGED_LANGS: [&str; 7] = ["ja", "zh", "ko", "en", "vi", "ru", "th"];
 
+/// Callback invoked progressively as detected or translated speech bubbles complete.
+pub(crate) type PartialRegionsCallback = Arc<dyn Fn(Vec<TranslatedRegionView>) + Send + Sync>;
+
 /// Request scope passed to an [`InferenceBackend`] implementation.
-#[derive(Debug)]
 pub(crate) struct InferenceRequest<'a> {
     pub app: Option<&'a AppHandle>,
     pub storage_root: &'a Path,
@@ -59,8 +61,23 @@ pub(crate) struct InferenceRequest<'a> {
     pub page: &'a PreprocessedPage,
     pub target_lang: &'a str,
     pub mode: AiPageMode,
+    /// Normalized vertical viewport center (`0..=1000`) used to translate visible bubbles first.
+    pub focus_y: u16,
+    /// Optional streaming callback emitted after detection and after each translated bubble chunk.
+    pub on_partial: Option<PartialRegionsCallback>,
     #[cfg(not(target_os = "android"))]
     pub offload: GpuOffloadMode,
+}
+
+impl std::fmt::Debug for InferenceRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InferenceRequest")
+            .field("target_lang", &self.target_lang)
+            .field("mode", &self.mode)
+            .field("focus_y", &self.focus_y)
+            .field("has_partial_cb", &self.on_partial.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Completed page payload returned by a backend (including optional missing NMT packs or errors).
@@ -747,13 +764,17 @@ impl AiEngine {
         Ok(self.status(app).await)
     }
 
-    /// Runs speech-bubble detection (`AiPageMode::DetectOnly`) or full on-device manga page
-    /// translation (`AiPageMode::Translate`) for a signed `img://` `page_token`.
+    /// Runs speech-bubble detection (`AiPageMode::DetectOnly`) or progressive viewport-first
+    /// on-device manga page translation (`AiPageMode::Translate`) for a signed `img://` `page_token`.
     ///
     /// # Errors
     ///
     /// Returns [`AppError`] if resolving or decoding the page image fails, or the active backend
     /// returns an unrecoverable inference error.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "page translation entrypoint carries optional streaming channel and viewport focus coordinate"
+    )]
     pub(crate) async fn translate_page(
         &self,
         app: Option<&AppHandle>,
@@ -762,6 +783,8 @@ impl AiEngine {
         target_lang: &str,
         mode: AiPageMode,
         client_generation: Option<u64>,
+        focus_y: u16,
+        on_progress: Option<Channel<PageAiResultView>>,
     ) -> Result<PageAiResultView, AppError> {
         let started = Instant::now();
         let normalized_lang = normalize_target_lang(target_lang);
@@ -787,6 +810,8 @@ impl AiEngine {
             mode,
             expected_gen,
             started,
+            focus_y,
+            on_progress,
         )
         .await
     }
@@ -798,7 +823,7 @@ impl AiEngine {
     /// Core inference path operating directly on raw image bytes (also exercised by unit tests).
     #[expect(
         clippy::too_many_arguments,
-        reason = "internal page inference pipeline carrying cache key, bytes, target language, mode, and generation token"
+        reason = "internal page inference pipeline carrying cache key, bytes, target language, mode, focus coordinate, and streaming channel"
     )]
     pub(crate) async fn infer_raw_bytes(
         &self,
@@ -809,6 +834,8 @@ impl AiEngine {
         mode: AiPageMode,
         expected_gen: u64,
         started: Instant,
+        focus_y: u16,
+        on_progress: Option<Channel<PageAiResultView>>,
     ) -> Result<PageAiResultView, AppError> {
         let storage_root = self.storage_root(app);
         let effective_tier = self.resolve_effective_tier(&storage_root, mode).await;
@@ -847,17 +874,18 @@ impl AiEngine {
         let _active_guard = ActiveJobGuard(&self.active_jobs);
 
         #[cfg(not(target_os = "android"))]
-        let offload = {
-            let caps = app.map_or_else(
-                AiRuntimeCapabilities::default,
-                crate::android_env::get_runtime_capabilities,
-            );
-            if caps.vulkan_supported {
-                GpuOffloadMode::VulkanFull
-            } else {
-                GpuOffloadMode::CpuFallback
-            }
-        };
+        let offload = resolve_desktop_offload(app);
+        let on_partial = build_partial_regions_callback(
+            on_progress,
+            &page_key,
+            effective_tier,
+            &target_lang,
+            mode,
+            started,
+            preprocessed.original_width,
+            preprocessed.original_height,
+        );
+
         let temp_dir = self.cache.temp_dir();
         let req = InferenceRequest {
             app,
@@ -866,6 +894,8 @@ impl AiEngine {
             page: &preprocessed,
             target_lang: &target_lang,
             mode,
+            focus_y: focus_y.min(1000),
+            on_partial,
             #[cfg(not(target_os = "android"))]
             offload,
         };
@@ -1009,6 +1039,56 @@ async fn wait_until_generation_changes(cancel_rx: &mut watch::Receiver<u64>, exp
     }
 }
 
+#[cfg(not(target_os = "android"))]
+fn resolve_desktop_offload(app: Option<&AppHandle>) -> GpuOffloadMode {
+    let caps = app.map_or_else(
+        AiRuntimeCapabilities::default,
+        crate::android_env::get_runtime_capabilities,
+    );
+    if caps.vulkan_supported {
+        GpuOffloadMode::VulkanFull
+    } else {
+        GpuOffloadMode::CpuFallback
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "packs page metadata needed to construct streamed PageAiResultView frames"
+)]
+fn build_partial_regions_callback(
+    on_progress: Option<Channel<PageAiResultView>>,
+    page_key: &str,
+    effective_tier: TranslationModelTier,
+    target_lang: &str,
+    mode: AiPageMode,
+    started: Instant,
+    original_width: u32,
+    original_height: u32,
+) -> Option<PartialRegionsCallback> {
+    let ch = on_progress?;
+    let pk = page_key.to_owned();
+    let tl = target_lang.to_owned();
+    let cb: PartialRegionsCallback = Arc::new(move |regions: Vec<TranslatedRegionView>| {
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let _ = ch.send(PageAiResultView {
+            page_key: pk.clone(),
+            tier_used: effective_tier,
+            target_lang: tl.clone(),
+            detect_only: mode.is_detect_only(),
+            from_cache: false,
+            cancelled: false,
+            elapsed_ms,
+            image_width: original_width,
+            image_height: original_height,
+            regions,
+            missing_nmt_packs: Vec::new(),
+            error: None,
+        });
+    });
+    Some(cb)
+}
+
 fn cancelled_result(
     page_key: String,
     tier_used: TranslationModelTier,
@@ -1137,6 +1217,8 @@ mod tests {
                 AiPageMode::DetectOnly,
                 gen0,
                 Instant::now(),
+                500,
+                None,
             )
             .await
             .expect("detect_only bubble inference succeeds");
@@ -1156,6 +1238,8 @@ mod tests {
                 AiPageMode::DetectOnly,
                 gen0,
                 Instant::now(),
+                500,
+                None,
             )
             .await
             .expect("cached lookup succeeds");
@@ -1172,6 +1256,8 @@ mod tests {
                 AiPageMode::DetectOnly,
                 gen0,
                 Instant::now(),
+                500,
+                None,
             )
             .await
             .expect("stale job returns cancelled result cleanly");
@@ -1234,6 +1320,8 @@ mod tests {
                 AiPageMode::DetectOnly,
                 expected_gen,
                 Instant::now(),
+                500,
+                None,
             )
             .await
             .expect("translation after hard_unload_and_purge succeeds");
@@ -1256,6 +1344,8 @@ mod tests {
                 AiPageMode::DetectOnly,
                 expected_gen,
                 Instant::now(),
+                500,
+                None,
             )
             .await
             .expect("post-start cancellation returns cancelled result cleanly");

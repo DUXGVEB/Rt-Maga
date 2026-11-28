@@ -1,9 +1,29 @@
 import { api } from "../api";
-import type { CatalogPageView, SettingsSection } from "../types";
+import { normalizeNavOrder } from "../themeAccent";
+import type { CatalogPageView, NavDestination, SettingsSection } from "../types";
 import { notificationsStore } from "./notifications.svelte";
 import { randomMangaStore } from "./randomManga.svelte";
 import { settingsStore } from "./settings.svelte";
 import { toasts } from "./toast.svelte";
+
+const PRIMARY_TABS: ReadonlySet<string> = new Set<NavDestination>([
+  "home",
+  "sources",
+  "bookmarks",
+  "history",
+  "settings",
+]);
+
+function computeTabSlideDir(fromName: Route["name"], toName: Route["name"]): -1 | 0 | 1 {
+  if (fromName === toName || !PRIMARY_TABS.has(fromName) || !PRIMARY_TABS.has(toName)) {
+    return 0;
+  }
+  const order = normalizeNavOrder(settingsStore.value.ui.navOrder);
+  const fromIdx = order.indexOf(fromName as NavDestination);
+  const toIdx = order.indexOf(toName as NavDestination);
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return 0;
+  return toIdx > fromIdx ? 1 : -1;
+}
 
 export type SettingsRouteSection = SettingsSection | "accessibility";
 
@@ -54,8 +74,12 @@ function routesEqual(a: Route, b: Route): boolean {
 
 class RouterStore {
   current = $state<Route>({ name: "home" });
-  /** Incremented whenever a primary nav button (especially Home) is clicked so active screens can scroll-to-top/reset cleanly. */
+  /** Incremented on route changes and explicit re-taps (except Home re-tap, which uses scrollTopPulse). */
   navPulse = $state(0);
+  /** Incremented when the user taps the already-active primary tab (e.g. Home) to smoothly scroll to top without reloading. */
+  scrollTopPulse = $state(0);
+  /** Directional horizontal slide hint for switching between the 5 main tabs (`1` = slide from right, `-1` = slide from left, `0` = non-tab route). */
+  lastTabSlideDir = $state<-1 | 0 | 1>(0);
   private stack: Route[] = [];
   private backInterceptors: BackInterceptor[] = [];
   private lastRootBackAt = 0;
@@ -93,10 +117,19 @@ class RouterStore {
   private pushAndSet(next: Route, replace = false) {
     this.dismissOverlays();
     if (routesEqual(this.current, next)) {
+      this.lastTabSlideDir = 0;
+      if (PRIMARY_TABS.has(next.name)) {
+        this.scrollTopPulse += 1;
+        if (next.name === "settings") {
+          this.navPulse += 1;
+        }
+        return;
+      }
       this.current = next;
       this.navPulse += 1;
       return;
     }
+    this.lastTabSlideDir = computeTabSlideDir(this.current.name, next.name);
     if (!replace) {
       this.stack.push(this.current);
       if (this.stack.length > MAX_STACK_DEPTH) {
@@ -109,6 +142,12 @@ class RouterStore {
 
   goHome() {
     this.dismissOverlays();
+    if (this.current.name === "home") {
+      this.lastTabSlideDir = 0;
+      this.scrollTopPulse += 1;
+      return;
+    }
+    this.lastTabSlideDir = computeTabSlideDir(this.current.name, "home");
     this.stack = [];
     this.current = { name: "home" };
     this.navPulse += 1;
@@ -214,16 +253,19 @@ class RouterStore {
   goBack(): boolean {
     if (this.stack.length > 0) {
       const prev = this.stack.pop()!;
+      this.lastTabSlideDir = computeTabSlideDir(this.current.name, prev.name);
       this.current = prev;
       this.navPulse += 1;
       return true;
     }
     if (this.current.name === "reader") {
+      this.lastTabSlideDir = 0;
       this.current = { name: "manga", id: this.current.mangaId };
       this.navPulse += 1;
       return true;
     }
     if (this.current.name !== "home") {
+      this.lastTabSlideDir = computeTabSlideDir(this.current.name, "home");
       this.current = { name: "home" };
       this.navPulse += 1;
       return true;

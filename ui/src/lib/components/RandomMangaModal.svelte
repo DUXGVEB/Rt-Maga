@@ -299,6 +299,15 @@
 
   function handleSelectStory(manga: RandomMangaItem) {
     if (isSpinning) return;
+    libraryCache.setMangaPreview({
+      id: manga.id,
+      title: manga.title,
+      coverToken: manga.cover,
+      site: manga.site,
+      isCompleted: manga.isCompleted,
+      unreadCount: manga.unreadCount,
+      bookmarked: manga.bookmarked,
+    });
     randomMangaStore.rememberPick(manga.id);
     randomMangaStore.close();
     router.goManga(manga.id);
@@ -306,6 +315,15 @@
 
   function handleReadNow(manga: RandomMangaItem) {
     if (isSpinning) return;
+    libraryCache.setMangaPreview({
+      id: manga.id,
+      title: manga.title,
+      coverToken: manga.cover,
+      site: manga.site,
+      isCompleted: manga.isCompleted,
+      unreadCount: manga.unreadCount,
+      bookmarked: manga.bookmarked,
+    });
     randomMangaStore.rememberPick(manga.id);
     randomMangaStore.close();
     if (manga.resumeChapterUrl && !(manga.isCompleted && !manga.hasNew)) {

@@ -95,7 +95,6 @@
 
   $effect(() => {
     void updatesStore.lastFound;
-    void router.navPulse;
     void loadHistory(!libraryCache.historyLoaded);
   });
 
@@ -225,7 +224,7 @@
             class:stagger-item={animateStagger}
             style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 18, 180, updatedItems.length)}ms;` : undefined}
           >
-            <MangaCard {item} />
+            <MangaCard {item} priority={idx < 8} />
           </div>
         {/each}
       </div>
@@ -287,7 +286,7 @@
               class:stagger-item={animateStagger}
               style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, activeItems.length)}ms;` : undefined}
             >
-              <MangaCard {item} />
+              <MangaCard {item} priority={idx < 8} />
             </div>
           {/each}
         </div>
@@ -333,7 +332,7 @@
             class:stagger-item={animateStagger}
             style={animateStagger ? `--stagger-delay: ${staggerDelay(idx, 16, 180, completedItems.length)}ms;` : undefined}
           >
-            <MangaCard {item} />
+            <MangaCard {item} priority={idx < 8} />
           </div>
         {/each}
       </div>

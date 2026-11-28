@@ -641,18 +641,29 @@ export const api = {
   aiDeleteNmtPack: (packId: string) => invoke<AiStatusView>("ai_delete_nmt_pack", { packId }),
   aiCancelDownload: () => invoke<AiStatusView>("ai_cancel_download"),
   aiDeleteTier2: () => invoke<AiStatusView>("ai_delete_tier2"),
-  aiTranslatePage: (params: {
-    pageToken: string;
-    targetLang: string;
-    detectOnly?: boolean | null;
-    generation?: number | null;
-  }) =>
-    invoke<PageAiResultView>("ai_translate_page", {
+  aiTranslatePage: (
+    params: {
+      pageToken: string;
+      targetLang: string;
+      detectOnly?: boolean | null;
+      generation?: number | null;
+      focusY?: number | null;
+    },
+    onProgress?: (partial: PageAiResultView) => void
+  ) => {
+    const channel = new Channel<PageAiResultView>();
+    if (onProgress) {
+      channel.onmessage = onProgress;
+    }
+    return invoke<PageAiResultView>("ai_translate_page", {
       pageToken: params.pageToken,
       targetLang: params.targetLang,
       detectOnly: params.detectOnly ?? null,
       generation: params.generation ?? null,
-    }),
+      focusY: params.focusY ?? null,
+      onProgress: channel,
+    });
+  },
   aiCancelJobs: () => invoke<number>("ai_cancel_jobs"),
   aiHardUnloadAndPurge: () => invoke<AiStatusView>("ai_hard_unload_and_purge"),
 

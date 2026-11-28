@@ -161,7 +161,7 @@
       <img
         src={imgProxyUrl(flight.coverToken)}
         alt=""
-        decoding="async"
+        decoding="sync"
         draggable="false"
         class="h-full w-full object-cover"
       />
