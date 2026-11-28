@@ -46,10 +46,10 @@ export function computeFloatingBounds(
   width: number,
   height: number,
   insets: DeviceInsets,
-  opts: { hasBottomNav?: boolean; topToolbarHeightPx?: number } = {}
+  opts: { hasBottomNav?: boolean; topToolbarHeightPx?: number; reserveBottomPx?: number } = {}
 ): FloatingViewportBounds {
   const topToolbar = opts.topToolbarHeightPx ?? 56;
-  const bottomNav = opts.hasBottomNav ? 72 : 16;
+  const bottomNav = (opts.hasBottomNav ? 72 : 16) + Math.max(0, opts.reserveBottomPx ?? 0);
 
   return {
     width: Math.max(240, width),

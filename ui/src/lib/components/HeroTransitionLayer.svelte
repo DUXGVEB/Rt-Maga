@@ -26,23 +26,21 @@
 
   function settledRect(el: HTMLElement): DOMRect {
     const rect = el.getBoundingClientRect();
-    let offsetX = 0;
-    let offsetY = 0;
-    let cur: HTMLElement | null = el;
-    while (cur && cur !== document.body) {
-      const tf = window.getComputedStyle(cur).transform;
+    // Only inspect the immediate route transition shell (if any) instead of walking
+    // the entire DOM tree with repeated getComputedStyle calls on every rAF tick.
+    const shell = el.closest<HTMLElement>("[data-route-shell]");
+    if (shell) {
+      const tf = window.getComputedStyle(shell).transform;
       if (tf && tf !== "none") {
         try {
           const m = new DOMMatrixReadOnly(tf);
-          offsetX += m.m41;
-          offsetY += m.m42;
+          return new DOMRect(rect.left - m.m41, rect.top - m.m42, rect.width, rect.height);
         } catch {
           // Ignore unsupported transform matrices.
         }
       }
-      cur = cur.parentElement;
     }
-    return new DOMRect(rect.left - offsetX, rect.top - offsetY, rect.width, rect.height);
+    return rect;
   }
 
   function startFlight(flight: HeroFlightState, node: HTMLDivElement) {
@@ -163,7 +161,7 @@
       <img
         src={imgProxyUrl(flight.coverToken)}
         alt=""
-        decoding="sync"
+        decoding="async"
         draggable="false"
         class="h-full w-full object-cover"
       />
@@ -183,9 +181,10 @@
   .hero-flight-card {
     position: fixed;
     overflow: hidden;
+    contain: layout style paint;
     background-color: var(--surface-subtle);
     border: 1px solid var(--border);
-    box-shadow: var(--shadow-lg);
+    box-shadow: var(--shadow-md);
     will-change: transform, opacity;
   }
 </style>

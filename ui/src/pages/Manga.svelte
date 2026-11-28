@@ -11,6 +11,7 @@
     Copy,
     CornerDownLeft,
     ExternalLink,
+    Eye,
     EyeOff,
     Play,
     RefreshCw,
@@ -440,10 +441,17 @@
     if (!manga || hiding) return;
     hiding = true;
     try {
-      await api.setMangaHidden(manga.id, "hide");
-      void notificationsStore.refresh();
-      toasts.push(t.toastMangaHidden, "info", 2800);
-      router.goHome();
+      if (manga.hidden) {
+        await api.setMangaHidden(manga.id, "unhide");
+        manga = { ...manga, hidden: false };
+        void notificationsStore.refresh();
+        toasts.push(t.toastMangaUnhidden(manga.title), "success", 2400);
+      } else {
+        await api.setMangaHidden(manga.id, "hide");
+        void notificationsStore.refresh();
+        toasts.push(t.toastMangaHidden, "info", 2800);
+        router.goHome();
+      }
     } catch (err) {
       const f = formatAppError(err, settingsStore.value.language);
       toasts.push(f.detail || f.title, "error");
@@ -514,10 +522,15 @@
           onclick={hideManga}
           disabled={hiding}
           class="btn-3d btn-3d-surface inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-          style="color: var(--text-muted);"
+          style="color: {manga.hidden ? 'var(--accent)' : 'var(--text-muted)'};"
         >
-          <EyeOff size={14} />
-          <span>{t.hideMangaBtn}</span>
+          {#if manga.hidden}
+            <Eye size={14} />
+            <span>{t.unhideMangaBtn}</span>
+          {:else}
+            <EyeOff size={14} />
+            <span>{t.hideMangaBtn}</span>
+          {/if}
         </button>
         <button
           type="button"
@@ -591,16 +604,14 @@
     <!-- Editorial Mobile-First & Desktop Series Hero -->
     <section
       class="surface-card relative flex flex-col gap-5 overflow-hidden rounded-2xl p-4 sm:flex-row sm:gap-6 sm:p-6"
+      style="contain: layout style;"
     >
-      {#if manga.coverToken && !coverError && !deviceEnv.isAndroid}
-        <img
-          src={imgProxyUrl(manga.coverToken)}
-          alt=""
-          aria-hidden="true"
-          decoding="async"
-          class="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover opacity-[0.07] blur-2xl"
-        />
-      {/if}
+      <!-- Zero-cost GPU ambient tint (replaces full-bleed blur-2xl image shader that caused open stutter) -->
+      <div
+        class="pointer-events-none absolute inset-0"
+        aria-hidden="true"
+        style="background: radial-gradient(56% 90% at 12% 20%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 72%);"
+      ></div>
 
       <!-- Mobile compact top strip (cover + primary headline side-by-side); stacks as left column on sm+ -->
       <div class="relative z-10 flex items-start gap-4 sm:block sm:shrink-0">
@@ -631,7 +642,6 @@
         <!-- Mobile-only side header summary beside cover so zero wasted horizontal space on phones -->
         <div
           class="hero-emerge flex min-w-0 flex-1 flex-col gap-1.5 sm:hidden"
-          style="--stagger-delay: 25ms;"
         >
           <div class="flex flex-wrap items-center gap-1.5">
             <span
@@ -686,10 +696,10 @@
 
             {#if titleMenuOpen}
               <div
-                transition:popoverPop|local={{ duration: 150, y: -4 }}
+                transition:popoverPop|local={{ duration: 140, y: -4 }}
                 role="menu"
-                class="glass-chrome absolute top-full left-0 z-30 mt-1.5 flex w-56 flex-col gap-1 rounded-xl border p-1.5 shadow-lg"
-                style="border-color: var(--border);"
+                class="absolute top-full left-0 z-30 mt-1.5 flex w-56 flex-col gap-1 rounded-xl border p-1.5 shadow-lg"
+                style="background-color: var(--surface-elevated); border-color: var(--border); will-change: transform, opacity;"
               >
                 <button
                   type="button"
@@ -730,10 +740,10 @@
         </div>
       </div>
 
-      <div class="relative z-10 flex min-w-0 flex-1 flex-col justify-between gap-4">
+      <div class="hero-emerge relative z-10 flex min-w-0 flex-1 flex-col justify-between gap-4">
         <div class="flex flex-col gap-2">
           <!-- Desktop/Tablet headline block (hidden on <640px since rendered beside cover above) -->
-          <div class="hero-emerge hidden flex-col gap-2 sm:flex" style="--stagger-delay: 25ms;">
+          <div class="hidden flex-col gap-2 sm:flex">
             <div class="flex flex-wrap items-center gap-2">
               <span
                 class="rounded-md px-2 py-0.5 text-xs font-medium"
@@ -790,10 +800,10 @@
 
               {#if titleMenuOpen}
                 <div
-                  transition:popoverPop|local={{ duration: 150, y: -4 }}
+                  transition:popoverPop|local={{ duration: 140, y: -4 }}
                   role="menu"
-                  class="glass-chrome absolute top-full left-0 z-30 mt-1.5 flex w-60 flex-col gap-1 rounded-xl border p-1.5 shadow-lg"
-                  style="border-color: var(--border);"
+                  class="absolute top-full left-0 z-30 mt-1.5 flex w-60 flex-col gap-1 rounded-xl border p-1.5 shadow-lg"
+                  style="background-color: var(--surface-elevated); border-color: var(--border); will-change: transform, opacity;"
                 >
                   <button
                     type="button"
@@ -827,18 +837,15 @@
             {/if}
           </div>
           {#if manga.altTitles.length > 0}
-            <div
-              class="hero-emerge text-xs leading-relaxed"
-              style="--stagger-delay: 55ms; color: var(--text-muted);"
-            >
+            <div class="text-xs leading-relaxed" style="color: var(--text-muted);">
               <span class="font-semibold">{t.mangaAltTitlesLabel}:</span>
               {manga.altTitles.slice(0, 4).join(" · ")}
             </div>
           {/if}
 
           <div
-            class="hero-emerge flex flex-wrap items-center gap-x-4 gap-y-1 text-xs"
-            style="--stagger-delay: 65ms; color: var(--text-muted);"
+            class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs"
+            style="color: var(--text-muted);"
           >
             {#if manga.authors.length > 0}
               <span>
@@ -863,13 +870,18 @@
           </div>
 
           {#if manga.description}
-            <div class="hero-emerge flex flex-col items-start gap-1" style="--stagger-delay: 90ms;">
-              <p
-                class="{descExpanded ? '' : 'line-clamp-4'} text-xs leading-relaxed whitespace-pre-line"
-                style="color: var(--text-muted);"
+            <div class="flex flex-col items-start gap-1">
+              <div
+                class="w-full overflow-hidden transition-[max-height] duration-200 ease-out"
+                style="max-height: {descExpanded ? '2400px' : '5.5rem'};"
               >
-                {manga.description}
-              </p>
+                <p
+                  class="{descExpanded ? '' : 'line-clamp-4'} text-xs leading-relaxed whitespace-pre-line"
+                  style="color: var(--text-muted);"
+                >
+                  {manga.description}
+                </p>
+              </div>
               {#if manga.description.length > 260}
                 <button
                   type="button"
@@ -888,10 +900,7 @@
           {#if combinedTags().length > 0}
             {@const allTags = combinedTags()}
             {@const visibleTags = tagsExpanded ? allTags : allTags.slice(0, 24)}
-            <div
-              class="hero-emerge flex flex-wrap items-center gap-1.5 pt-0.5"
-              style="--stagger-delay: 115ms;"
-            >
+            <div class="flex flex-wrap items-center gap-1.5 pt-0.5">
               {#each visibleTags as item (item.label)}
                 {@const isBusyTag = navigatingTag === item.label}
                 <button

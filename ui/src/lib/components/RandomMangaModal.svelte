@@ -252,6 +252,13 @@
         }
         initializedForOpen = true;
         loadingLibrary = false;
+
+        // Wait until the modal entry transition settles before issuing background IPC metadata
+        // hydration so the opening animation stays locked at 60/120fps with zero layout jumps.
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, 240);
+        });
+        if (version !== hydrateVersion || !randomMangaStore.isOpen) return;
         await hydrateLibraryMetadata(version);
       })();
     });
@@ -347,20 +354,21 @@
     aria-modal="true"
     aria-labelledby="random-manga-modal-title"
   >
-    <!-- Backdrop (static blur desktop-only, clean opaque scrim on Android WebView) -->
+    <!-- Backdrop (pure translucent GPU scrim: avoids per-frame full-window blur re-rasterization while opening) -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      transition:backdropFade|local
+      transition:backdropFade|local={{ duration: 140 }}
       onclick={closeModal}
-      class="modal-backdrop fixed inset-0"
+      class="fixed inset-0"
+      style="background-color: rgba(8, 8, 12, 0.56);"
     ></div>
 
     <!-- Modal / Bottom Sheet Container -->
     <div
-      transition:adaptiveOverlay|local={{ isMobile: isCompactMobile }}
+      transition:adaptiveOverlay|local={{ isMobile: isCompactMobile, duration: 175 }}
       class="relative z-10 flex max-h-[calc(100dvh-0.75rem-var(--safe-top))] w-full max-w-5xl min-w-0 flex-col overflow-hidden rounded-t-3xl border-t sm:max-h-[calc(100dvh-2rem-var(--safe-top)-var(--safe-bottom))] sm:rounded-2xl sm:border"
-      style="background-color: var(--surface); border-color: var(--border); color: var(--text); box-shadow: var(--shadow-lg); padding-bottom: var(--safe-bottom);"
+      style="background-color: var(--surface); border-color: var(--border); color: var(--text); box-shadow: var(--shadow-lg); padding-bottom: var(--safe-bottom); contain: layout style;"
     >
       <div class="sheet-handle sm:hidden" aria-hidden="true"></div>
 

@@ -52,6 +52,7 @@
     detectWebtoonFromDimensions,
     focusBrightness,
     partitionPages,
+    resolveHorizontalTapAction,
     type NormalizedBbox,
     type PageDimensionSample,
     type RectBox,
@@ -148,17 +149,28 @@
   let aiPageDispatchTimer: number | null = null;
   let lastAiFocusKey = "";
 
-  // Double-tap / double-click focused zoom state (`1` = normal, `2.0` = zoomed).
+  // Double-tap / double-click focused zoom & 2-finger pinch-to-zoom state (`1.0` .. `3.0`).
   const ZOOM_TARGET_SCALE = 2.0;
+  const ZOOM_MAX_SCALE = 3.0;
+  const ZOOM_RESET_THRESHOLD = 1.05;
+  const ZOOM_ANIM_MS = 230;
   let zoomScale = $state(1);
   let zoomTx = $state(0);
   let zoomTy = $state(0);
   let zoomPanning = $state(false);
+  let zoomPinching = $state(false);
+  let zoomSuppressTransition = $state(false);
   let zoomContentRect: RectBox | null = null;
   let zoomOriginLeft = 0;
   let zoomOriginTop = 0;
   let zoomTransitionLockUntil = 0;
   let verticalZoomExtraBottomPx = $state(0);
+  let pendingVerticalZoomCommit: {
+    targetScale: number;
+    targetScrollTop: number;
+    extraBottomPx: number;
+  } | null = null;
+  let verticalZoomCommitTimer: number | null = null;
 
   // Isolated Horizontal RTL center-focus peek track & snap state.
   let activeGroupIdx = $state(0);
@@ -172,10 +184,15 @@
   let seamlessActiveLeft = $state<number | null>(null);
   let seamlessActiveWidth = $state(0);
   let horizontalDragDidMove = false;
-  let horizontalPointers = new Map<number, { x: number; y: number }>();
-  let horizontalPinchStartDist = 0;
-  let horizontalPinchStartScale = 1;
-  let horizontalPinchAnchor = { x: 0, y: 0 };
+  let pinchPointers = new Map<number, { x: number; y: number }>();
+  let pinchSource: "none" | "touch" | "pointer" = "none";
+  let pinchStartDist = 0;
+  let pinchStartScale = 1;
+  let pinchStartTx = 0;
+  let pinchStartTy = 0;
+  let pinchAnchorContentX = 0;
+  let pinchAnchorDocY = 0;
+  let pinchBaseDocHeight = 0;
 
   // Viewport focus tracking.
   let focusedKeys = $state<Set<string>>(new Set());
@@ -278,10 +295,8 @@
         base.orientation = "vertical";
         base.vertical.noGapMode = true;
       } else if (isAutoMangaActive) {
-        base.orientation = "horizontal";
-        base.horizontal.direction = "rtl";
-        base.horizontal.pagesPerGroup = 1;
-        base.horizontal.noGapMode = false;
+        // Auto-detected manga also defaults to vertical scroll while preserving user page spacing.
+        base.orientation = "vertical";
       }
     }
     mutator(base);
@@ -338,9 +353,10 @@
   const hCfg = $derived(readerSettings.horizontal);
   const behavior = $derived(readerSettings.behavior);
   const a11y = $derived(settingsStore.value.accessibility);
-  const oneHandedMode = $derived(a11y.oneHandedMode);
+  const oneHandedMode = $derived(deviceEnv.isMobile ? a11y.oneHandedMode : "default");
   const aiBubbleZoom = $derived(a11y.bubbleAutoZoom);
   const aiTranslateOn = $derived(a11y.aiTranslationOverlay);
+  const aiPeekOriginal = $derived(aiTranslateStore.peekOriginal);
   const t = $derived(settingsStore.t);
 
   const effectiveOverride = $derived<ReaderModeOverride>(
@@ -367,11 +383,9 @@
       ? "horizontal"
       : effectiveOverride === "vertical_strip" || effectiveOverride === "vertical_grouped"
         ? "vertical"
-        : isAutoWebtoonActive
+        : isAutoWebtoonActive || isAutoMangaActive
           ? "vertical"
-          : isAutoMangaActive
-            ? "horizontal"
-            : readerSettings.orientation
+          : readerSettings.orientation
   );
 
   const effectiveNoGap = $derived(isAutoWebtoonActive || vCfg.noGapMode);
@@ -379,9 +393,7 @@
   const effectiveVerticalGapPx = $derived(effectiveNoGap ? 0 : vCfg.pageGapPx);
 
   const isHorizontal = $derived(effectiveOrientation === "horizontal");
-  const effectiveHorizontalDirection = $derived<HorizontalDirection>(
-    isAutoMangaActive ? "rtl" : hCfg.direction
-  );
+  const effectiveHorizontalDirection = $derived<HorizontalDirection>(hCfg.direction);
   const isRtl = $derived(isHorizontal && effectiveHorizontalDirection === "rtl");
 
   const activeChapter = $derived(
@@ -391,13 +403,9 @@
   const lastChapter = $derived(strip[strip.length - 1] ?? null);
   const totalPages = $derived(activeChapter?.images.length ?? 0);
   const effectivePagesPerGroup = $derived(
-    isAutoMangaActive
-      ? landscapeAutoSpread && deviceEnv.isLandscape
-        ? 2
-        : 1
-      : isHorizontal && landscapeAutoSpread && deviceEnv.isLandscape && hCfg.pagesPerGroup === 1
-        ? 2
-        : Math.max(1, hCfg.pagesPerGroup)
+    isHorizontal && landscapeAutoSpread && deviceEnv.isLandscape && hCfg.pagesPerGroup === 1
+      ? 2
+      : Math.max(1, hCfg.pagesPerGroup)
   );
   const horizontalGroups = $derived(
     activeChapter ? partitionPages(activeChapter.images, effectivePagesPerGroup) : []
@@ -422,7 +430,7 @@
     )
   );
   const horizontalDirSign = $derived(isRtl ? 1 : -1);
-  const isHorizontalSeamless = $derived(isHorizontal && !isAutoMangaActive && hCfg.noGapMode);
+  const isHorizontalSeamless = $derived(isHorizontal && hCfg.noGapMode);
   const horizontalTrackTranslateX = $derived(
     horizontalDirSign * activeHorizontalSlideIdx * horizontalTrackMetrics.stride +
       horizontalDragOffsetPx
@@ -546,17 +554,114 @@
     return "var(--bg)";
   });
 
+  const zoomTransitionCss = $derived(
+    zoomPanning || zoomPinching || zoomSuppressTransition
+      ? "none"
+      : `transform ${ZOOM_ANIM_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`
+  );
+
   const horizontalZoomStyle = $derived(
-    zoomScale > 1.01
-      ? `transform: translate3d(${zoomTx}px, ${zoomTy}px, 0) scale(${zoomScale}); backface-visibility: hidden; transform-origin: 0 0; transition: ${zoomPanning ? "none" : "transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1)"};`
-      : "transform: translate3d(0px, 0px, 0px) scale(1); backface-visibility: hidden; transform-origin: 0 0; transition: transform 140ms ease;"
+    zoomScale > 1.005 || Math.abs(zoomTx) > 0.5 || Math.abs(zoomTy) > 0.5
+      ? `transform: translate3d(${zoomTx}px, ${zoomTy}px, 0) scale(${zoomScale}); backface-visibility: hidden; transform-origin: 0 0; will-change: transform; transition: ${zoomTransitionCss};`
+      : `transform: translate3d(0px, 0px, 0px) scale(1); backface-visibility: hidden; transform-origin: 0 0; transition: ${zoomTransitionCss};`
   );
 
   const verticalZoomStyle = $derived(
-    zoomScale > 1.01
-      ? `transform: translate3d(${zoomTx}px, 0px, 0) scale(${zoomScale}); backface-visibility: hidden; transform-origin: 0 0; transition: ${zoomPanning ? "none" : "transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1)"};`
-      : "transform: translate3d(0px, 0px, 0px) scale(1); backface-visibility: hidden; transform-origin: 0 0; transition: transform 140ms ease;"
+    zoomScale > 1.005 || Math.abs(zoomTx) > 0.5 || Math.abs(zoomTy) > 0.5
+      ? `transform: translate3d(${zoomTx}px, ${zoomTy}px, 0) scale(${zoomScale}); backface-visibility: hidden; transform-origin: 0 0; will-change: transform; transition: ${zoomTransitionCss};`
+      : `transform: translate3d(0px, 0px, 0px) scale(1); backface-visibility: hidden; transform-origin: 0 0; transition: ${zoomTransitionCss};`
   );
+
+  function clearPendingVerticalZoomCommit() {
+    if (verticalZoomCommitTimer !== null) {
+      window.clearTimeout(verticalZoomCommitTimer);
+      verticalZoomCommitTimer = null;
+    }
+    pendingVerticalZoomCommit = null;
+  }
+
+  /**
+   * Synchronously commits a finished (or interrupted) GPU vertical zoom animation into
+   * real `scrollTop` + `verticalZoomExtraBottomPx` with `zoomTy = 0` so there is zero jump.
+   */
+  function commitPendingVerticalZoom() {
+    const pending = pendingVerticalZoomCommit;
+    clearPendingVerticalZoomCommit();
+    if (!pending || !scrollEl || isHorizontal) return;
+    flushSync(() => {
+      zoomSuppressTransition = true;
+      verticalZoomExtraBottomPx = pending.extraBottomPx;
+      zoomScale = pending.targetScale;
+      zoomTy = 0;
+      if (pending.targetScale <= 1.01) {
+        zoomTx = 0;
+        zoomContentRect = null;
+        zoomOriginLeft = 0;
+        zoomOriginTop = 0;
+      }
+    });
+    const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    const clampedTop = Math.max(0, Math.min(maxTop, pending.targetScrollTop));
+    scrollEl.scrollTop = clampedTop;
+    lastScrollOffset = clampedTop;
+    window.requestAnimationFrame(() => {
+      zoomSuppressTransition = false;
+    });
+  }
+
+  /**
+   * Smoothly animates vertical zoom (`1x <-> Nx` or bubble-to-bubble) purely on the GPU via
+   * `translate3d(tx, st0 - st1, 0) scale(targetScale)` while keeping `scrollTop` steady during
+   * the 230ms transition, then seamlessly commits `scrollTop = st1` with `zoomTy = 0`.
+   */
+  function animateVerticalZoomTo(
+    targetScale: number,
+    targetTx: number,
+    desiredScrollTop: number,
+    baseDocHeight: number
+  ) {
+    if (!scrollEl) return;
+    commitPendingVerticalZoom();
+
+    const st0 = scrollEl.scrollTop;
+    const nextExtraBottom =
+      targetScale > 1.01 ? Math.max(0, Math.round(baseDocHeight * (targetScale - 1))) : 0;
+    const estimatedScrollHeight = Math.max(
+      scrollEl.clientHeight,
+      baseDocHeight + 112 + nextExtraBottom
+    );
+    const targetMaxTop = Math.max(0, estimatedScrollHeight - scrollEl.clientHeight);
+    const st1 = Math.max(0, Math.min(targetMaxTop, Math.round(desiredScrollTop)));
+
+    // Visually, shifting by `ty = st0 - st1` while keeping `scrollTop = st0` places every
+    // pixel at the exact same viewport coordinate as `scrollTop = st1` with `ty = 0`.
+    const visualTy = st0 - st1;
+
+    zoomTransitionLockUntil = Date.now() + ZOOM_ANIM_MS + 40;
+    suppressAutoHideUntil = Date.now() + ZOOM_ANIM_MS + 120;
+    if (zoomFocusSettleTimer !== null) {
+      window.clearTimeout(zoomFocusSettleTimer);
+      zoomFocusSettleTimer = null;
+    }
+
+    pendingVerticalZoomCommit = {
+      targetScale,
+      targetScrollTop: st1,
+      extraBottomPx: nextExtraBottom,
+    };
+
+    zoomSuppressTransition = false;
+    zoomScale = targetScale;
+    zoomTx = targetScale > 1.01 ? targetTx : 0;
+    zoomTy = visualTy;
+
+    verticalZoomCommitTimer = window.setTimeout(() => {
+      verticalZoomCommitTimer = null;
+      commitPendingVerticalZoom();
+      zoomTransitionLockUntil = 0;
+      updateFocusNow();
+    }, ZOOM_ANIM_MS + 20);
+  }
 
   function cancelVerticalSmoothScroll() {
     if (verticalAnimRaf !== null) {
@@ -592,10 +697,15 @@
     verticalAnimRaf = window.requestAnimationFrame(step);
   }
 
-  function resetZoom(anchorClientY?: number) {
+  function resetZoom(anchorClientY?: number, immediate = false) {
+    commitPendingVerticalZoom();
     const wasZoomed = zoomScale > 1.01;
     const prevScale = zoomScale;
     activeBubbleKey = null;
+    zoomPanning = false;
+    zoomPinching = false;
+    pinchPointers.clear();
+    pinchSource = "none";
     if (zoomFocusSettleTimer !== null) {
       window.clearTimeout(zoomFocusSettleTimer);
       zoomFocusSettleTimer = null;
@@ -606,13 +716,20 @@
       const vy = anchorClientY !== undefined ? anchorClientY - vpRect.top : vpRect.height * 0.5;
       const unscaledDocY = (scrollEl.scrollTop + vy) / Math.max(1, prevScale);
       const targetTop = Math.max(0, Math.round(unscaledDocY - vy));
-      zoomTransitionLockUntil = Date.now() + 220;
-      suppressAutoHideUntil = Date.now() + 300;
+      const baseHeight = verticalContentEl?.offsetHeight ?? scrollEl.scrollHeight;
+
+      if (!immediate) {
+        animateVerticalZoomTo(1, 0, targetTop, baseHeight);
+        return;
+      }
+
+      zoomTransitionLockUntil = Date.now() + 180;
+      suppressAutoHideUntil = Date.now() + 260;
       flushSync(() => {
+        zoomSuppressTransition = true;
         zoomScale = 1;
         zoomTx = 0;
         zoomTy = 0;
-        zoomPanning = false;
         zoomContentRect = null;
         zoomOriginLeft = 0;
         zoomOriginTop = 0;
@@ -624,16 +741,18 @@
         scrollEl.scrollTop = clampedTop;
         lastScrollOffset = clampedTop;
       }
+      window.requestAnimationFrame(() => {
+        zoomSuppressTransition = false;
+      });
       zoomFocusSettleTimer = window.setTimeout(() => {
         zoomFocusSettleTimer = null;
         zoomTransitionLockUntil = 0;
         updateFocusNow();
-      }, 180);
+      }, 140);
     } else {
       zoomScale = 1;
       zoomTx = 0;
       zoomTy = 0;
-      zoomPanning = false;
       zoomContentRect = null;
       zoomOriginLeft = 0;
       zoomOriginTop = 0;
@@ -680,6 +799,7 @@
       quickSettingsOpen ||
       quickFloatConfig !== null ||
       chapterJumpOpen ||
+      aiPillOpen ||
       scrubbing
     ) {
       return;
@@ -690,6 +810,7 @@
         !quickSettingsOpen &&
         quickFloatConfig === null &&
         !chapterJumpOpen &&
+        !aiPillOpen &&
         !scrubbing &&
         Date.now() >= suppressAutoHideUntil
       ) {
@@ -706,7 +827,7 @@
     if (settingsStore.value.floating.autoDimInReader) {
       idleDimTimer = window.setTimeout(() => {
         idleDimTimer = null;
-        if (!quickSettingsOpen && quickFloatConfig === null && !chapterJumpOpen) {
+        if (!quickSettingsOpen && quickFloatConfig === null && !chapterJumpOpen && !aiPillOpen) {
           controlsDimmed = true;
         }
       }, 2400);
@@ -745,6 +866,7 @@
     void quickSettingsOpen;
     void quickFloatConfig;
     void chapterJumpOpen;
+    void aiPillOpen;
     void behavior.toolbarAutoHideSecs;
     scheduleToolbarAutoHide();
   });
@@ -913,6 +1035,7 @@
 
   function clearPendingTimers(flush = false, keepSessionActive = !closingReader) {
     cancelVerticalSmoothScroll();
+    clearPendingVerticalZoomCommit();
     if (flush) {
       void flushPendingProgress(keepSessionActive);
       flushPendingMangaSettings();
@@ -1393,6 +1516,67 @@
     };
   });
 
+  // Non-passive TouchEvent listener for reliable 2-finger pinch-to-zoom on Android WebView
+  // and touchscreens in BOTH Vertical and Horizontal reading modes.
+  // Never calls `preventDefault()` for 1-finger touches so native vertical scroll stays 100% smooth.
+  $effect(() => {
+    const el = scrollEl;
+    if (!el) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      wakeFloatingControls();
+      if (e.touches.length < 2) return;
+      if (
+        loadingInitial ||
+        errorState ||
+        quickSettingsOpen ||
+        chapterJumpOpen ||
+        quickFloatConfig !== null ||
+        imageMenuTarget !== null ||
+        aiPillOpen
+      ) {
+        return;
+      }
+      e.preventDefault();
+      const t0 = e.touches[0];
+      const t1 = e.touches[1];
+      beginPinchZoom("touch", t0.clientX, t0.clientY, t1.clientX, t1.clientY, e.target);
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (pinchSource !== "touch") return;
+      if (e.touches.length < 2) return;
+      e.preventDefault();
+      const t0 = e.touches[0];
+      const t1 = e.touches[1];
+      updatePinchZoom(t0.clientX, t0.clientY, t1.clientX, t1.clientY);
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (pinchSource !== "touch") return;
+      if (e.touches.length >= 2) {
+        // 3rd finger lifted while 2 fingers remain: seamlessly re-anchor to remaining pair.
+        const t0 = e.touches[0];
+        const t1 = e.touches[1];
+        beginPinchZoom("touch", t0.clientX, t0.clientY, t1.clientX, t1.clientY, e.target);
+        return;
+      }
+      const remaining = e.touches.length === 1 ? e.touches[0] : null;
+      endPinchZoom(remaining ? { x: remaining.clientX, y: remaining.clientY } : null);
+    };
+
+    el.addEventListener("touchstart", onTouchStart, { passive: false });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    el.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
+    };
+  });
+
   $effect(() => {
     const _id = mangaId;
     const url = chapterUrl;
@@ -1417,8 +1601,10 @@
     const horiz = isHorizontal;
     const grp = currentHorizontalGroup;
     const tier = aiTranslateStore.activeTier;
-    const lang = settingsStore.value.language;
+    const lang = aiTranslateStore.effectiveTargetLang;
     const loading = loadingInitial;
+    const gen = aiTranslateStore.generation;
+    void gen;
 
     if (aiPageDispatchTimer !== null) {
       window.clearTimeout(aiPageDispatchTimer);
@@ -1440,7 +1626,12 @@
           : [];
     if (activeTokens.length === 0) return;
 
-    const focusKey = `${chap.url}|${activeTokens.join(",")}|${translateMode ? "t" : "d"}|${tier}|${lang}`;
+    // In vertical scrolling mode, also warm-process the immediate next page so scrolling
+    // into the next panel already has bubbles / translations ready.
+    const warmNextToken =
+      !horiz && pageIdx + 1 < chap.images.length ? chap.images[pageIdx + 1] : null;
+
+    const focusKey = `${chap.url}|${activeTokens.join(",")}|${translateMode ? "t" : "d"}|${tier}|${lang}|${gen}`;
     if (focusKey === lastAiFocusKey) return;
 
     const movedPage = lastAiFocusKey !== "";
@@ -1454,6 +1645,9 @@
       aiPageDispatchTimer = null;
       for (const tok of activeTokens) {
         void aiTranslateStore.processPage(tok, { detectOnly: !translateMode });
+      }
+      if (warmNextToken && !activeTokens.includes(warmNextToken)) {
+        void aiTranslateStore.processPage(warmNextToken, { detectOnly: !translateMode });
       }
     }, movedPage ? 140 : 40);
   });
@@ -2032,17 +2226,172 @@
     }
   }
 
+  function beginPinchZoom(
+    source: "touch" | "pointer",
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    target: EventTarget | null
+  ) {
+    if (!scrollEl) return;
+    commitPendingVerticalZoom();
+    cancelLongPress();
+    if (singleTapTimer !== null) {
+      window.clearTimeout(singleTapTimer);
+      singleTapTimer = null;
+    }
+    horizontalDragging = false;
+    horizontalDragOffsetPx = 0;
+    zoomPanning = false;
+    activeBubbleKey = null;
+
+    pinchSource = source;
+    zoomPinching = true;
+    horizontalDragDidMove = true;
+    didPanDrag = true;
+    suppressNextClickUntil = Date.now() + 360;
+
+    const vpRect = scrollEl.getBoundingClientRect();
+    const midX = (x1 + x2) / 2 - vpRect.left;
+    const midY = (y1 + y2) / 2 - vpRect.top;
+
+    const box = measureZoomTargetBox(target);
+    zoomContentRect = box.rect;
+    zoomOriginLeft = box.originLeft;
+    zoomOriginTop = box.originTop;
+
+    pinchStartDist = Math.max(8, Math.hypot(x2 - x1, y2 - y1));
+    pinchStartScale = Math.max(1, zoomScale);
+    pinchStartTx = zoomTx;
+    pinchStartTy = isHorizontal ? zoomTy : 0;
+    pinchAnchorContentX = (midX - zoomOriginLeft - pinchStartTx) / pinchStartScale;
+    pinchAnchorDocY = isHorizontal
+      ? (midY - zoomOriginTop - pinchStartTy) / pinchStartScale
+      : (scrollEl.scrollTop + midY) / pinchStartScale;
+    pinchBaseDocHeight = verticalContentEl?.offsetHeight ?? scrollEl.scrollHeight;
+  }
+
+  function updatePinchZoom(x1: number, y1: number, x2: number, y2: number) {
+    if (!scrollEl || !zoomPinching) return;
+    const dist = Math.max(8, Math.hypot(x2 - x1, y2 - y1));
+    const ratio = dist / Math.max(8, pinchStartDist);
+    const nextScale = Math.max(1, Math.min(ZOOM_MAX_SCALE, pinchStartScale * ratio));
+
+    const vpRect = scrollEl.getBoundingClientRect();
+    const curMidX = (x1 + x2) / 2 - vpRect.left;
+    const curMidY = (y1 + y2) / 2 - vpRect.top;
+    const rect = zoomContentRect ?? {
+      left: 0,
+      top: 0,
+      width: vpRect.width,
+      height: vpRect.height,
+    };
+
+    if (isHorizontal) {
+      if (nextScale <= 1.005) {
+        zoomScale = 1;
+        zoomTx = 0;
+        zoomTy = 0;
+      } else {
+        const rawTx = curMidX - zoomOriginLeft - pinchAnchorContentX * nextScale;
+        const rawTy = curMidY - zoomOriginTop - pinchAnchorDocY * nextScale;
+        const clamped = clampZoomPan(
+          rawTx,
+          rawTy,
+          nextScale,
+          vpRect.width,
+          vpRect.height,
+          rect,
+          zoomOriginLeft,
+          zoomOriginTop
+        );
+        zoomScale = nextScale;
+        zoomTx = clamped.tx;
+        zoomTy = clamped.ty;
+      }
+      return;
+    }
+
+    // Vertical continuous pinch-to-zoom anchored directly to the 2-finger midpoint.
+    const nextExtraBottom =
+      nextScale > 1.005 ? Math.max(0, Math.round(pinchBaseDocHeight * (nextScale - 1))) : 0;
+    const rawTx = curMidX - zoomOriginLeft - pinchAnchorContentX * nextScale;
+    const clamped =
+      nextScale <= 1.005
+        ? { tx: 0, ty: 0 }
+        : clampZoomPan(
+            rawTx,
+            0,
+            nextScale,
+            vpRect.width,
+            vpRect.height,
+            rect,
+            zoomOriginLeft,
+            zoomOriginTop
+          );
+    const desiredScrollTop = Math.max(0, Math.round(pinchAnchorDocY * nextScale - curMidY));
+
+    flushSync(() => {
+      verticalZoomExtraBottomPx = nextExtraBottom;
+      zoomScale = nextScale;
+      zoomTx = clamped.tx;
+      zoomTy = 0;
+    });
+    const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    const clampedTop = Math.max(0, Math.min(maxTop, desiredScrollTop));
+    scrollEl.scrollTop = clampedTop;
+    lastScrollOffset = clampedTop;
+  }
+
+  function endPinchZoom(remainingFinger: { x: number; y: number } | null) {
+    if (!zoomPinching) return;
+    zoomPinching = false;
+    pinchSource = "none";
+    suppressNextClickUntil = Date.now() + 280;
+    horizontalDragDidMove = false;
+    didPanDrag = false;
+
+    if (zoomScale < ZOOM_RESET_THRESHOLD) {
+      resetZoom(remainingFinger?.y);
+      return;
+    }
+
+    if (remainingFinger && scrollEl) {
+      // Smoothly re-anchor single-finger pan origin so lifting one finger never jumps.
+      panStartX = remainingFinger.x;
+      panStartY = remainingFinger.y;
+      panOriginTx = zoomTx;
+      panOriginTy = zoomTy;
+      panOriginScrollTop = scrollEl.scrollTop;
+    }
+    updateFocusNow();
+  }
+
   function handlePointerDown(e: PointerEvent) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
       return;
     }
 
+    if (pendingVerticalZoomCommit) {
+      commitPendingVerticalZoom();
+    }
+
     activeViewportPointers.add(e.pointerId);
-    if (activeViewportPointers.size >= 2) {
+    pinchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (activeViewportPointers.size >= 2 || pinchPointers.size >= 2) {
       // Multi-touch pinch-zoom immediately cancels any pending long-press gesture.
       cancelLongPress();
-    } else if (
+      if (pinchSource !== "touch" && pinchPointers.size >= 2) {
+        const pts = Array.from(pinchPointers.values());
+        beginPinchZoom("pointer", pts[0].x, pts[0].y, pts[1].x, pts[1].y, e.target);
+      }
+      return;
+    }
+
+    if (
       e.pointerType !== "mouse" &&
       !loadingInitial &&
       !errorState &&
@@ -2061,7 +2410,7 @@
         longPressTimer = window.setTimeout(() => {
           longPressTimer = null;
           longPressPointerId = null;
-          if (activeViewportPointers.size !== 1 || horizontalDragging || didPanDrag) {
+          if (activeViewportPointers.size !== 1 || horizontalDragging || didPanDrag || zoomPinching) {
             return;
           }
           if (singleTapTimer !== null) {
@@ -2083,32 +2432,6 @@
     }
 
     if (isHorizontal) {
-      horizontalPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (horizontalPointers.size >= 2) {
-        cancelLongPress();
-        // 2-finger pinch-to-zoom: immediately release any horizontal swipe drag.
-        horizontalDragging = false;
-        horizontalDragOffsetPx = 0;
-        zoomPanning = false;
-        const pts = Array.from(horizontalPointers.values());
-        horizontalPinchStartDist = Math.max(
-          1,
-          Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)
-        );
-        horizontalPinchStartScale = zoomScale;
-        if (scrollEl) {
-          const vpRect = scrollEl.getBoundingClientRect();
-          horizontalPinchAnchor = {
-            x: (pts[0].x + pts[1].x) / 2 - vpRect.left,
-            y: (pts[0].y + pts[1].y) / 2 - vpRect.top,
-          };
-        }
-        const box = measureZoomTargetBox(e.target);
-        zoomContentRect = box.rect;
-        zoomOriginLeft = box.originLeft;
-        zoomOriginTop = box.originTop;
-        return;
-      }
       horizontalDragDidMove = false;
     }
 
@@ -2140,6 +2463,7 @@
     if (longPressTimer !== null) {
       if (
         activeViewportPointers.size >= 2 ||
+        zoomPinching ||
         (longPressPointerId === e.pointerId &&
           Math.hypot(e.clientX - longPressStartX, e.clientY - longPressStartY) > 8)
       ) {
@@ -2147,44 +2471,17 @@
       }
     }
 
-    if (isHorizontal && horizontalPointers.has(e.pointerId)) {
-      horizontalPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (horizontalPointers.size >= 2 && scrollEl) {
-        const pts = Array.from(horizontalPointers.values());
-        const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
-        const ratio = dist / Math.max(1, horizontalPinchStartDist);
-        const targetScale = Math.max(1, Math.min(3, horizontalPinchStartScale * ratio));
-        const vpRect = scrollEl.getBoundingClientRect();
-        const rect = zoomContentRect ?? {
-          left: 0,
-          top: 0,
-          width: vpRect.width,
-          height: vpRect.height,
-        };
-        if (targetScale <= 1.02) {
-          zoomScale = 1;
-          zoomTx = 0;
-          zoomTy = 0;
-        } else {
-          const next = computeAnchoredZoom(
-            horizontalPinchAnchor.x,
-            horizontalPinchAnchor.y,
-            { scale: zoomScale, tx: zoomTx, ty: zoomTy },
-            targetScale,
-            vpRect.width,
-            vpRect.height,
-            rect,
-            zoomOriginLeft,
-            zoomOriginTop
-          );
-          zoomScale = next.scale;
-          zoomTx = next.tx;
-          zoomTy = next.ty;
-        }
-        horizontalDragDidMove = true;
+    if (pinchPointers.has(e.pointerId)) {
+      pinchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinchSource === "pointer" && pinchPointers.size >= 2) {
+        const pts = Array.from(pinchPointers.values());
+        updatePinchZoom(pts[0].x, pts[0].y, pts[1].x, pts[1].y);
         return;
       }
+    }
+    if (zoomPinching) return;
 
+    if (isHorizontal) {
       // Live horizontal RTL drag-swipe with rubber-band edge resistance (only when unzoomed).
       if (!zoomPanning && zoomScale <= 1.01 && activePointerId === e.pointerId) {
         const dx = e.clientX - pointerDownX;
@@ -2249,11 +2546,13 @@
 
   function handlePointerUp(e: PointerEvent) {
     activeViewportPointers.delete(e.pointerId);
+    pinchPointers.delete(e.pointerId);
     if (longPressPointerId === e.pointerId || activeViewportPointers.size === 0) {
       cancelLongPress();
     }
-    if (isHorizontal) {
-      horizontalPointers.delete(e.pointerId);
+    if (pinchSource === "pointer" && pinchPointers.size < 2) {
+      const remaining = Array.from(pinchPointers.values())[0] ?? null;
+      endPinchZoom(remaining);
     }
     if (activePointerId !== e.pointerId) return;
     const dx = e.clientX - pointerDownX;
@@ -2381,7 +2680,7 @@
     activeBubbleKey = info.bubbleKey;
 
     if (isHorizontal) {
-      zoomTransitionLockUntil = Date.now() + 220;
+      zoomTransitionLockUntil = Date.now() + ZOOM_ANIM_MS + 30;
       zoomScale = next.scale;
       zoomTx = next.tx;
       zoomTy = next.ty;
@@ -2389,57 +2688,70 @@
         zoomFocusSettleTimer = null;
         zoomTransitionLockUntil = 0;
         updateFocusNow();
-      }, 200);
+      }, ZOOM_ANIM_MS + 20);
     } else {
-      const unscaledDocY = scrollEl.scrollTop / prevScale + next.bubbleCenterY;
+      commitPendingVerticalZoom();
+      const contentTopScaled = verticalContentEl?.getBoundingClientRect().top ?? vpRect.top;
+      const unscaledImgTopInDoc = (imgRect.top - contentTopScaled) / prevScale;
+      const unscaledImgHeight = imgRect.height / prevScale;
+      const bubbleMidYRatio = (info.bbox[1] + info.bbox[3]) / 2000;
+      const unscaledDocY = unscaledImgTopInDoc + bubbleMidYRatio * unscaledImgHeight;
       const baseHeight = verticalContentEl?.offsetHeight ?? scrollEl.scrollHeight;
-      zoomTransitionLockUntil = Date.now() + 240;
-      suppressAutoHideUntil = Date.now() + 360;
       const desiredScrollTop = Math.max(
         0,
         Math.round(unscaledDocY * next.scale - vpRect.height * 0.5)
       );
-
-      flushSync(() => {
-        verticalZoomExtraBottomPx = Math.max(0, Math.round(baseHeight * (next.scale - 1)));
-        zoomScale = next.scale;
-        zoomTx = next.tx;
-        zoomTy = 0;
-      });
-      if (scrollEl) {
-        const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
-        const clampedTop = Math.max(0, Math.min(maxTop, desiredScrollTop));
-        scrollEl.scrollTop = clampedTop;
-        lastScrollOffset = clampedTop;
-      }
-      zoomFocusSettleTimer = window.setTimeout(() => {
-        zoomFocusSettleTimer = null;
-        zoomTransitionLockUntil = 0;
-        updateFocusNow();
-      }, 210);
+      animateVerticalZoomTo(next.scale, next.tx, desiredScrollTop, baseHeight);
     }
   }
 
-  function hitTestHorizontalBubble(clientX: number, clientY: number): boolean {
-    if (!aiBubbleZoom || !horizontalStageEl) return false;
-    const buttons = horizontalStageEl.querySelectorAll<HTMLButtonElement>(
-      '[data-hslide-active="true"] [data-ai-bubble="true"]'
-    );
-    for (const btn of buttons) {
-      const r = btn.getBoundingClientRect();
+  function hitTestBubbleAtPoint(clientX: number, clientY: number): boolean {
+    if (!aiBubbleZoom) return false;
+    const scope = isHorizontal ? horizontalStageEl : verticalContentEl;
+    if (!scope) return false;
+    const selector = isHorizontal
+      ? '[data-hslide-active="true"] [data-ai-bubble="true"]'
+      : '[data-ai-bubble="true"]';
+    const candidates = scope.querySelectorAll<HTMLElement>(selector);
+    const padPx = 8;
+
+    let bestEl: HTMLElement | null = null;
+    let bestArea = Number.POSITIVE_INFINITY;
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 4 || r.height <= 4) continue;
       if (
-        r.width > 4 &&
-        r.height > 4 &&
-        clientX >= r.left &&
-        clientX <= r.right &&
-        clientY >= r.top &&
-        clientY <= r.bottom
+        clientX >= r.left - padPx &&
+        clientX <= r.right + padPx &&
+        clientY >= r.top - padPx &&
+        clientY <= r.bottom + padPx
       ) {
-        btn.click();
-        return true;
+        const area = r.width * r.height;
+        if (area < bestArea) {
+          bestArea = area;
+          bestEl = el;
+        }
       }
     }
-    return false;
+    if (!bestEl) return false;
+
+    const bubbleKey = bestEl.dataset.bubbleKey ?? "";
+    const rawBbox = (bestEl.dataset.bbox ?? "").split(",").map((v) => Number(v));
+    if (!bubbleKey || rawBbox.length !== 4 || rawBbox.some((n) => !Number.isFinite(n))) {
+      return false;
+    }
+    const pageBox = bestEl.closest<HTMLElement>("[data-page-idx]");
+    const imgEl = pageBox?.querySelector<HTMLImageElement>("img") ?? null;
+    if (!pageBox || !imgEl) return false;
+
+    handleBubbleTap({
+      pageIndex: Number(pageBox.dataset.pageIdx ?? 0),
+      token: pageBox.dataset.pageToken ?? "",
+      bbox: [rawBbox[0], rawBbox[1], rawBbox[2], rawBbox[3]],
+      bubbleKey,
+      imgEl,
+    });
+    return true;
   }
 
   function handleHorizontalZoneTap(zone: "left" | "center" | "right", e: MouseEvent) {
@@ -2457,11 +2769,35 @@
     }
     if (dismissHorizontalOverlayIfOpen()) return;
 
-    if (aiBubbleZoom && hitTestHorizontalBubble(e.clientX, e.clientY)) {
-      return;
-    }
+    const tapX = e.clientX;
+    const tapY = e.clientY;
 
     const runSingleAction = () => {
+      if (aiBubbleZoom && hitTestBubbleAtPoint(tapX, tapY)) {
+        return;
+      }
+      if (activeBubbleKey !== null && zoomScale > 1.01) {
+        resetZoom();
+        return;
+      }
+      if (!readerSettings.tapZonesEnabled) {
+        toolbarVisible = !toolbarVisible;
+        return;
+      }
+      if (scrollEl && oneHandedMode !== "default") {
+        const rect = scrollEl.getBoundingClientRect();
+        const relX = (tapX - rect.left) / Math.max(1, rect.width);
+        const relY = (tapY - rect.top) / Math.max(1, rect.height);
+        const action = resolveHorizontalTapAction(relX, relY, { isRtl, oneHandedMode });
+        if (action === "next") {
+          stepHorizontalGroup(1, false);
+        } else if (action === "prev") {
+          stepHorizontalGroup(-1, false);
+        } else {
+          toolbarVisible = !toolbarVisible;
+        }
+        return;
+      }
       if (zone === "left") {
         stepHorizontalGroup(isRtl ? 1 : -1, false);
       } else if (zone === "right") {
@@ -2480,7 +2816,7 @@
     // On side margins outside the actual manga image (PC), flip pages immediately with zero delay.
     // On the image itself (all 3 zones on Mobile & PC), detect double-tap cleanly so users can
     // double-tap any speech bubble or corner to focus-zoom into that exact point.
-    const tappedOnImage = zone === "center" || isPointInsideActiveHorizontalImage(e.clientX, e.clientY);
+    const tappedOnImage = zone === "center" || isPointInsideActiveHorizontalImage(tapX, tapY);
     if (!tappedOnImage) {
       lastTapAt = 0;
       if (singleTapTimer !== null) {
@@ -2493,20 +2829,20 @@
 
     const now = Date.now();
     const isDoubleTap =
-      now - lastTapAt <= 260 && Math.hypot(e.clientX - lastTapX, e.clientY - lastTapY) <= 48;
+      now - lastTapAt <= 260 && Math.hypot(tapX - lastTapX, tapY - lastTapY) <= 48;
     if (isDoubleTap) {
       lastTapAt = 0;
       if (singleTapTimer !== null) {
         window.clearTimeout(singleTapTimer);
         singleTapTimer = null;
       }
-      executeDoubleTap(e.clientX, e.clientY, e.target);
+      executeDoubleTap(tapX, tapY, e.target);
       return;
     }
 
     lastTapAt = now;
-    lastTapX = e.clientX;
-    lastTapY = e.clientY;
+    lastTapX = tapX;
+    lastTapY = tapY;
     if (singleTapTimer !== null) {
       window.clearTimeout(singleTapTimer);
     }
@@ -2528,7 +2864,7 @@
     handleHorizontalZoneTap("center", e);
   }
 
-  function executeSingleTap(clientX: number) {
+  function executeSingleTap(clientX: number, clientY: number) {
     if (
       isHorizontal &&
       !horizontalAtEnd &&
@@ -2538,12 +2874,14 @@
     ) {
       const rect = scrollEl.getBoundingClientRect();
       const relX = (clientX - rect.left) / Math.max(1, rect.width);
-      if (relX <= 0.25) {
-        stepHorizontalGroup(isRtl ? 1 : -1, false);
+      const relY = (clientY - rect.top) / Math.max(1, rect.height);
+      const action = resolveHorizontalTapAction(relX, relY, { isRtl, oneHandedMode });
+      if (action === "next") {
+        stepHorizontalGroup(1, false);
         return;
       }
-      if (relX >= 0.75) {
-        stepHorizontalGroup(isRtl ? -1 : 1, false);
+      if (action === "prev") {
+        stepHorizontalGroup(-1, false);
         return;
       }
     }
@@ -2601,7 +2939,7 @@
     }
 
     if (isHorizontal) {
-      zoomTransitionLockUntil = Date.now() + 220;
+      zoomTransitionLockUntil = Date.now() + ZOOM_ANIM_MS + 30;
       zoomScale = next.scale;
       zoomTx = next.tx;
       zoomTy = next.ty;
@@ -2609,8 +2947,9 @@
         zoomFocusSettleTimer = null;
         zoomTransitionLockUntil = 0;
         updateFocusNow();
-      }, 200);
+      }, ZOOM_ANIM_MS + 20);
     } else {
+      commitPendingVerticalZoom();
       // Lock focus immediately onto the exact page the user tapped before the transform animates.
       const tappedPage = findVerticalPageAtPoint(clientY, target);
       if (tappedPage) {
@@ -2623,34 +2962,11 @@
 
       const docYBefore = scrollEl.scrollTop + pointerY;
       const baseHeight = verticalContentEl?.offsetHeight ?? scrollEl.scrollHeight;
-      zoomTransitionLockUntil = Date.now() + 240;
-      suppressAutoHideUntil = Date.now() + 360;
-
-      // Center the tapped document Y coordinate vertically in the viewport (`vpRect.height / 2`).
       const desiredScrollTop = Math.max(
         0,
         Math.round(docYBefore * next.scale - vpRect.height * 0.5)
       );
-
-      // Flush DOM spacer height synchronously in the same JS turn before setting `scrollTop`
-      // so the very first painted frame at `next.scale` already sits at `clampedTop` without a 1-frame black jump.
-      flushSync(() => {
-        verticalZoomExtraBottomPx = Math.max(0, Math.round(baseHeight * (next.scale - 1)));
-        zoomScale = next.scale;
-        zoomTx = next.tx;
-        zoomTy = 0;
-      });
-      if (scrollEl) {
-        const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
-        const clampedTop = Math.max(0, Math.min(maxTop, desiredScrollTop));
-        scrollEl.scrollTop = clampedTop;
-        lastScrollOffset = clampedTop;
-      }
-      zoomFocusSettleTimer = window.setTimeout(() => {
-        zoomFocusSettleTimer = null;
-        zoomTransitionLockUntil = 0;
-        updateFocusNow();
-      }, 210);
+      animateVerticalZoomTo(next.scale, next.tx, desiredScrollTop, baseHeight);
     }
   }
 
@@ -2687,22 +3003,32 @@
     if (e.target instanceof HTMLElement && e.target.closest("button, a, select, input")) {
       return;
     }
-    // Tapping outside a bubble while bubble-zoomed smoothly resets to 1x.
-    if (activeBubbleKey !== null && zoomScale > 1.01) {
-      resetZoom(e.clientY);
-      return;
-    }
     // Ignore drags/scroll gestures (> 14px movement to allow slight mobile finger jitter).
     if (Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 14) {
       return;
     }
+
+    const tapX = e.clientX;
+    const tapY = e.clientY;
+    const runSingleTap = () => {
+      // Bubble Auto-Zoom: single tap on any detected bubble focuses it (or resets if tapped again).
+      if (aiBubbleZoom && hitTestBubbleAtPoint(tapX, tapY)) {
+        return;
+      }
+      // Tapping outside a bubble while bubble-zoomed smoothly resets to 1x.
+      if (activeBubbleKey !== null && zoomScale > 1.01) {
+        resetZoom(tapY);
+        return;
+      }
+      executeSingleTap(tapX, tapY);
+    };
 
     const now = Date.now();
     const doubleTapEnabled = behavior.doubleTapAction !== "disabled";
     const isDoubleTap =
       doubleTapEnabled &&
       now - lastTapAt <= 260 &&
-      Math.hypot(e.clientX - lastTapX, e.clientY - lastTapY) <= 48;
+      Math.hypot(tapX - lastTapX, tapY - lastTapY) <= 48;
 
     if (isDoubleTap) {
       lastTapAt = 0;
@@ -2710,24 +3036,23 @@
         window.clearTimeout(singleTapTimer);
         singleTapTimer = null;
       }
-      executeDoubleTap(e.clientX, e.clientY, e.target);
+      executeDoubleTap(tapX, tapY, e.target);
       return;
     }
 
     lastTapAt = now;
-    lastTapX = e.clientX;
-    lastTapY = e.clientY;
+    lastTapX = tapX;
+    lastTapY = tapY;
     if (!doubleTapEnabled) {
-      executeSingleTap(e.clientX);
+      runSingleTap();
     } else {
-      const tapX = e.clientX;
       if (singleTapTimer !== null) {
         window.clearTimeout(singleTapTimer);
       }
       singleTapTimer = window.setTimeout(() => {
         singleTapTimer = null;
-        executeSingleTap(tapX);
-      }, 240);
+        runSingleTap();
+      }, 220);
     }
   }
 
@@ -2988,6 +3313,7 @@
     if (opening) {
       chapterJumpOpen = false;
       quickFloatConfig = null;
+      aiPillOpen = false;
     }
     wakeFloatingControls();
   }
@@ -2999,6 +3325,7 @@
     quickSettingsOpen = false;
     openQuickCat = null;
     quickFloatConfig = null;
+    aiPillOpen = false;
     wakeFloatingControls();
   }
 
@@ -3163,10 +3490,11 @@
   }
 
   function setOrientation(o: ReadingOrientation) {
+    resetZoom(undefined, true);
     updateMangaReaderSettings((r) => {
       r.orientation = o;
       if (o === "horizontal") {
-        // Switching explicitly to horizontal on a detected webtoon disables auto-webtoon override for this manga.
+        // Switching explicitly to horizontal on a detected webtoon/manga disables auto-layout override for this manga.
         r.autoWebtoonDetect = false;
       }
     });
@@ -4132,19 +4460,21 @@
     class={isHorizontal
       ? "reader-no-scrollbar relative flex h-full w-full select-none overflow-hidden"
       : "reader-no-scrollbar relative h-full w-full select-none overflow-y-auto"}
-    style={isHorizontal
-      ? zoomScale > 1.01
-        ? zoomPanning
-          ? "touch-action: none; cursor: grabbing;"
-          : "touch-action: none; cursor: grab;"
-        : horizontalDragging
-          ? "touch-action: none; cursor: grabbing;"
-          : "touch-action: pan-y pinch-zoom;"
-      : zoomScale > 1.01
-        ? zoomPanning
-          ? "touch-action: none; cursor: grabbing;"
-          : "touch-action: none; cursor: grab;"
-        : "touch-action: pan-y;"}
+    style={zoomPinching
+      ? "touch-action: none;"
+      : isHorizontal
+        ? zoomScale > 1.01
+          ? zoomPanning
+            ? "touch-action: none; cursor: grabbing;"
+            : "touch-action: none; cursor: grab;"
+          : horizontalDragging
+            ? "touch-action: none; cursor: grabbing;"
+            : "touch-action: pan-y;"
+        : zoomScale > 1.01
+          ? zoomPanning
+            ? "touch-action: none; cursor: grabbing;"
+            : "touch-action: none; cursor: grab;"
+          : "touch-action: pan-y;"}
   >
     {#if loadingInitial}
       <div
@@ -4342,8 +4672,8 @@
                       skipBroken={behavior.skipBrokenImages}
                       bubbleZoomEnabled={aiBubbleZoom}
                       translationEnabled={aiTranslateOn}
+                      peekOriginal={aiPeekOriginal}
                       {activeBubbleKey}
-                      onBubbleTap={handleBubbleTap}
                       onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
                     />
                     <span
@@ -4415,8 +4745,8 @@
                           skipBroken={behavior.skipBrokenImages}
                           bubbleZoomEnabled={aiBubbleZoom}
                           translationEnabled={aiTranslateOn}
+                          peekOriginal={aiPeekOriginal}
                           {activeBubbleKey}
-                          onBubbleTap={handleBubbleTap}
                           onImageLoaded={(info) => handlePageImageLoaded(activeChapter.url, info)}
                         />
                         <!-- Subtle Bottom-Left Page Badge -->
@@ -4526,8 +4856,8 @@
                   skipBroken={behavior.skipBrokenImages}
                   bubbleZoomEnabled={aiBubbleZoom}
                   translationEnabled={aiTranslateOn}
+                  peekOriginal={aiPeekOriginal}
                   {activeBubbleKey}
-                  onBubbleTap={handleBubbleTap}
                   onImageLoaded={(info) => handlePageImageLoaded(chap.url, info)}
                 />
               {/each}
@@ -4876,6 +5206,7 @@
       bind:open={aiPillOpen}
       {oneHandedMode}
       {toolbarVisible}
+      activePageToken={activeChapter.images[focusedPageIdx] ?? ""}
       onOpenAccessibilitySettings={() => openFullSettings("accessibility")}
     />
   {/if}

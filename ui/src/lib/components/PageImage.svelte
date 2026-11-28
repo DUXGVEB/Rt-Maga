@@ -2,7 +2,7 @@
   import { AlertCircle, RotateCcw } from "lucide-svelte";
   import { imgProxyUrl } from "../api";
   import { viewReveal } from "../motion";
-  import type { NormalizedBbox, PageLoadMode } from "../readerLayout";
+  import type { PageLoadMode } from "../readerLayout";
   import { settingsStore } from "../stores/settings.svelte";
   import LatticeLoader from "./LatticeLoader.svelte";
   import ReaderAiOverlay from "./ReaderAiOverlay.svelte";
@@ -24,8 +24,8 @@
     skipBroken = false,
     bubbleZoomEnabled = false,
     translationEnabled = false,
+    peekOriginal = false,
     activeBubbleKey = null,
-    onBubbleTap,
     onImageLoaded,
   }: {
     token: string;
@@ -42,14 +42,8 @@
     skipBroken?: boolean;
     bubbleZoomEnabled?: boolean;
     translationEnabled?: boolean;
+    peekOriginal?: boolean;
     activeBubbleKey?: string | null;
-    onBubbleTap?: (info: {
-      pageIndex: number;
-      token: string;
-      bbox: NormalizedBbox;
-      bubbleKey: string;
-      imgEl: HTMLImageElement | null;
-    }) => void;
     onImageLoaded?: (info: { index: number; width: number; height: number }) => void;
   } = $props();
 
@@ -346,15 +340,8 @@
           overlayHeight={imgOverlayBox.height}
           {bubbleZoomEnabled}
           {translationEnabled}
+          {peekOriginal}
           {activeBubbleKey}
-          onBubbleTap={(bbox, bubbleKey) =>
-            onBubbleTap?.({
-              pageIndex: index,
-              token,
-              bbox,
-              bubbleKey,
-              imgEl,
-            })}
         />
       </div>
     {/if}

@@ -1542,9 +1542,39 @@ pub(crate) async fn ai_download_tier2(
     state: State<'_, Arc<AppState>>,
     on_progress: Channel<AiDownloadProgressEvent>,
 ) -> Result<AiStatusView, AppError> {
-    let status = state.ai.download_tier2(&app, on_progress).await?;
+    let proxy = state.current_settings().await.proxy;
+    let status = state
+        .ai
+        .download_tier2(&app, Some(&proxy), on_progress)
+        .await?;
     persist_ai_tier_setting(&app, &state, status.active_tier).await?;
     Ok(status)
+}
+
+/// Downloads one or more offline Lite NMT language packs (Windows OPUS-MT ONNX packs or Android
+/// ML Kit offline language models), streaming progress via `on_progress`.
+#[tauri::command]
+pub(crate) async fn ai_download_nmt_packs(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    pack_ids: Vec<String>,
+    on_progress: Channel<AiDownloadProgressEvent>,
+) -> Result<AiStatusView, AppError> {
+    let proxy = state.current_settings().await.proxy;
+    state
+        .ai
+        .download_nmt_packs(&app, &pack_ids, Some(&proxy), on_progress)
+        .await
+}
+
+/// Deletes a downloaded offline Lite NMT language pack from device storage.
+#[tauri::command]
+pub(crate) async fn ai_delete_nmt_pack(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    pack_id: String,
+) -> Result<AiStatusView, AppError> {
+    state.ai.delete_nmt_pack(Some(&app), &pack_id).await
 }
 
 /// Cancels any active Tier 2 AI model download immediately and cleans up partial temp files.

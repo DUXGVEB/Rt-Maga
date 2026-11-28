@@ -1,5 +1,5 @@
 //! Unified 2-Tier on-device AI inference orchestrator with hot-switching, generation-based
-//! cancellation, and immediate hard-unload + RAM/disk cache purge.
+//! cancellation, offline NMT pack provisioning, and immediate hard-unload + RAM/disk cache purge.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
+use mangacore::ProxyConfig;
 use sha2::{Digest, Sha256};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter};
@@ -16,7 +17,11 @@ use tracing::debug;
 
 use crate::android_env::AiRuntimeCapabilities;
 use crate::error::AppError;
+#[cfg(target_os = "android")]
+use crate::services::ai::AiDownloadStage;
 use crate::services::ai::cache::{AiResultCache, hex_lower};
+#[cfg(not(target_os = "android"))]
+use crate::services::ai::downloader::{delete_opus_nmt_pack, download_opus_nmt_packs};
 use crate::services::ai::downloader::{
     delete_tier2_assets, download_tier2_bundle, installed_tier2_bytes, resolve_storage_root,
 };
@@ -26,14 +31,24 @@ use crate::services::ai::llama_tier2::Tier2LlamaBackend;
 use crate::services::ai::manifest::{
     SidecarTarget, TIER1_BUDGET_BYTES, tier1_ocr_assets, tier2_bundle_assets, total_bytes,
 };
+#[cfg(not(target_os = "android"))]
+use crate::services::ai::nmt_opus::list_opus_nmt_packs;
 use crate::services::ai::onnx_tier1::Tier1OnnxBackend;
 use crate::services::ai::preprocess::{PreprocessedPage, preprocess_image_bytes};
 use crate::services::ai::{
-    AiDownloadProgressEvent, AiModelEntryView, AiModelStatus, AiPageMode, AiStatusView,
-    PageAiResultView, TranslatedRegionView,
+    AiDownloadProgressEvent, AiModelEntryView, AiModelStatus, AiNmtPackView, AiPageMode,
+    AiStatusView, PageAiResultView, TranslatedRegionView,
 };
 use crate::settings::TranslationModelTier;
 use crate::state::AppState;
+
+/// Approximate per-language offline ML Kit translation model size (`~30 MB`).
+#[cfg(target_os = "android")]
+const MLKIT_MODEL_APPROX_BYTES: u64 = 30 * 1024 * 1024;
+
+/// Core manga/app language codes managed via Android ML Kit offline models.
+#[cfg(target_os = "android")]
+const ANDROID_MLKIT_MANAGED_LANGS: [&str; 7] = ["ja", "zh", "ko", "en", "vi", "ru", "th"];
 
 /// Request scope passed to an [`InferenceBackend`] implementation.
 #[derive(Debug)]
@@ -48,11 +63,19 @@ pub(crate) struct InferenceRequest<'a> {
     pub offload: GpuOffloadMode,
 }
 
+/// Completed page payload returned by a backend (including optional missing NMT packs or errors).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BackendPageResult {
+    pub regions: Vec<TranslatedRegionView>,
+    pub missing_nmt_packs: Vec<AiNmtPackView>,
+    pub error: Option<String>,
+}
+
 /// Output produced by an [`InferenceBackend`] for a single preprocessed page.
 #[derive(Debug)]
 pub(crate) enum BackendOutput {
     /// Inference completed with zero or more normalized regions.
-    Completed(Vec<TranslatedRegionView>),
+    Completed(BackendPageResult),
     /// Inference was aborted early because a newer generation arrived.
     Cancelled,
 }
@@ -104,7 +127,7 @@ impl InferenceBackend for Tier1OnnxBackend {
     ) -> Pin<Box<dyn Future<Output = Result<BackendOutput, AppError>> + Send + 'a>> {
         Box::pin(async move {
             match self.infer_page(req, cancel_rx, expected_gen).await? {
-                Some(regions) => Ok(BackendOutput::Completed(regions)),
+                Some(result) => Ok(BackendOutput::Completed(result)),
                 None => Ok(BackendOutput::Cancelled),
             }
         })
@@ -145,7 +168,11 @@ impl InferenceBackend for Tier2LlamaBackend {
     ) -> Pin<Box<dyn Future<Output = Result<BackendOutput, AppError>> + Send + 'a>> {
         Box::pin(async move {
             match self.infer_page(req, cancel_rx, expected_gen).await? {
-                Some(regions) => Ok(BackendOutput::Completed(regions)),
+                Some(regions) => Ok(BackendOutput::Completed(BackendPageResult {
+                    regions,
+                    missing_nmt_packs: Vec::new(),
+                    error: None,
+                })),
                 None => Ok(BackendOutput::Cancelled),
             }
         })
@@ -181,6 +208,7 @@ pub(crate) struct AiEngine {
     job_cancel_tx: watch::Sender<u64>,
     active_jobs: AtomicU32,
     download_running: AtomicBool,
+    downloading_pack_id: RwLock<Option<String>>,
     download_cancel_tx: watch::Sender<bool>,
     inference_gate: Arc<Semaphore>,
 }
@@ -217,6 +245,7 @@ impl AiEngine {
             job_cancel_tx,
             active_jobs: AtomicU32::new(0),
             download_running: AtomicBool::new(false),
+            downloading_pack_id: RwLock::new(None),
             download_cancel_tx,
             inference_gate: Arc::new(Semaphore::new(1)),
         }
@@ -241,8 +270,15 @@ impl AiEngine {
             AiRuntimeCapabilities::default,
             crate::android_env::get_runtime_capabilities,
         );
-        let tier2_installed = Tier2LlamaBackend::is_installed(&storage_root);
+        let tier2_supported = if cfg!(target_os = "android") {
+            caps.llama_jni_ready
+        } else {
+            true
+        };
+        let tier2_installed = tier2_supported && Tier2LlamaBackend::is_installed(&storage_root);
         let downloading = self.download_running.load(Ordering::Acquire);
+        let downloading_pack = self.downloading_pack_id.read().await.clone();
+        let tier2_downloading = downloading && downloading_pack.is_none();
 
         let mut active_tier = *self.active_tier.read().await;
         if active_tier == TranslationModelTier::Qwen3Vl2B && !tier2_installed {
@@ -255,7 +291,7 @@ impl AiEngine {
         let tier2_req = total_bytes(&tier2_bundle_assets(sidecar_target));
         let tier2_installed_bytes = installed_tier2_bytes(&storage_root);
 
-        let tier2_status = if downloading {
+        let tier2_status = if tier2_downloading {
             AiModelStatus::Downloading
         } else if tier2_installed {
             AiModelStatus::Ready
@@ -302,18 +338,51 @@ impl AiEngine {
             },
         ];
 
+        #[cfg(not(target_os = "android"))]
+        let nmt_packs = list_opus_nmt_packs(&storage_root, downloading_pack.as_deref());
+        #[cfg(target_os = "android")]
+        let nmt_packs =
+            Self::collect_android_mlkit_pack_views(app, downloading_pack.as_deref()).await;
+
         AiStatusView {
             active_tier,
             platform: current_platform().to_owned(),
             storage_dir: storage_root.to_string_lossy().into_owned(),
             tier1_ready: true,
+            tier2_supported,
             tier2_ready: tier2_installed,
             downloading,
             vulkan_supported: caps.vulkan_supported,
             loaded_in_memory: self.tier1.is_loaded() || self.tier2.is_loaded(),
             active_jobs: self.active_jobs.load(Ordering::Relaxed),
             models,
+            nmt_packs,
         }
+    }
+
+    #[cfg(target_os = "android")]
+    async fn collect_android_mlkit_pack_views(
+        app: Option<&AppHandle>,
+        downloading_pack: Option<&str>,
+    ) -> Vec<AiNmtPackView> {
+        let installed_langs: Vec<String> = match app {
+            Some(handle) => {
+                let h = handle.clone();
+                tokio::task::spawn_blocking(move || crate::android_env::list_ml_kit_models(&h))
+                    .await
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
+        ANDROID_MLKIT_MANAGED_LANGS
+            .iter()
+            .map(|&code| {
+                let is_ready = installed_langs
+                    .iter()
+                    .any(|lang| lang.eq_ignore_ascii_case(code));
+                android_mlkit_pack_view(code, is_ready, downloading_pack)
+            })
+            .collect()
     }
 
     /// Synchronizes the active tier from persisted settings without failing when weights are absent.
@@ -326,19 +395,32 @@ impl AiEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::NotFound`] if `Qwen3Vl2B` is selected before downloading its weights.
+    /// Returns [`AppError::NotFound`] if `Qwen3Vl2B` is selected before downloading its weights or
+    /// when the native Tier 2 runtime is unavailable on this build.
     pub(crate) async fn set_tier(
         &self,
         app: Option<&AppHandle>,
         tier: TranslationModelTier,
     ) -> Result<AiStatusView, AppError> {
         let storage_root = self.storage_root(app);
-        if tier == TranslationModelTier::Qwen3Vl2B
-            && !Tier2LlamaBackend::is_installed(&storage_root)
-        {
-            return Err(AppError::NotFound {
-                message: "Qwen3-VL-2B weights are not downloaded yet".to_owned(),
-            });
+        if tier == TranslationModelTier::Qwen3Vl2B {
+            if cfg!(target_os = "android") {
+                let caps = app.map_or_else(
+                    AiRuntimeCapabilities::default,
+                    crate::android_env::get_runtime_capabilities,
+                );
+                if !caps.llama_jni_ready {
+                    return Err(AppError::Internal {
+                        message: "Qwen3-VL-2B native runtime is unavailable in this Android build"
+                            .to_owned(),
+                    });
+                }
+            }
+            if !Tier2LlamaBackend::is_installed(&storage_root) {
+                return Err(AppError::NotFound {
+                    message: "Qwen3-VL-2B weights are not downloaded yet".to_owned(),
+                });
+            }
         }
 
         let prev = {
@@ -363,12 +445,22 @@ impl AiEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if a download is already running, cancelled, or fails verification.
+    /// Returns [`AppError`] if a download is already running, unsupported on this build,
+    /// cancelled, or fails verification.
     pub(crate) async fn download_tier2(
         &self,
         app: &AppHandle,
+        proxy: Option<&ProxyConfig>,
         on_progress: Channel<AiDownloadProgressEvent>,
     ) -> Result<AiStatusView, AppError> {
+        let caps = crate::android_env::get_runtime_capabilities(app);
+        if cfg!(target_os = "android") && !caps.llama_jni_ready {
+            return Err(AppError::Internal {
+                message: "Qwen3-VL-2B native runtime is not bundled in this Android build"
+                    .to_owned(),
+            });
+        }
+
         if self
             .download_running
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -379,18 +471,19 @@ impl AiEngine {
             });
         }
 
+        *self.downloading_pack_id.write().await = None;
         let _ = self.download_cancel_tx.send_replace(false);
         let cancel_rx = self.download_cancel_tx.subscribe();
         let storage_root = self.storage_root(Some(app));
-        let caps = crate::android_env::get_runtime_capabilities(app);
         let sidecar = select_sidecar_target(&caps);
 
         let app_clone = app.clone();
-        let download_res = download_tier2_bundle(&storage_root, sidecar, cancel_rx, move |ev| {
-            let _ = on_progress.send(ev.clone());
-            let _ = app_clone.emit("ai://download-progress", &ev);
-        })
-        .await;
+        let download_res =
+            download_tier2_bundle(&storage_root, sidecar, proxy, cancel_rx, move |ev| {
+                let _ = on_progress.send(ev.clone());
+                let _ = app_clone.emit("ai://download-progress", &ev);
+            })
+            .await;
 
         self.download_running.store(false, Ordering::Release);
         download_res?;
@@ -401,7 +494,195 @@ impl AiEngine {
         Ok(self.status(Some(app)).await)
     }
 
-    /// Cancels any active Tier 2 model download immediately and triggers `.part` rollback.
+    /// Downloads one or more offline Lite NMT language packs (Windows OPUS-MT ONNX packs or
+    /// Android ML Kit offline language models).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if another download is active, a pack ID is invalid, or downloading
+    /// fails.
+    pub(crate) async fn download_nmt_packs(
+        &self,
+        app: &AppHandle,
+        pack_ids: &[String],
+        proxy: Option<&ProxyConfig>,
+        on_progress: Channel<AiDownloadProgressEvent>,
+    ) -> Result<AiStatusView, AppError> {
+        if pack_ids.is_empty() {
+            return Ok(self.status(Some(app)).await);
+        }
+        if self
+            .download_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(AppError::Internal {
+                message: "Another AI download is already in progress".to_owned(),
+            });
+        }
+
+        let first_id = pack_ids.first().cloned();
+        *self.downloading_pack_id.write().await = first_id;
+        let _ = self.download_cancel_tx.send_replace(false);
+
+        #[cfg(not(target_os = "android"))]
+        let res = {
+            let cancel_rx = self.download_cancel_tx.subscribe();
+            let storage_root = self.storage_root(Some(app));
+            let app_clone = app.clone();
+            download_opus_nmt_packs(&storage_root, pack_ids, proxy, cancel_rx, move |ev| {
+                let _ = on_progress.send(ev.clone());
+                let _ = app_clone.emit("ai://download-progress", &ev);
+            })
+            .await
+        };
+
+        #[cfg(target_os = "android")]
+        let res = {
+            let _ = proxy;
+            self.download_android_mlkit_packs(app, pack_ids, &on_progress)
+                .await
+        };
+
+        *self.downloading_pack_id.write().await = None;
+        self.download_running.store(false, Ordering::Release);
+        res?;
+        Ok(self.status(Some(app)).await)
+    }
+
+    #[cfg(target_os = "android")]
+    async fn download_android_mlkit_packs(
+        &self,
+        app: &AppHandle,
+        pack_ids: &[String],
+        on_progress: &Channel<AiDownloadProgressEvent>,
+    ) -> Result<(), AppError> {
+        let total_count = u32::try_from(pack_ids.len()).unwrap_or(1);
+        let total_bytes_est = u64::from(total_count).saturating_mul(MLKIT_MODEL_APPROX_BYTES);
+        let emit_ev = |ev: AiDownloadProgressEvent| {
+            let _ = on_progress.send(ev.clone());
+            let _ = app.emit("ai://download-progress", &ev);
+        };
+
+        for (idx, lang) in pack_ids.iter().enumerate() {
+            let file_index = u32::try_from(idx + 1).unwrap_or(total_count);
+            let base_bytes = u64::try_from(idx)
+                .unwrap_or(0)
+                .saturating_mul(MLKIT_MODEL_APPROX_BYTES);
+            if *self.download_cancel_tx.borrow() {
+                emit_ev(AiDownloadProgressEvent {
+                    stage: AiDownloadStage::Cancelled,
+                    asset_id: lang.clone(),
+                    file_index,
+                    file_count: total_count,
+                    downloaded_bytes: base_bytes,
+                    total_bytes: total_bytes_est,
+                    percent: 0.0,
+                    speed_bytes_per_sec: 0,
+                    message: Some("Download cancelled".to_owned()),
+                });
+                return Err(AppError::Internal {
+                    message: "ML Kit language pack download cancelled".to_owned(),
+                });
+            }
+
+            *self.downloading_pack_id.write().await = Some(lang.clone());
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_precision_loss,
+                reason = "small file index percentage for UI progress bar"
+            )]
+            let pct = ((idx as f32) / (total_count.max(1) as f32)) * 100.0;
+            emit_ev(AiDownloadProgressEvent {
+                stage: AiDownloadStage::Downloading,
+                asset_id: lang.clone(),
+                file_index,
+                file_count: total_count,
+                downloaded_bytes: base_bytes,
+                total_bytes: total_bytes_est,
+                percent: pct.max(5.0),
+                speed_bytes_per_sec: 0,
+                message: Some(format!("Downloading ML Kit model ({lang})")),
+            });
+
+            let h = app.clone();
+            let lang_owned = lang.clone();
+            let dl_step = tokio::task::spawn_blocking(move || {
+                crate::android_env::download_ml_kit_model(&h, &lang_owned)
+            })
+            .await
+            .map_err(|e| AppError::Internal {
+                message: format!("ML Kit download worker failed: {e}"),
+            })
+            .and_then(|inner| inner);
+
+            if let Err(err) = dl_step {
+                emit_ev(AiDownloadProgressEvent {
+                    stage: AiDownloadStage::Failed,
+                    asset_id: lang.clone(),
+                    file_index,
+                    file_count: total_count,
+                    downloaded_bytes: base_bytes,
+                    total_bytes: total_bytes_est,
+                    percent: pct,
+                    speed_bytes_per_sec: 0,
+                    message: Some(err.to_string()),
+                });
+                return Err(err);
+            }
+        }
+
+        emit_ev(AiDownloadProgressEvent {
+            stage: AiDownloadStage::Completed,
+            asset_id: pack_ids.first().cloned().unwrap_or_default(),
+            file_index: total_count,
+            file_count: total_count,
+            downloaded_bytes: total_bytes_est,
+            total_bytes: total_bytes_est,
+            percent: 100.0,
+            speed_bytes_per_sec: 0,
+            message: Some("Offline translation pack ready".to_owned()),
+        });
+        Ok(())
+    }
+
+    /// Deletes a single downloaded offline Lite NMT language pack.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if removal fails or the pack ID is invalid.
+    pub(crate) async fn delete_nmt_pack(
+        &self,
+        app: Option<&AppHandle>,
+        pack_id: &str,
+    ) -> Result<AiStatusView, AppError> {
+        let _ = self.cancel_jobs(app).await;
+        self.tier1.hard_unload(app).await;
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let storage_root = self.storage_root(app);
+            delete_opus_nmt_pack(&storage_root, pack_id).await?;
+        }
+
+        #[cfg(target_os = "android")]
+        {
+            let handle = app.ok_or_else(|| AppError::Internal {
+                message: "Android AppHandle unavailable for ML Kit deletion".to_owned(),
+            })?;
+            let h = handle.clone();
+            let lang = pack_id.to_owned();
+            tokio::task::spawn_blocking(move || crate::android_env::delete_ml_kit_model(&h, &lang))
+                .await
+                .map_err(|e| AppError::Internal {
+                    message: format!("ML Kit deletion worker failed: {e}"),
+                })??;
+        }
+
+        Ok(self.status(app).await)
+    }
+
+    /// Cancels any active AI model or NMT pack download immediately and triggers `.part` rollback.
     pub(crate) async fn cancel_download(&self, app: Option<&AppHandle>) -> AiStatusView {
         let _ = self.download_cancel_tx.send_replace(true);
         self.status(app).await
@@ -444,10 +725,10 @@ impl AiEngine {
     }
 
     /// Immediately cancels all active jobs, hard-unloads ALL native ONNX sessions / Windows
-    /// `llama.cpp` sidecars / Android JNI contexts, clears + shrinks the in-memory `DashMap`
+    /// `llama-server.exe` sidecars / Android JNI contexts, clears + shrinks the in-memory `DashMap`
     /// cache, and deletes ALL AI disk cache files under `<data_dir>/cache/ai/`.
     ///
-    /// Never touches downloaded Tier 2 model weights under `ai_models/`.
+    /// Never touches downloaded Tier 2 weights or NMT packs under `ai_models/`.
     ///
     /// # Errors
     ///
@@ -510,12 +791,6 @@ impl AiEngine {
         .await
     }
 
-    /// Captures the active server-side generation when a translation request begins.
-    ///
-    /// A stale `client_generation` (for example after an OFF -> ON toggle invokes
-    /// `hard_unload_and_purge()`, bumping `job_generation`) must not reject a fresh request.
-    /// In-flight cancellation still triggers whenever `self.job_generation` advances *after*
-    /// this generation snapshot is captured.
     fn capture_request_generation(&self, _client_generation: Option<u64>) -> u64 {
         self.job_generation.load(Ordering::Acquire)
     }
@@ -611,8 +886,9 @@ impl AiEngine {
                 mode,
                 started,
             )),
-            BackendOutput::Completed(regions) => {
+            BackendOutput::Completed(page_res) => {
                 let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let cacheable = page_res.missing_nmt_packs.is_empty() && page_res.error.is_none();
                 let result = PageAiResultView {
                     page_key,
                     tier_used: effective_tier,
@@ -623,9 +899,13 @@ impl AiEngine {
                     elapsed_ms,
                     image_width: preprocessed.original_width,
                     image_height: preprocessed.original_height,
-                    regions,
+                    regions: page_res.regions,
+                    missing_nmt_packs: page_res.missing_nmt_packs,
+                    error: page_res.error,
                 };
-                self.cache.put(&cache_key, &result).await;
+                if cacheable {
+                    self.cache.put(&cache_key, &result).await;
+                }
                 Ok(result)
             }
         }
@@ -672,6 +952,44 @@ impl AiEngine {
     }
 }
 
+/// Builds an [`AiNmtPackView`] for an Android ML Kit offline language model.
+#[cfg(target_os = "android")]
+pub(crate) fn android_mlkit_pack_view(
+    lang_code: &str,
+    ready: bool,
+    downloading_pack_id: Option<&str>,
+) -> AiNmtPackView {
+    let norm = lang_code.trim().to_ascii_lowercase();
+    let display = match norm.as_str() {
+        "ja" => "Japanese (JA)",
+        "zh" => "Chinese (ZH)",
+        "ko" => "Korean (KO)",
+        "en" => "English (EN)",
+        "vi" => "Vietnamese (VI)",
+        "ru" => "Russian (RU)",
+        "th" => "Thai (TH)",
+        _ => lang_code,
+    };
+    let downloading = downloading_pack_id.is_some_and(|id| id.eq_ignore_ascii_case(&norm));
+    let status = if downloading {
+        AiModelStatus::Downloading
+    } else if ready {
+        AiModelStatus::Ready
+    } else {
+        AiModelStatus::NotDownloaded
+    };
+    AiNmtPackView {
+        id: norm.clone(),
+        display_name: display.to_owned(),
+        source_lang: norm.clone(),
+        target_lang: norm,
+        status,
+        installed_bytes: if ready { MLKIT_MODEL_APPROX_BYTES } else { 0 },
+        required_bytes: MLKIT_MODEL_APPROX_BYTES,
+        ready,
+    }
+}
+
 struct ActiveJobGuard<'a>(&'a AtomicU32);
 
 impl Drop for ActiveJobGuard<'_> {
@@ -709,6 +1027,8 @@ fn cancelled_result(
         image_width: 0,
         image_height: 0,
         regions: Vec::new(),
+        missing_nmt_packs: Vec::new(),
+        error: None,
     }
 }
 
@@ -757,14 +1077,12 @@ mod tests {
     use super::*;
 
     fn synthetic_manga_page_png() -> Vec<u8> {
-        // Dark gray panel background with one bright white speech bubble containing dark text strokes.
         let mut img = ImageBuffer::from_pixel(400, 600, Rgb([60_u8, 60, 60]));
         for y in 80..220 {
             for x in 180..360 {
                 img.put_pixel(x, y, Rgb([252_u8, 252, 252]));
             }
         }
-        // Dark ink strokes inside the bubble so speech-bubble filter distinguishes it from blank margin.
         for y in 110..190 {
             if y % 6 == 0 {
                 for x in 210..330 {
@@ -799,7 +1117,6 @@ mod tests {
         assert!(!status.tier2_ready, "Tier 2 not downloaded yet");
         assert!(!status.loaded_in_memory, "idle engine uses zero model RAM");
 
-        // Selecting Tier 2 before download must return an explicit NotFound error.
         let switch_err = engine
             .set_tier(None, TranslationModelTier::Qwen3Vl2B)
             .await
@@ -827,10 +1144,9 @@ mod tests {
         assert!(!res.from_cache, "first run computes fresh");
         assert!(
             !res.regions.is_empty(),
-            "synthetic speech bubble must be detected by Tier 1 fallback"
+            "synthetic speech bubble must be detected by Tier 1"
         );
 
-        // Second identical request hits cache immediately.
         let cached = engine
             .infer_raw_bytes(
                 None,
@@ -845,7 +1161,6 @@ mod tests {
             .expect("cached lookup succeeds");
         assert!(cached.from_cache, "second request served from cache");
 
-        // Cancelling jobs bumps generation so stale requests abort immediately.
         let gen1 = engine.cancel_jobs(None).await;
         assert!(gen1 > gen0, "generation monotonically increases");
         let stale = engine
@@ -862,7 +1177,6 @@ mod tests {
             .expect("stale job returns cancelled result cleanly");
         assert!(stale.cancelled, "stale generation aborts immediately");
 
-        // Hard-unload & purge clears RAM + disk cache under <data_dir>/cache/ai/.
         let after_purge = engine
             .hard_unload_and_purge(None)
             .await
@@ -890,8 +1204,6 @@ mod tests {
         let engine = AiEngine::new(&root, TranslationModelTier::Lite);
         let stale_client_gen = engine.job_generation.load(Ordering::Acquire);
 
-        // Simulate OFF -> ON toggle calling hard_unload_and_purge (even multiple times),
-        // advancing server job_generation ahead of the client's cached counter.
         let _ = engine
             .hard_unload_and_purge(None)
             .await
@@ -934,7 +1246,6 @@ mod tests {
             "detected speech bubble must be returned after OFF -> ON toggle"
         );
 
-        // If generation advances *after* request start, in-flight cancellation still triggers.
         let _ = engine.cancel_jobs(None).await;
         let cancelled = engine
             .infer_raw_bytes(

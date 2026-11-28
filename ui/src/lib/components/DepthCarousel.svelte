@@ -313,6 +313,8 @@
   }
 
   let measureRafId: number | null = null;
+  let lastMeasuredW = 0;
+  let lastMeasuredH = 0;
 
   function updateStageMetrics(widthOverride?: number, heightOverride?: number) {
     if (!stageEl) return;
@@ -326,6 +328,11 @@
       h = rect.height;
     }
     if (w <= 0 || h <= 0) return;
+    if (Math.abs(w - lastMeasuredW) < 2 && Math.abs(h - lastMeasuredH) < 2) {
+      return;
+    }
+    lastMeasuredW = w;
+    lastMeasuredH = h;
     stageScale = computeStageScale(w, h);
     const cardW = Math.round(260 * stageScale);
     const cardH = Math.round(390 * stageScale);
@@ -673,19 +680,21 @@
 
   onMount(() => {
     updateStageMetrics();
-    measureRafId = requestAnimationFrame(() => {
-      measureRafId = null;
-      updateStageMetrics();
-    });
 
     if (stageEl && typeof ResizeObserver !== "undefined") {
       resizeObserver = new ResizeObserver((entries) => {
         const entry = entries[0];
-        if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
-          updateStageMetrics(entry.contentRect.width, entry.contentRect.height);
-        } else {
-          updateStageMetrics();
-        }
+        const nextW = entry?.contentRect.width ?? 0;
+        const nextH = entry?.contentRect.height ?? 0;
+        if (measureRafId !== null) cancelAnimationFrame(measureRafId);
+        measureRafId = requestAnimationFrame(() => {
+          measureRafId = null;
+          if (nextW > 0 && nextH > 0) {
+            updateStageMetrics(nextW, nextH);
+          } else {
+            updateStageMetrics();
+          }
+        });
       });
       resizeObserver.observe(stageEl);
     }
@@ -805,11 +814,15 @@
             class="depth-card-frame card-contain relative h-full w-full cursor-pointer overflow-hidden rounded-2xl border text-left"
           >
             {#if item.cover && !failedCovers[item.id]}
+              {@const circDist = Math.min(
+                Math.abs(idx - activeIndex),
+                items.length - Math.abs(idx - activeIndex)
+              )}
               <img
                 src={imgProxyUrl(item.cover)}
                 alt={item.title}
                 decoding="async"
-                loading="eager"
+                loading={circDist <= 2 ? "eager" : "lazy"}
                 draggable="false"
                 onerror={() => {
                   failedCovers = { ...failedCovers, [item.id]: true };
@@ -992,16 +1005,11 @@
     border-color: rgba(255, 255, 255, 0.14);
     box-shadow: var(--shadow-md);
     background-color: var(--surface);
-    transition:
-      border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1)),
-      box-shadow var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
+    transition: border-color var(--dur-fast, 140ms) var(--ease-out, cubic-bezier(0.2, 0, 0, 1));
   }
 
   .depth-card[data-active="true"] .depth-card-frame {
     border-color: var(--accent);
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent),
-      var(--shadow-lg);
   }
 
   .depth-active-badges {

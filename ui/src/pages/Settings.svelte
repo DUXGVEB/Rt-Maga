@@ -90,8 +90,9 @@
   import { aiTranslateStore } from "../lib/stores/aiTranslate.svelte";
   import { appReleaseStore } from "../lib/stores/appRelease.svelte";
   import { deviceEnv } from "../lib/stores/deviceEnv.svelte";
+  import { heroTransitionStore } from "../lib/stores/heroTransition.svelte";
   import { notificationsStore } from "../lib/stores/notifications.svelte";
-  import { router } from "../lib/stores/router.svelte";
+  import { router, type SettingsSubTarget } from "../lib/stores/router.svelte";
   import { settingsStore } from "../lib/stores/settings.svelte";
   import { toasts } from "../lib/stores/toast.svelte";
   import { updatesStore } from "../lib/stores/updates.svelte";
@@ -131,7 +132,7 @@
     subTarget,
   }: {
     focusSection?: SettingsSection;
-    subTarget?: "supplemental" | "feedback";
+    subTarget?: SettingsSubTarget;
   } = $props();
 
   type SettingsTabKey =
@@ -309,6 +310,10 @@
     } else if (sub === "feedback") {
       mapped = "system";
       anchorId = "settings-feedback";
+    } else if (sub === "hidden") {
+      mapped = "storage";
+      storageSubTab = "hidden";
+      anchorId = "settings-cache";
     }
     activeTab = mapped;
     mobileScreen = mapped;
@@ -400,7 +405,7 @@
       tab: "accessibility",
       title: t.settingsTabAccessibility,
       subtitle: accessibilitySummaryText,
-      keywords: `${t.settingsTabAccessibility} ${t.a11yOneHandedTitle} ${t.a11yBubbleZoomTitle} ${t.a11yAiTranslateTitle} ${t.a11yModelSectionTitle} ${t.a11yModelLiteTitle} ${t.a11yModelTier2Title} accessibility one handed left right bubble zoom ai translate model qwen lite tro nang mot tay phong to khung thoai dich`,
+      keywords: `${t.settingsTabAccessibility} ${t.a11yOneHandedTitle} ${t.a11yBubbleZoomTitle} ${t.a11yAiTranslateTitle} ${t.a11yTargetLangTitle} ${t.a11yNmtPacksTitle} ${t.a11yModelSectionTitle} ${t.a11yModelLiteTitle} ${t.a11yModelTier2Title} accessibility one handed left right bubble zoom ai translate model qwen lite language pack tro nang mot tay phong to khung thoai dich ngon ngu`,
     },
     {
       id: "network",
@@ -531,7 +536,7 @@
   );
 
   const accessibilitySummaryText = $derived(
-    `${oneHandedLabel} · ${activeAiTierLabel}`
+    deviceEnv.isMobile ? `${oneHandedLabel} · ${activeAiTierLabel}` : activeAiTierLabel
   );
 
   const networkSummaryText = $derived.by(() => {
@@ -729,6 +734,9 @@
     resettingSection = section;
     try {
       await settingsStore.resetSection(section);
+      if (section === "accessibility") {
+        await aiTranslateStore.refreshStatus();
+      }
     } finally {
       resettingSection = null;
     }
@@ -739,6 +747,7 @@
     resettingAll = true;
     try {
       await settingsStore.resetAll();
+      await aiTranslateStore.refreshStatus();
       showResetAllModal = false;
     } finally {
       resettingAll = false;
@@ -788,6 +797,15 @@
     } finally {
       clearingScopeKey = null;
     }
+  }
+
+  function openHiddenManga(item: HiddenMangaView, triggerEl?: HTMLElement | null) {
+    const coverEl = triggerEl?.querySelector<HTMLElement>("[data-hidden-cover]") ?? null;
+    if (coverEl && item.coverToken) {
+      heroTransitionStore.captureFromElement(coverEl, item.coverToken, item.id);
+    }
+    router.stampSettingsLocation("cache", "hidden");
+    router.goManga(item.id);
   }
 
   async function unhideManga(item: HiddenMangaView) {
@@ -2648,43 +2666,45 @@
               </button>
             </div>
 
-            <!-- 1. One-Handed Mode Segmented 3D Selector -->
-            <div class="flex flex-col gap-2">
-              <div class="flex items-center gap-1.5 text-xs font-semibold">
-                <Hand size={14} style="color: var(--accent);" />
-                <span>{t.a11yOneHandedTitle}</span>
+            <!-- 1. One-Handed Mode Segmented 3D Selector (Mobile / narrow screens only) -->
+            {#if deviceEnv.isMobile}
+              <div class="flex flex-col gap-2">
+                <div class="flex items-center gap-1.5 text-xs font-semibold">
+                  <Hand size={14} style="color: var(--accent);" />
+                  <span>{t.a11yOneHandedTitle}</span>
+                </div>
+                <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label={t.a11yOneHandedTitle}>
+                  {#each [
+                    ["left", t.a11yOneHandedLeft],
+                    ["right", t.a11yOneHandedRight],
+                    ["default", t.a11yOneHandedDefault],
+                  ] as [mode, label] (mode)}
+                    {@const active = s.accessibility.oneHandedMode === mode}
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onclick={() => patch((d) => (d.accessibility.oneHandedMode = mode as OneHandedMode))}
+                      class="btn-3d gpu-press flex min-h-[44px] flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-xs font-semibold"
+                      class:btn-3d-accent={active}
+                      class:btn-3d-surface={!active}
+                      style="border-color: {active ? 'var(--accent)' : 'var(--border)'}; background-color: {active
+                        ? 'var(--accent-soft)'
+                        : 'var(--surface-subtle)'}; color: {active ? 'var(--accent)' : 'var(--text)'};"
+                    >
+                      {#if mode === "left"}
+                        <PanelLeft size={15} />
+                      {:else if mode === "right"}
+                        <PanelRight size={15} />
+                      {:else}
+                        <Smartphone size={15} />
+                      {/if}
+                      <span class="truncate">{label}</span>
+                    </button>
+                  {/each}
+                </div>
               </div>
-              <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label={t.a11yOneHandedTitle}>
-                {#each [
-                  ["left", t.a11yOneHandedLeft],
-                  ["right", t.a11yOneHandedRight],
-                  ["default", t.a11yOneHandedDefault],
-                ] as [mode, label] (mode)}
-                  {@const active = s.accessibility.oneHandedMode === mode}
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    onclick={() => patch((d) => (d.accessibility.oneHandedMode = mode as OneHandedMode))}
-                    class="btn-3d gpu-press flex min-h-[44px] flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-xs font-semibold"
-                    class:btn-3d-accent={active}
-                    class:btn-3d-surface={!active}
-                    style="border-color: {active ? 'var(--accent)' : 'var(--border)'}; background-color: {active
-                      ? 'var(--accent-soft)'
-                      : 'var(--surface-subtle)'}; color: {active ? 'var(--accent)' : 'var(--text)'};"
-                  >
-                    {#if mode === "left"}
-                      <PanelLeft size={15} />
-                    {:else if mode === "right"}
-                      <PanelRight size={15} />
-                    {:else}
-                      <Smartphone size={15} />
-                    {/if}
-                    <span class="truncate">{label}</span>
-                  </button>
-                {/each}
-              </div>
-            </div>
+            {/if}
 
             <!-- 2. Bubble Auto-Zoom Toggle -->
             <div
@@ -2724,6 +2744,29 @@
                 ariaLabel={t.a11yAiTranslateTitle}
                 onchange={(checked) => aiTranslateStore.requestToggleTranslation(checked)}
               />
+            </div>
+
+            <!-- 4. Target Translation Language Picker -->
+            <div class="flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5" style="border-color: var(--border); background-color: var(--surface-subtle);">
+              <label for="a11y-target-lang" class="flex min-w-0 items-center gap-2 text-xs font-semibold sm:text-sm">
+                <Globe size={15} class="shrink-0" style="color: var(--accent);" />
+                <span class="truncate">{t.a11yTargetLangTitle}</span>
+              </label>
+              <select
+                id="a11y-target-lang"
+                value={s.accessibility.translationTargetLang ?? ""}
+                onchange={(e) => {
+                  const val = (e.currentTarget as HTMLSelectElement).value;
+                  aiTranslateStore.setTargetLanguage(val ? (val as Language) : null);
+                }}
+                class="max-w-[55%] rounded-lg border px-2.5 py-1.5 text-xs font-medium outline-none"
+                style="border-color: var(--border); background-color: var(--surface); color: var(--text);"
+              >
+                <option value="">{t.a11yTargetLangAuto} ({activeLanguageLabel})</option>
+                {#each LANGUAGE_OPTIONS as opt (opt.code)}
+                  <option value={opt.code}>{opt.label}</option>
+                {/each}
+              </select>
             </div>
           </section>
 
@@ -3095,8 +3138,13 @@
                       out:itemExit|local
                       class="list-row"
                     >
-                      <div class="flex min-w-0 items-center gap-2.5">
+                      <button
+                        type="button"
+                        onclick={(e) => openHiddenManga(item, e.currentTarget)}
+                        class="gpu-press group flex min-w-0 flex-1 items-center gap-2.5 rounded-lg py-0.5 text-left"
+                      >
                         <div
+                          data-hidden-cover
                           class="h-11 w-8 shrink-0 overflow-hidden rounded-md"
                           style="background-color: var(--surface-hover);"
                         >
@@ -3109,13 +3157,13 @@
                             />
                           {/if}
                         </div>
-                        <div class="min-w-0">
-                          <div class="truncate text-xs font-semibold">{item.title}</div>
+                        <div class="min-w-0 flex-1">
+                          <div class="truncate text-xs font-semibold group-hover:underline">{item.title}</div>
                           <div class="truncate text-[11px]" style="color: var(--text-muted);">
                             {item.site}{item.latestChapterName ? ` · ${item.latestChapterName}` : ""}
                           </div>
                         </div>
-                      </div>
+                      </button>
 
                       <div class="flex shrink-0 items-center gap-1.5">
                         <button

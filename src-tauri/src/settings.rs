@@ -674,6 +674,8 @@ pub(crate) struct AccessibilitySettings {
     pub ai_translation_overlay: bool,
     /// Active AI translation engine tier (`lite` or `qwen3_vl_2b`).
     pub translation_model_tier: TranslationModelTier,
+    /// Optional explicit AI translation target language (`None` follows app UI language).
+    pub translation_target_lang: Option<String>,
     /// Tracks whether the user has acknowledged the first-time AI feature disclosure prompt.
     pub first_ai_prompt_seen: bool,
 }
@@ -739,6 +741,14 @@ impl Settings {
                 Some(trimmed)
             }
         });
+        self.accessibility.translation_target_lang =
+            self.accessibility.translation_target_lang.and_then(|raw| {
+                let norm = raw.trim().to_ascii_lowercase();
+                match norm.as_str() {
+                    "en" | "vi" | "zh" | "ja" | "ru" | "ko" | "th" => Some(norm),
+                    _ => None,
+                }
+            });
 
         self.reader = self.reader.sanitized();
 
@@ -855,6 +865,7 @@ impl Settings {
                 "bubbleAutoZoom": self.accessibility.bubble_auto_zoom,
                 "aiTranslationOverlay": self.accessibility.ai_translation_overlay,
                 "translationModelTier": self.accessibility.translation_model_tier,
+                "translationTargetLang": self.accessibility.translation_target_lang,
                 "firstAiPromptSeen": self.accessibility.first_ai_prompt_seen,
             },
         })

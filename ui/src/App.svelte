@@ -30,6 +30,7 @@
   import { aiTranslateStore } from "./lib/stores/aiTranslate.svelte";
   import { appReleaseStore } from "./lib/stores/appRelease.svelte";
   import { deviceEnv } from "./lib/stores/deviceEnv.svelte";
+  import { heroTransitionStore } from "./lib/stores/heroTransition.svelte";
   import { notificationsStore } from "./lib/stores/notifications.svelte";
   import { randomMangaStore } from "./lib/stores/randomManga.svelte";
   import { router } from "./lib/stores/router.svelte";
@@ -120,7 +121,9 @@
   const t = $derived(settingsStore.t);
   const activeScreen = $derived<FloatingScreenKey>(router.current.name);
   const navOrder = $derived(normalizeNavOrder(settingsStore.value.ui.navOrder));
-  const oneHandedMode = $derived(settingsStore.value.accessibility.oneHandedMode);
+  const oneHandedMode = $derived(
+    deviceEnv.isMobile ? settingsStore.value.accessibility.oneHandedMode : "default"
+  );
   const routeViewKey = $derived(() => {
     const r = router.current;
     if (r.name === "manga") return `manga:${r.id}`;
@@ -317,7 +320,14 @@
         </div>
       {:else}
         {#key routeViewKey()}
-          <div in:viewReveal|local={{ duration: 160, y: 6 }} class="min-h-full w-full">
+          <div
+            data-route-shell
+            in:viewReveal|local={{
+              duration: router.current.name === "manga" && heroTransitionStore.active !== null ? 120 : 155,
+              y: router.current.name === "manga" && heroTransitionStore.active !== null ? 0 : 6,
+            }}
+            class="min-h-full w-full"
+          >
             {#if router.current.name === "home"}
               <Home />
             {:else if router.current.name === "sources"}
@@ -357,16 +367,17 @@
     <nav
       aria-label={t.navOrderSection}
       class="glass-chrome fixed right-0 bottom-0 left-0 z-20 flex items-center border-t pt-1.5 md:hidden {oneHandedMode === 'left'
-        ? 'justify-start pr-8 pl-1.5'
+        ? 'justify-start'
         : oneHandedMode === 'right'
-          ? 'justify-end pr-1.5 pl-8'
-          : 'justify-around px-1.5'}"
-      style="padding-bottom: max(0.45rem, var(--safe-bottom)); padding-left: {oneHandedMode === 'right'
-        ? 'max(2rem, var(--safe-left))'
-        : 'max(0.45rem, var(--safe-left))'}; padding-right: {oneHandedMode === 'left'
-        ? 'max(2rem, var(--safe-right))'
-        : 'max(0.45rem, var(--safe-right))'}; border-color: var(--border);"
+          ? 'justify-end'
+          : 'justify-center'}"
+      style="padding-bottom: max(0.45rem, var(--safe-bottom)); padding-left: max(0.45rem, var(--safe-left)); padding-right: max(0.45rem, var(--safe-right)); border-color: var(--border);"
     >
+      <div
+        class="flex items-center transition-[width] duration-200 {oneHandedMode === 'default'
+          ? 'w-full justify-around'
+          : 'w-[78%] max-w-[330px] justify-between gap-0.5'}"
+      >
       {#each navOrder as dest (dest)}
         {#if dest === "home"}
           {@const active = router.current.name === "home" || router.current.name === "manga"}
@@ -465,6 +476,7 @@
           </button>
         {/if}
       {/each}
+      </div>
     </nav>
   {/if}
 

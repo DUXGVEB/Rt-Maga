@@ -631,6 +631,14 @@ export const api = {
     }
     return invoke<AiStatusView>("ai_download_tier2", { onProgress: channel });
   },
+  aiDownloadNmtPacks: (packIds: string[], onProgress?: (ev: AiDownloadProgressEvent) => void) => {
+    const channel = new Channel<AiDownloadProgressEvent>();
+    if (onProgress) {
+      channel.onmessage = onProgress;
+    }
+    return invoke<AiStatusView>("ai_download_nmt_packs", { packIds, onProgress: channel });
+  },
+  aiDeleteNmtPack: (packId: string) => invoke<AiStatusView>("ai_delete_nmt_pack", { packId }),
   aiCancelDownload: () => invoke<AiStatusView>("ai_cancel_download"),
   aiDeleteTier2: () => invoke<AiStatusView>("ai_delete_tier2"),
   aiTranslatePage: (params: {

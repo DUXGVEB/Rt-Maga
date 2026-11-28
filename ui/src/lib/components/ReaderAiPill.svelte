@@ -1,27 +1,36 @@
 <script lang="ts">
   import {
+    AlertCircle,
     Download,
     ExternalLink,
+    Eye,
+    EyeOff,
+    Globe,
     Languages,
     Loader2,
+    RotateCw,
     ScanSearch,
     Sparkles,
     X,
   } from "lucide-svelte";
+  import { LANGUAGE_OPTIONS } from "../i18n";
   import { popoverPop } from "../motion";
   import { aiTranslateStore } from "../stores/aiTranslate.svelte";
+  import { deviceEnv } from "../stores/deviceEnv.svelte";
   import { settingsStore } from "../stores/settings.svelte";
-  import type { OneHandedMode } from "../types";
+  import type { Language, OneHandedMode } from "../types";
   import SquishSwitch from "./SquishSwitch.svelte";
 
   let {
     oneHandedMode = "default",
     toolbarVisible = false,
+    activePageToken = "",
     open = $bindable(false),
     onOpenAccessibilitySettings,
   }: {
     oneHandedMode?: OneHandedMode;
     toolbarVisible?: boolean;
+    activePageToken?: string;
     open?: boolean;
     onOpenAccessibilitySettings?: () => void;
   } = $props();
@@ -33,13 +42,21 @@
   const bubbleOn = $derived(a11y.bubbleAutoZoom);
   const translateOn = $derived(a11y.aiTranslationOverlay);
   const anyActive = $derived(bubbleOn || translateOn);
+  const peekOriginal = $derived(aiTranslateStore.peekOriginal);
   const activeTier = $derived(aiTranslateStore.activeTier);
+  const tier2Supported = $derived(aiTranslateStore.tier2Supported);
   const tier2Ready = $derived(aiTranslateStore.tier2Ready);
   const downloading = $derived(aiTranslateStore.downloading);
   const progress = $derived(aiTranslateStore.downloadProgress);
   const busyWorking = $derived(aiTranslateStore.isTranslating);
+  const pageError = $derived(anyActive ? aiTranslateStore.getPageError(activePageToken) : null);
+  const missingPacks = $derived(
+    translateOn ? aiTranslateStore.getPageMissingPacks(activePageToken) : []
+  );
 
-  const dockEdge = $derived<"left" | "right">(oneHandedMode === "left" ? "left" : "right");
+  const dockEdge = $derived<"left" | "right">(
+    deviceEnv.isMobile && oneHandedMode === "left" ? "left" : "right"
+  );
   const bottomOffsetCss = $derived(
     toolbarVisible
       ? "calc(4.65rem + var(--safe-bottom))"
@@ -50,7 +67,9 @@
       ? "max(0.85rem, var(--safe-left), var(--gesture-left))"
       : "max(0.85rem, var(--safe-right), var(--gesture-right))"
   );
-  const pillOpacity = $derived(open || hovered || busyWorking || anyActive ? 1 : 0.65);
+  const pillOpacity = $derived(
+    open || hovered || busyWorking || downloading || anyActive || Boolean(pageError) ? 1 : 0.65
+  );
 
   function stopEvt(e: Event) {
     e.stopPropagation();
@@ -66,6 +85,7 @@
 
   async function handleQuickTierSwitch() {
     if (activeTier === "lite") {
+      if (!tier2Supported) return;
       if (tier2Ready) {
         await aiTranslateStore.setTier("qwen3_vl_2b");
       } else if (!downloading) {
@@ -167,6 +187,57 @@
         />
       </div>
 
+      {#if translateOn}
+        <!-- Peek Original Toggle -->
+        <div
+          class="flex items-center justify-between gap-2 rounded-xl border px-2.5 py-1.5"
+          style="border-color: {peekOriginal
+            ? 'color-mix(in srgb, var(--accent) 45%, var(--border))'
+            : 'var(--border)'}; background-color: var(--surface-subtle);"
+        >
+          <div class="flex min-w-0 items-center gap-1.5 font-medium">
+            {#if peekOriginal}
+              <EyeOff size={13} style="color: var(--accent);" />
+            {:else}
+              <Eye size={13} style="color: var(--text-muted);" />
+            {/if}
+            <span class="truncate">{t.a11yPeekOriginalLabel}</span>
+          </div>
+          <SquishSwitch
+            size="sm"
+            checked={peekOriginal}
+            ariaLabel={t.a11yPeekOriginalLabel}
+            onchange={(checked) => aiTranslateStore.setPeekOriginal(checked)}
+          />
+        </div>
+      {/if}
+
+      <!-- Target Language Compact Select -->
+      <div
+        class="flex items-center justify-between gap-2 rounded-xl border px-2.5 py-1.5"
+        style="border-color: var(--border); background-color: var(--surface-subtle);"
+      >
+        <span class="inline-flex shrink-0 items-center gap-1.5 font-medium" style="color: var(--text-muted);">
+          <Globe size={13} style="color: var(--accent);" />
+          <span class="truncate">{t.a11yTargetLangTitle}</span>
+        </span>
+        <select
+          aria-label={t.a11yTargetLangTitle}
+          value={a11y.translationTargetLang ?? ""}
+          onchange={(e) => {
+            const val = (e.currentTarget as HTMLSelectElement).value;
+            aiTranslateStore.setTargetLanguage(val ? (val as Language) : null);
+          }}
+          class="max-w-[54%] rounded-md border px-1.5 py-0.5 text-[11px] font-medium outline-none"
+          style="border-color: var(--border); background-color: var(--surface); color: var(--text);"
+        >
+          <option value="">{t.a11yTargetLangAuto}</option>
+          {#each LANGUAGE_OPTIONS as opt (opt.code)}
+            <option value={opt.code}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+
       <!-- Active Tier Badge + 1-Tap Switch -->
       <div
         class="flex items-center justify-between gap-2 border-t pt-2"
@@ -187,7 +258,7 @@
             <Loader2 size={11} class="animate-spin" />
             <span>{Math.round(progress?.percent ?? 0)}%</span>
           </span>
-        {:else}
+        {:else if tier2Supported || activeTier !== "lite"}
           <button
             type="button"
             disabled={aiTranslateStore.busyAction !== null}
@@ -209,29 +280,107 @@
     </div>
   {/if}
 
-  <!-- Compact 34px (32–36dp) 3D Floating AI Pill -->
-  <button
-    type="button"
-    onclick={togglePopover}
-    onpointerenter={() => (hovered = true)}
-    onpointerleave={() => (hovered = false)}
-    title={t.a11yAiToolsTitle}
-    aria-label={t.a11yAiToolsTitle}
-    aria-expanded={open}
-    class="pill-3d btn-3d gpu-press ai-pill-btn relative flex h-[34px] w-[34px] touch-manipulation items-center justify-center rounded-full border select-none"
-    style="opacity: {pillOpacity}; border-color: {anyActive || open
-      ? 'var(--accent)'
-      : 'color-mix(in srgb, var(--border-strong) 85%, transparent)'}; background-color: {anyActive
-      ? 'var(--accent)'
-      : 'var(--surface-glass-solid, var(--surface))'}; color: {anyActive
-      ? 'var(--accent-fg)'
-      : 'var(--text)'};"
-  >
-    {#if busyWorking}
-      <span class="ai-pill-ring pointer-events-none absolute -inset-1 rounded-full" aria-hidden="true"></span>
+  <!-- Pill Row: Status Chip + Quick Peek Button + 34px AI Pill -->
+  <div class="flex items-center gap-1.5 {dockEdge === 'left' ? 'flex-row-reverse' : 'flex-row'}">
+    {#if downloading}
+      <div
+        class="glass-chrome flex h-[30px] items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold tabular-nums"
+        style="border-color: var(--border); color: var(--accent);"
+      >
+        <Loader2 size={12} class="animate-spin" />
+        <span>{Math.max(0, Math.min(100, Math.round(progress?.percent ?? 0)))}%</span>
+      </div>
+    {:else if busyWorking}
+      <div
+        class="glass-chrome flex h-[30px] max-w-[160px] items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium"
+        style="border-color: var(--border); color: var(--text);"
+      >
+        <Loader2 size={12} class="shrink-0 animate-spin" style="color: var(--accent);" />
+        <span class="truncate">
+          {translateOn ? t.a11yTranslatingStatus : t.a11yDetectingBubblesStatus}
+        </span>
+      </div>
+    {:else if missingPacks.length > 0}
+      <button
+        type="button"
+        onclick={() => aiTranslateStore.openMissingNmtPromptForPage(activePageToken)}
+        class="glass-chrome gpu-press flex h-[30px] items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold"
+        style="border-color: var(--accent); color: var(--accent);"
+      >
+        <Download size={12} />
+        <span>{t.a11yMissingPackStatus}</span>
+      </button>
+    {:else if pageError}
+      <div
+        class="glass-chrome flex h-[30px] max-w-[190px] items-center gap-1 rounded-full border px-2.5 text-[11px] font-semibold"
+        style="border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); color: var(--danger);"
+        title={pageError}
+      >
+        <AlertCircle size={12} class="shrink-0" />
+        <span class="truncate">{t.a11yErrorStatus}</span>
+        {#if activePageToken}
+          <button
+            type="button"
+            onclick={() => void aiTranslateStore.retryPage(activePageToken, !translateOn)}
+            class="gpu-press ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+            style="background-color: color-mix(in srgb, var(--danger) 14%, transparent);"
+            title={t.a11yRetryTranslateBtn}
+            aria-label={t.a11yRetryTranslateBtn}
+          >
+            <RotateCw size={11} />
+          </button>
+        {/if}
+      </div>
     {/if}
-    <Sparkles size={15} strokeWidth={2.1} />
-  </button>
+
+    {#if translateOn}
+      <button
+        type="button"
+        onclick={() => aiTranslateStore.togglePeekOriginal()}
+        title={t.a11yPeekOriginalLabel}
+        aria-label={t.a11yPeekOriginalLabel}
+        aria-pressed={peekOriginal}
+        class="pill-3d btn-3d gpu-press flex h-[30px] w-[30px] touch-manipulation items-center justify-center rounded-full border select-none"
+        style="border-color: {peekOriginal
+          ? 'var(--accent)'
+          : 'color-mix(in srgb, var(--border-strong) 85%, transparent)'}; background-color: {peekOriginal
+          ? 'var(--accent-soft)'
+          : 'var(--surface-glass-solid, var(--surface))'}; color: {peekOriginal
+          ? 'var(--accent)'
+          : 'var(--text)'};"
+      >
+        {#if peekOriginal}
+          <EyeOff size={13} />
+        {:else}
+          <Eye size={13} />
+        {/if}
+      </button>
+    {/if}
+
+    <!-- Compact 34px (32–36dp) 3D Floating AI Pill -->
+    <button
+      type="button"
+      onclick={togglePopover}
+      onpointerenter={() => (hovered = true)}
+      onpointerleave={() => (hovered = false)}
+      title={t.a11yAiToolsTitle}
+      aria-label={t.a11yAiToolsTitle}
+      aria-expanded={open}
+      class="pill-3d btn-3d gpu-press ai-pill-btn relative flex h-[34px] w-[34px] touch-manipulation items-center justify-center rounded-full border select-none"
+      style="opacity: {pillOpacity}; border-color: {anyActive || open
+        ? 'var(--accent)'
+        : 'color-mix(in srgb, var(--border-strong) 85%, transparent)'}; background-color: {anyActive
+        ? 'var(--accent)'
+        : 'var(--surface-glass-solid, var(--surface))'}; color: {anyActive
+        ? 'var(--accent-fg)'
+        : 'var(--text)'};"
+    >
+      {#if busyWorking}
+        <span class="ai-pill-ring pointer-events-none absolute -inset-1 rounded-full" aria-hidden="true"></span>
+      {/if}
+      <Sparkles size={15} strokeWidth={2.1} />
+    </button>
+  </div>
 </div>
 
 <style>

@@ -100,6 +100,7 @@ export const DEFAULT_SETTINGS: Settings = {
     bubbleAutoZoom: false,
     aiTranslationOverlay: false,
     translationModelTier: "lite",
+    translationTargetLang: null,
     firstAiPromptSeen: false,
   },
   updates: {

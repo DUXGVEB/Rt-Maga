@@ -208,6 +208,8 @@ mod tests {
                 bbox: [100, 100, 300, 220],
                 confidence: 0.95,
             }],
+            missing_nmt_packs: Vec::new(),
+            error: None,
         }
     }
 

@@ -131,7 +131,7 @@ pub(crate) const WIN_LLAMA_CPU: ModelAssetSpec = ModelAssetSpec {
 
 /// Verified quantized OPUS-MT ONNX translation pack: Japanese -> English (`Xenova/opus-mt-ja-en`).
 #[cfg(any(not(target_os = "android"), test))]
-pub(crate) const OPUS_MT_JA_EN: [ModelAssetSpec; 4] = [
+pub(crate) const OPUS_MT_JA_EN: [ModelAssetSpec; 5] = [
     ModelAssetSpec {
         id: "opus_mt_ja_en_encoder",
         rel_path: "nmt/ja-en/encoder_model_quantized.onnx",
@@ -143,10 +143,19 @@ pub(crate) const OPUS_MT_JA_EN: [ModelAssetSpec; 4] = [
     },
     ModelAssetSpec {
         id: "opus_mt_ja_en_decoder",
-        rel_path: "nmt/ja-en/decoder_model_merged_quantized.onnx",
-        url: "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/onnx/decoder_model_merged_quantized.onnx",
-        expected_bytes: 58_001_744,
-        sha256_hex: "b304d0014e4e1575437b6af95467b6cb54405d923732d8359113bd6dbbee93c0",
+        rel_path: "nmt/ja-en/decoder_model_quantized.onnx",
+        url: "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/onnx/decoder_model_quantized.onnx",
+        expected_bytes: 57_631_042,
+        sha256_hex: "ec639efdbb8dd9a5c458ab3aeeaee34402b21200eb9c24a95a32a16f0bb22d66",
+        kind: AiAssetKind::WindowsNmtPack,
+        archive: AiArchiveFormat::RawFile,
+    },
+    ModelAssetSpec {
+        id: "opus_mt_ja_en_source_spm",
+        rel_path: "nmt/ja-en/source.spm",
+        url: "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/source.spm",
+        expected_bytes: 781_853,
+        sha256_hex: "d0b5c3b10b5959f056ff2c86e2f2356129242ff1fc72d3a4a34d6a8c0eee4e57",
         kind: AiAssetKind::WindowsNmtPack,
         archive: AiArchiveFormat::RawFile,
     },
@@ -160,11 +169,11 @@ pub(crate) const OPUS_MT_JA_EN: [ModelAssetSpec; 4] = [
         archive: AiArchiveFormat::RawFile,
     },
     ModelAssetSpec {
-        id: "opus_mt_ja_en_gen_cfg",
-        rel_path: "nmt/ja-en/generation_config.json",
-        url: "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/generation_config.json",
-        expected_bytes: 293,
-        sha256_hex: "ed1bc2193210ca2a6dc9c144ea789936fed8a27113e01010d8e591f45f238912",
+        id: "opus_mt_ja_en_config",
+        rel_path: "nmt/ja-en/config.json",
+        url: "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/config.json",
+        expected_bytes: 1_376,
+        sha256_hex: "d35476f1d3858883feec67e5a63ddc387452a70fda9c8e26db99c71aa2ad6a34",
         kind: AiAssetKind::WindowsNmtPack,
         archive: AiArchiveFormat::RawFile,
     },
@@ -172,7 +181,7 @@ pub(crate) const OPUS_MT_JA_EN: [ModelAssetSpec; 4] = [
 
 /// Verified quantized OPUS-MT ONNX translation pack: English -> Vietnamese (`Xenova/opus-mt-en-vi`).
 #[cfg(any(not(target_os = "android"), test))]
-pub(crate) const OPUS_MT_EN_VI: [ModelAssetSpec; 4] = [
+pub(crate) const OPUS_MT_EN_VI: [ModelAssetSpec; 5] = [
     ModelAssetSpec {
         id: "opus_mt_en_vi_encoder",
         rel_path: "nmt/en-vi/encoder_model_quantized.onnx",
@@ -184,10 +193,19 @@ pub(crate) const OPUS_MT_EN_VI: [ModelAssetSpec; 4] = [
     },
     ModelAssetSpec {
         id: "opus_mt_en_vi_decoder",
-        rel_path: "nmt/en-vi/decoder_model_merged_quantized.onnx",
-        url: "https://huggingface.co/Xenova/opus-mt-en-vi/resolve/main/onnx/decoder_model_merged_quantized.onnx",
-        expected_bytes: 54_373_748,
-        sha256_hex: "1cfc6a84f9c189e6928c9710b281fae3f1f42d4ffbba109e7b4ec8e31ceb06dd",
+        rel_path: "nmt/en-vi/decoder_model_quantized.onnx",
+        url: "https://huggingface.co/Xenova/opus-mt-en-vi/resolve/main/onnx/decoder_model_quantized.onnx",
+        expected_bytes: 54_003_046,
+        sha256_hex: "cde3e02aaca72cfaf2267f6c31c4dcc1b323d769bf90c273f2a1c1d56198ddba",
+        kind: AiAssetKind::WindowsNmtPack,
+        archive: AiArchiveFormat::RawFile,
+    },
+    ModelAssetSpec {
+        id: "opus_mt_en_vi_source_spm",
+        rel_path: "nmt/en-vi/source.spm",
+        url: "https://huggingface.co/Xenova/opus-mt-en-vi/resolve/main/source.spm",
+        expected_bytes: 808_612,
+        sha256_hex: "fdd9ab486ca8ea060967105e30db7d8928729c78a67448711d2dd7c3153b37cd",
         kind: AiAssetKind::WindowsNmtPack,
         archive: AiArchiveFormat::RawFile,
     },
@@ -201,11 +219,11 @@ pub(crate) const OPUS_MT_EN_VI: [ModelAssetSpec; 4] = [
         archive: AiArchiveFormat::RawFile,
     },
     ModelAssetSpec {
-        id: "opus_mt_en_vi_gen_cfg",
-        rel_path: "nmt/en-vi/generation_config.json",
-        url: "https://huggingface.co/Xenova/opus-mt-en-vi/resolve/main/generation_config.json",
-        expected_bytes: 293,
-        sha256_hex: "621eef69f7a1c7eff4bd5c696a113bd773de03e985f0a382b2c2e21002804dd2",
+        id: "opus_mt_en_vi_config",
+        rel_path: "nmt/en-vi/config.json",
+        url: "https://huggingface.co/Xenova/opus-mt-en-vi/resolve/main/config.json",
+        expected_bytes: 1_389,
+        sha256_hex: "0c5ab981c2f5a4878c78522c8a61e3d733f5e3be6b1f83b68bbfb7f00e604637",
         kind: AiAssetKind::WindowsNmtPack,
         archive: AiArchiveFormat::RawFile,
     },
@@ -213,7 +231,7 @@ pub(crate) const OPUS_MT_EN_VI: [ModelAssetSpec; 4] = [
 
 /// Verified quantized OPUS-MT ONNX translation pack: Chinese -> English (`Xenova/opus-mt-zh-en`).
 #[cfg(any(not(target_os = "android"), test))]
-pub(crate) const OPUS_MT_ZH_EN: [ModelAssetSpec; 4] = [
+pub(crate) const OPUS_MT_ZH_EN: [ModelAssetSpec; 5] = [
     ModelAssetSpec {
         id: "opus_mt_zh_en_encoder",
         rel_path: "nmt/zh-en/encoder_model_quantized.onnx",
@@ -225,10 +243,19 @@ pub(crate) const OPUS_MT_ZH_EN: [ModelAssetSpec; 4] = [
     },
     ModelAssetSpec {
         id: "opus_mt_zh_en_decoder",
-        rel_path: "nmt/zh-en/decoder_model_merged_quantized.onnx",
-        url: "https://huggingface.co/Xenova/opus-mt-zh-en/resolve/main/onnx/decoder_model_merged_quantized.onnx",
-        expected_bytes: 60_212_804,
-        sha256_hex: "c6b7f04ff1ba0fbd1bf6852599b4c0cad6fe512d57cd887f44ef36cf705424cb",
+        rel_path: "nmt/zh-en/decoder_model_quantized.onnx",
+        url: "https://huggingface.co/Xenova/opus-mt-zh-en/resolve/main/onnx/decoder_model_quantized.onnx",
+        expected_bytes: 59_842_102,
+        sha256_hex: "debcc3054b9ff9aaed972bd6e251a459abe1e2f1402da1efa63163dc2f46ef73",
+        kind: AiAssetKind::WindowsNmtPack,
+        archive: AiArchiveFormat::RawFile,
+    },
+    ModelAssetSpec {
+        id: "opus_mt_zh_en_source_spm",
+        rel_path: "nmt/zh-en/source.spm",
+        url: "https://huggingface.co/Xenova/opus-mt-zh-en/resolve/main/source.spm",
+        expected_bytes: 804_677,
+        sha256_hex: "e27a3a1b539f4959ec72ea60e453f49156289f95d4e6000b29332efc45616203",
         kind: AiAssetKind::WindowsNmtPack,
         archive: AiArchiveFormat::RawFile,
     },
@@ -242,11 +269,11 @@ pub(crate) const OPUS_MT_ZH_EN: [ModelAssetSpec; 4] = [
         archive: AiArchiveFormat::RawFile,
     },
     ModelAssetSpec {
-        id: "opus_mt_zh_en_gen_cfg",
-        rel_path: "nmt/zh-en/generation_config.json",
-        url: "https://huggingface.co/Xenova/opus-mt-zh-en/resolve/main/generation_config.json",
-        expected_bytes: 293,
-        sha256_hex: "8dc29fef0fe82109f94ef3c2e6ea6bded3215d357b226c34cf7b4630726766c9",
+        id: "opus_mt_zh_en_config",
+        rel_path: "nmt/zh-en/config.json",
+        url: "https://huggingface.co/Xenova/opus-mt-zh-en/resolve/main/config.json",
+        expected_bytes: 1_389,
+        sha256_hex: "293d318fce41dbf04114eac45037bb88a32d7c4ee21011a75e24a8b98ca45ad1",
         kind: AiAssetKind::WindowsNmtPack,
         archive: AiArchiveFormat::RawFile,
     },
@@ -254,7 +281,7 @@ pub(crate) const OPUS_MT_ZH_EN: [ModelAssetSpec; 4] = [
 
 /// Verified quantized OPUS-MT ONNX translation pack: Korean -> English (`Xenova/opus-mt-ko-en`).
 #[cfg(any(not(target_os = "android"), test))]
-pub(crate) const OPUS_MT_KO_EN: [ModelAssetSpec; 4] = [
+pub(crate) const OPUS_MT_KO_EN: [ModelAssetSpec; 5] = [
     ModelAssetSpec {
         id: "opus_mt_ko_en_encoder",
         rel_path: "nmt/ko-en/encoder_model_quantized.onnx",
@@ -266,10 +293,19 @@ pub(crate) const OPUS_MT_KO_EN: [ModelAssetSpec; 4] = [
     },
     ModelAssetSpec {
         id: "opus_mt_ko_en_decoder",
-        rel_path: "nmt/ko-en/decoder_model_merged_quantized.onnx",
-        url: "https://huggingface.co/Xenova/opus-mt-ko-en/resolve/main/onnx/decoder_model_merged_quantized.onnx",
-        expected_bytes: 60_212_803,
-        sha256_hex: "e131732653a6d3cec42a8b65f8844980042b036bdaca931446bc4b3530bc3506",
+        rel_path: "nmt/ko-en/decoder_model_quantized.onnx",
+        url: "https://huggingface.co/Xenova/opus-mt-ko-en/resolve/main/onnx/decoder_model_quantized.onnx",
+        expected_bytes: 59_842_101,
+        sha256_hex: "0c961ea33a62ea84e73c9ec94c0737e65d06b5f73a7d0398b018fbbb7262d929",
+        kind: AiAssetKind::WindowsNmtPack,
+        archive: AiArchiveFormat::RawFile,
+    },
+    ModelAssetSpec {
+        id: "opus_mt_ko_en_source_spm",
+        rel_path: "nmt/ko-en/source.spm",
+        url: "https://huggingface.co/Xenova/opus-mt-ko-en/resolve/main/source.spm",
+        expected_bytes: 841_805,
+        sha256_hex: "c9496f7c2be9aecb84c751ae9f35a875915dde8e3892f652a5c76811ab2a0f49",
         kind: AiAssetKind::WindowsNmtPack,
         archive: AiArchiveFormat::RawFile,
     },
@@ -283,13 +319,57 @@ pub(crate) const OPUS_MT_KO_EN: [ModelAssetSpec; 4] = [
         archive: AiArchiveFormat::RawFile,
     },
     ModelAssetSpec {
-        id: "opus_mt_ko_en_gen_cfg",
-        rel_path: "nmt/ko-en/generation_config.json",
-        url: "https://huggingface.co/Xenova/opus-mt-ko-en/resolve/main/generation_config.json",
-        expected_bytes: 293,
-        sha256_hex: "8dc29fef0fe82109f94ef3c2e6ea6bded3215d357b226c34cf7b4630726766c9",
+        id: "opus_mt_ko_en_config",
+        rel_path: "nmt/ko-en/config.json",
+        url: "https://huggingface.co/Xenova/opus-mt-ko-en/resolve/main/config.json",
+        expected_bytes: 1_389,
+        sha256_hex: "8260080db48141328ae198ede2b25483fa4a6f46dc2859784d6e21c188865e43",
         kind: AiAssetKind::WindowsNmtPack,
         archive: AiArchiveFormat::RawFile,
+    },
+];
+
+/// Descriptor for a selectable Windows OPUS-MT offline translation pack.
+#[cfg(any(not(target_os = "android"), test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpusPackMeta {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub source_lang: &'static str,
+    pub target_lang: &'static str,
+    pub assets: &'static [ModelAssetSpec],
+}
+
+/// All verified offline Windows OPUS-MT translation packs.
+#[cfg(any(not(target_os = "android"), test))]
+pub(crate) const ALL_OPUS_MT_PACKS: [OpusPackMeta; 4] = [
+    OpusPackMeta {
+        id: "ja-en",
+        display_name: "JA → EN",
+        source_lang: "ja",
+        target_lang: "en",
+        assets: &OPUS_MT_JA_EN,
+    },
+    OpusPackMeta {
+        id: "zh-en",
+        display_name: "ZH → EN",
+        source_lang: "zh",
+        target_lang: "en",
+        assets: &OPUS_MT_ZH_EN,
+    },
+    OpusPackMeta {
+        id: "ko-en",
+        display_name: "KO → EN",
+        source_lang: "ko",
+        target_lang: "en",
+        assets: &OPUS_MT_KO_EN,
+    },
+    OpusPackMeta {
+        id: "en-vi",
+        display_name: "EN → VI",
+        source_lang: "en",
+        target_lang: "vi",
+        assets: &OPUS_MT_EN_VI,
     },
 ];
 
@@ -320,17 +400,16 @@ pub(crate) fn tier2_bundle_assets(sidecar: SidecarTarget) -> Vec<ModelAssetSpec>
     assets
 }
 
+#[cfg(any(not(target_os = "android"), test))]
+pub(crate) fn opus_mt_pack_meta(pair: &str) -> Option<&'static OpusPackMeta> {
+    ALL_OPUS_MT_PACKS.iter().find(|meta| meta.id == pair)
+}
+
 /// Looks up a verified Windows OPUS-MT ONNX translation pack by pair slug (`"ja-en"`, `"en-vi"`,
 /// `"zh-en"`, `"ko-en"`).
 #[cfg(any(not(target_os = "android"), test))]
 pub(crate) fn opus_mt_pack(pair: &str) -> Option<&'static [ModelAssetSpec]> {
-    match pair {
-        "ja-en" => Some(&OPUS_MT_JA_EN),
-        "en-vi" => Some(&OPUS_MT_EN_VI),
-        "zh-en" => Some(&OPUS_MT_ZH_EN),
-        "ko-en" => Some(&OPUS_MT_KO_EN),
-        _ => None,
-    }
+    opus_mt_pack_meta(pair).map(|meta| meta.assets)
 }
 
 /// Computes the exact cumulative byte footprint of `assets`.

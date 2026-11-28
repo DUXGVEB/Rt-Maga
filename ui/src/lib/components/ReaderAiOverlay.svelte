@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { NormalizedBbox } from "../readerLayout";
   import { aiTranslateStore } from "../stores/aiTranslate.svelte";
   import type { TranslatedRegionView } from "../types";
 
@@ -9,16 +8,16 @@
     overlayHeight,
     bubbleZoomEnabled = false,
     translationEnabled = false,
+    peekOriginal = false,
     activeBubbleKey = null,
-    onBubbleTap,
   }: {
     pageToken: string;
     overlayWidth: number;
     overlayHeight: number;
     bubbleZoomEnabled?: boolean;
     translationEnabled?: boolean;
+    peekOriginal?: boolean;
     activeBubbleKey?: string | null;
-    onBubbleTap?: (bbox: NormalizedBbox, bubbleKey: string) => void;
   } = $props();
 
   const pageResult = $derived(aiTranslateStore.getPageResult(pageToken));
@@ -45,12 +44,6 @@
     const maxByWidth = Math.max(9, wPx * 0.42);
     return Math.max(9, Math.min(20, Math.floor(Math.min(est, maxByHeight, maxByWidth))));
   }
-
-  function handleTap(e: MouseEvent, region: TranslatedRegionView, key: string) {
-    if (!bubbleZoomEnabled || !onBubbleTap) return;
-    e.stopPropagation();
-    onBubbleTap(region.bbox, key);
-  }
 </script>
 
 {#if (bubbleZoomEnabled || translationEnabled) && regions.length > 0 && overlayWidth > 20 && overlayHeight > 20}
@@ -60,32 +53,25 @@
   >
     {#each regions as region, idx (bboxKey(region.bbox, idx))}
       {@const key = bboxKey(region.bbox, idx)}
-      {@const isFocusedBubble = activeBubbleKey === key}
-      {@const showText = translationEnabled && region.text.trim().length > 0}
+      {@const isFocusedBubble = bubbleZoomEnabled && activeBubbleKey === key}
+      {@const showText = translationEnabled && !peekOriginal && region.text.trim().length > 0}
       {@const fontPx = showText ? computeFittedFontPx(region.text, region.bbox) : 12}
 
-      {#if bubbleZoomEnabled}
-        <button
-          type="button"
-          data-ai-bubble="true"
-          onclick={(e) => handleTap(e, region, key)}
-          onpointerdown={(e) => e.stopPropagation()}
-          class="pointer-events-auto absolute flex items-center justify-center overflow-hidden rounded-lg text-center transition-[box-shadow,border-color] duration-150"
+      {#if bubbleZoomEnabled || showText}
+        <div
+          data-ai-bubble={bubbleZoomEnabled ? "true" : undefined}
+          data-bubble-key={bubbleZoomEnabled ? key : undefined}
+          data-bbox={bubbleZoomEnabled ? region.bbox.join(",") : undefined}
+          class="pointer-events-none absolute flex items-center justify-center overflow-hidden rounded-lg text-center transition-[box-shadow,background-color,opacity] duration-150"
           style="{regionRectStyle(region.bbox)} {showText
             ? `background-color: rgba(252, 252, 253, 0.94); color: #111116; padding: 2px 4px; font-size: ${fontPx}px; line-height: 1.16; font-weight: 600; box-shadow: ${isFocusedBubble ? '0 0 0 2px var(--accent), 0 2px 8px rgba(0,0,0,0.22)' : '0 1px 4px rgba(0,0,0,0.16)'};`
-            : `background-color: ${isFocusedBubble ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent'}; border: 1.5px solid ${isFocusedBubble ? 'var(--accent)' : 'color-mix(in srgb, var(--accent) 34%, transparent)'};`}"
-          aria-label={showText ? region.text : `Bubble ${idx + 1}`}
+            : isFocusedBubble
+              ? 'background-color: color-mix(in srgb, var(--accent) 8%, transparent); box-shadow: 0 0 0 2px var(--accent);'
+              : 'background-color: transparent;'}"
         >
           {#if showText}
             <span class="ai-bubble-text">{region.text}</span>
           {/if}
-        </button>
-      {:else if showText}
-        <div
-          class="pointer-events-none absolute flex items-center justify-center overflow-hidden rounded-lg px-1 py-0.5 text-center"
-          style="{regionRectStyle(region.bbox)} background-color: rgba(252, 252, 253, 0.94); color: #111116; font-size: {fontPx}px; line-height: 1.16; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,0.16);"
-        >
-          <span class="ai-bubble-text">{region.text}</span>
         </div>
       {/if}
     {/each}

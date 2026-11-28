@@ -502,3 +502,50 @@ export function computeBubbleZoom(
     bubbleRect,
   };
 }
+
+export type HorizontalTapAction = "prev" | "next" | "toolbar";
+
+/**
+ * Resolves a horizontal reader tap `(relX, relY)` in `[0..1]` into `"prev"`, `"next"`, or
+ * `"toolbar"`, respecting both reading direction (`isRtl`) and mobile One-Handed ergonomics.
+ *
+ * In One-Handed `"left"` / `"right"` mode, the active thumb edge (`<= 0.35` left or `>= 0.65`
+ * right) is split vertically so the user can turn forward (lower half) or backward (upper half)
+ * with one thumb while keeping the center area for toggling HUD toolbars.
+ */
+export function resolveHorizontalTapAction(
+  relX: number,
+  relY: number,
+  opts: { isRtl: boolean; oneHandedMode: "default" | "left" | "right" }
+): HorizontalTapAction {
+  const x = Math.max(0, Math.min(1, relX));
+  const y = Math.max(0, Math.min(1, relY));
+
+  if (opts.oneHandedMode === "right") {
+    if (x >= 0.65) {
+      return y >= 0.5 ? "next" : "prev";
+    }
+    if (x <= 0.22) {
+      return "prev";
+    }
+    return "toolbar";
+  }
+
+  if (opts.oneHandedMode === "left") {
+    if (x <= 0.35) {
+      return y >= 0.5 ? "next" : "prev";
+    }
+    if (x >= 0.78) {
+      return "prev";
+    }
+    return "toolbar";
+  }
+
+  if (x <= 0.27) {
+    return opts.isRtl ? "next" : "prev";
+  }
+  if (x >= 0.73) {
+    return opts.isRtl ? "prev" : "next";
+  }
+  return "toolbar";
+}

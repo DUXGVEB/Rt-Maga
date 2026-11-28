@@ -12,6 +12,8 @@ pub(crate) mod downloader;
 pub(crate) mod engine;
 pub(crate) mod llama_tier2;
 pub(crate) mod manifest;
+#[cfg(any(not(target_os = "android"), test))]
+pub(crate) mod nmt_opus;
 pub(crate) mod onnx_tier1;
 pub(crate) mod preprocess;
 
@@ -78,6 +80,29 @@ pub(crate) struct AiModelEntryView {
     pub accelerator: String,
 }
 
+/// Summary card entry for one selectable offline Lite NMT language pack (Windows OPUS-MT or
+/// Android ML Kit Translate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiNmtPackView {
+    /// Stable pack identifier (`"ja-en"`, `"en-vi"` on Windows; `"ja"`, `"vi"` on Android).
+    pub id: String,
+    /// Human-readable display label (e.g. `"JA → EN"`, `"EN → VI"`, `"Japanese"`).
+    pub display_name: String,
+    /// Source language ISO code.
+    pub source_lang: String,
+    /// Target language ISO code.
+    pub target_lang: String,
+    /// Current provisioning state.
+    pub status: AiModelStatus,
+    /// Bytes currently installed on disk (or approximate footprint on Android ML Kit).
+    pub installed_bytes: u64,
+    /// Expected download footprint in bytes.
+    pub required_bytes: u64,
+    /// `true` when installed and ready for offline translation.
+    pub ready: bool,
+}
+
 /// Complete live status snapshot of the on-device AI subsystem.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,9 +119,11 @@ pub(crate) struct AiStatusView {
     pub storage_dir: String,
     /// `true` when Tier 1 (`Lite`) is available.
     pub tier1_ready: bool,
+    /// `true` when Tier 2 (`Qwen3-VL-2B`) native runtime is supported on this build/device.
+    pub tier2_supported: bool,
     /// `true` when Tier 2 (`Qwen3-VL-2B`) weights (and Windows sidecar if on Windows) are verified on disk.
     pub tier2_ready: bool,
-    /// `true` while a Tier 2 model download is in progress.
+    /// `true` while any AI model or NMT pack download is in progress.
     pub downloading: bool,
     /// `true` when Vulkan GPU acceleration is detected on this device.
     pub vulkan_supported: bool,
@@ -106,6 +133,8 @@ pub(crate) struct AiStatusView {
     pub active_jobs: u32,
     /// Selectable model tier entries rendered in the Translation Model selector.
     pub models: Vec<AiModelEntryView>,
+    /// Offline Lite NMT language packs managed in Settings -> Accessibility.
+    pub nmt_packs: Vec<AiNmtPackView>,
 }
 
 /// Lifecycle phase of an active Tier 2 model download.
@@ -175,4 +204,10 @@ pub(crate) struct PageAiResultView {
     pub image_height: u32,
     /// Validated speech-bubble regions in normalized `[0..=1000]` coordinates.
     pub regions: Vec<TranslatedRegionView>,
+    /// Offline NMT language packs that must be downloaded before Lite translation can complete.
+    #[serde(default)]
+    pub missing_nmt_packs: Vec<AiNmtPackView>,
+    /// Non-fatal user-visible diagnostic message when translation could not complete.
+    #[serde(default)]
+    pub error: Option<String>,
 }

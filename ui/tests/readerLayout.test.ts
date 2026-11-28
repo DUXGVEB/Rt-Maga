@@ -18,6 +18,7 @@ import {
   detectWebtoonFromDimensions,
   mapNormalizedBboxToRect,
   partitionPages,
+  resolveHorizontalTapAction,
 } from "../src/lib/readerLayout.ts";
 
 test("computeAnchoredZoom keeps exact clicked pixel anchored under pointer", () => {
@@ -284,4 +285,48 @@ test("resolveFloatingPositions mirrors and remaps all FABs into lower thumb zone
   // Helper bounds check.
   assert.equal(mapToOneHandedThumbPercent(10), 55);
   assert.equal(mapToOneHandedThumbPercent(90), 88);
+
+  // Reader AI pill reserve keeps floating controls strictly above bottom-corner AI pill.
+  const readerBounds = computeFloatingBounds(
+    390,
+    844,
+    {
+      cutoutTop: 24,
+      cutoutBottom: 16,
+      cutoutLeft: 0,
+      cutoutRight: 0,
+      gestureLeft: 12,
+      gestureRight: 12,
+      imeBottom: 0,
+    },
+    { hasBottomNav: true, topToolbarHeightPx: 58, reserveBottomPx: 54 }
+  );
+  const readerPlaced = resolveFloatingPositions(requests, readerBounds, "right");
+  for (const item of readerPlaced) {
+    assert.ok(
+      item.topPx + item.sizePx <= readerBounds.height - readerBounds.bottomInsetPx,
+      "reader FABs must stay clear above bottom toolbar and ReaderAiPill"
+    );
+  }
+});
+
+test("resolveHorizontalTapAction splits thumb edge vertically in One-Handed mode", () => {
+  // Default LTR/RTL behavior preserved.
+  assert.equal(resolveHorizontalTapAction(0.15, 0.7, { isRtl: false, oneHandedMode: "default" }), "prev");
+  assert.equal(resolveHorizontalTapAction(0.85, 0.7, { isRtl: false, oneHandedMode: "default" }), "next");
+  assert.equal(resolveHorizontalTapAction(0.15, 0.7, { isRtl: true, oneHandedMode: "default" }), "next");
+  assert.equal(resolveHorizontalTapAction(0.85, 0.7, { isRtl: true, oneHandedMode: "default" }), "prev");
+  assert.equal(resolveHorizontalTapAction(0.5, 0.5, { isRtl: true, oneHandedMode: "default" }), "toolbar");
+
+  // Right one-handed: right edge lower half = next, upper half = prev, center = toolbar.
+  assert.equal(resolveHorizontalTapAction(0.82, 0.75, { isRtl: true, oneHandedMode: "right" }), "next");
+  assert.equal(resolveHorizontalTapAction(0.82, 0.25, { isRtl: true, oneHandedMode: "right" }), "prev");
+  assert.equal(resolveHorizontalTapAction(0.5, 0.7, { isRtl: true, oneHandedMode: "right" }), "toolbar");
+  assert.equal(resolveHorizontalTapAction(0.1, 0.7, { isRtl: true, oneHandedMode: "right" }), "prev");
+
+  // Left one-handed: left edge lower half = next, upper half = prev, center = toolbar.
+  assert.equal(resolveHorizontalTapAction(0.18, 0.75, { isRtl: false, oneHandedMode: "left" }), "next");
+  assert.equal(resolveHorizontalTapAction(0.18, 0.25, { isRtl: false, oneHandedMode: "left" }), "prev");
+  assert.equal(resolveHorizontalTapAction(0.5, 0.3, { isRtl: false, oneHandedMode: "left" }), "toolbar");
+  assert.equal(resolveHorizontalTapAction(0.9, 0.7, { isRtl: false, oneHandedMode: "left" }), "prev");
 });

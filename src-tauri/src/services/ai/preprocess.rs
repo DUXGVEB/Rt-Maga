@@ -180,7 +180,8 @@ struct CompactRegionPayload {
 /// Tolerates surrounding markdown code fences or prose, clamps coordinates to `0..=1000`, enforces
 /// `x2 > x1` and `y2 > y1`, and drops malformed or empty entries safely without failing the page.
 pub(crate) fn parse_vlm_compact_json(raw: &str) -> Vec<TranslatedRegionView> {
-    let Some(array_slice) = extract_first_json_array(raw) else {
+    let cleaned = strip_think_blocks(raw);
+    let Some(array_slice) = extract_first_json_array(&cleaned) else {
         return Vec::new();
     };
 
@@ -223,6 +224,24 @@ pub(crate) fn parse_vlm_compact_json(raw: &str) -> Vec<TranslatedRegionView> {
         });
     }
     regions
+}
+
+/// Strips Qwen3 `<think>...</think>` reasoning spans so stray brackets inside thought traces
+/// never confuse the JSON array extractor.
+fn strip_think_blocks(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + "<think>".len()..];
+        if let Some(end) = after.find("</think>") {
+            rest = &after[end + "</think>".len()..];
+        } else {
+            return out;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Finds the first syntactically balanced JSON array `[...]` in `raw`, respecting JSON string

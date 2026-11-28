@@ -46,13 +46,14 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
 
-        // Keep APK <= 100MB by packaging ARM64 native libraries only.
+        // Keep APK lightweight (<= 125MB) by packaging ARM64 native libraries only.
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
 
         externalNativeBuild {
             cmake {
+                targets += listOf("llama_mtmd_jni")
                 cppFlags += listOf("-std=c++17", "-O3", "-fvisibility=hidden", "-Wall", "-Wextra")
                 arguments += listOf(
                     "-DANDROID_STL=c++_static",
@@ -128,7 +129,7 @@ android {
     buildFeatures {
         buildConfig = true
     }
-    // Enforce ARM64-only packaging even on the universal flavor so APK stays <= 100MB.
+    // Enforce ARM64-only packaging even on the universal flavor so APK stays lightweight (<= 125MB).
     productFlavors.matching { it.name == "universal" }.configureEach {
         ndk {
             abiFilters.clear()
@@ -213,6 +214,39 @@ val verifyApkBudget = tasks.register<VerifyApkBudgetTask>("verifyApkBudget") {
 
 tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn(verifyApkBudget)
+}
+
+abstract class VerifyApkMaxSizeTask : DefaultTask() {
+    @get:Input
+    abstract val apkOutputsDir: Property<String>
+
+    @TaskAction
+    fun verifySize() {
+        val maxApkBytes = 125L * 1024L * 1024L
+        val outDir = File(apkOutputsDir.get())
+        if (!outDir.exists()) return
+        outDir.walkTopDown()
+            .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) }
+            .forEach { apk ->
+                val sizeMb = String.format(Locale.US, "%.2f", apk.length() / (1024.0 * 1024.0))
+                if (apk.length() > maxApkBytes) {
+                    throw GradleException(
+                        "APK size budget exceeded: ${apk.name} is $sizeMb MB (hard ceiling: 125.00 MB)"
+                    )
+                }
+            }
+    }
+}
+
+val verifyApkMaxSize = tasks.register<VerifyApkMaxSizeTask>("verifyApkMaxSize") {
+    group = "verification"
+    description = "Enforces the lightweight <= 125 MB APK ceiling after release packaging."
+    apkOutputsDir.set(layout.buildDirectory.dir("outputs/apk").get().asFile.absolutePath)
+    outputs.upToDateWhen { false }
+}
+
+tasks.matching { it.name.startsWith("assemble") && it.name.endsWith("Release") }.configureEach {
+    finalizedBy(verifyApkMaxSize)
 }
 
 apply(from = file("tauri.build.gradle.kts"))

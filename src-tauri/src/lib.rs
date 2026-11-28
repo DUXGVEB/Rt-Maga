@@ -165,6 +165,8 @@ pub fn run() {
             commands::ai_get_status,
             commands::ai_set_tier,
             commands::ai_download_tier2,
+            commands::ai_download_nmt_packs,
+            commands::ai_delete_nmt_pack,
             commands::ai_cancel_download,
             commands::ai_delete_tier2,
             commands::ai_translate_page,

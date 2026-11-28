@@ -165,12 +165,12 @@ std::string build_vlm_chat_prompt(
             "[{\"t\":\"translated_text\",\"b\":[x1,y1,x2,y2]}] where coordinates are integers in 0..1000.";
     }
     std::string formatted;
-    formatted.reserve(instruction.size() + 128);
+    formatted.reserve(instruction.size() + 160);
     formatted += "<|im_start|>user\n";
     formatted += media_marker;
     formatted += "\n";
     formatted += instruction;
-    formatted += "<|im_end|>\n<|im_start|>assistant\n";
+    formatted += "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n";
     return formatted;
 }
 
@@ -276,8 +276,7 @@ struct DirectLlamaState {
         auto load_with_gpu_layers = [&](int32_t ngl) -> bool {
             llama_model_params mparams = llama_model_default_params();
             mparams.n_gpu_layers = ngl;
-            mparams.use_mmap = true;
-            mparams.use_mlock = false;
+            mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
 
             model = llama_model_load_from_file(model_path.c_str(), mparams);
             if (model == nullptr) {
@@ -357,7 +356,13 @@ struct DirectLlamaState {
         // Enforce strictly stateless KV-cache reset before every page.
         reset_kv_cache_stateless(ctx);
 
-        mtmd_bitmap* bitmap = mtmd_helper_bitmap_init_from_file(mtmd, image_path.c_str());
+        mtmd_helper_bitmap_wrapper bmp_wrap = mtmd_helper_bitmap_init_from_file(
+            mtmd,
+            image_path.c_str(),
+            false,
+            mtmd_helper_init_opt_default()
+        );
+        mtmd_bitmap* bitmap = bmp_wrap.bitmap;
         if (bitmap == nullptr) {
             error_out = "Failed to decode page image into mtmd bitmap";
             return false;
@@ -411,6 +416,7 @@ struct DirectLlamaState {
         llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
         llama_sampler* sampler = llama_sampler_chain_init(sparams);
         llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+        llama_batch_ext* decode_batch = llama_batch_ext_init(ctx);
 
         std::string output;
         output.reserve(1024);
@@ -449,18 +455,26 @@ struct DirectLlamaState {
                 output.append(piece_buf.data(), static_cast<size_t>(n_chars));
             }
 
-            if (n_past + 1 >= kContextSize) {
+            if (n_past + 1 >= kContextSize || decode_batch == nullptr) {
                 break;
             }
 
-            llama_token next_tok = token;
-            llama_batch batch = llama_batch_get_one(&next_tok, 1);
-            if (llama_decode(ctx, batch) != 0) {
+            llama_batch_ext_clear(decode_batch);
+            const int32_t b_idx = llama_batch_ext_add_token(decode_batch, 0, token);
+            if (b_idx < 0) {
+                break;
+            }
+            llama_batch_ext_set_pos(decode_batch, b_idx, &n_past);
+            llama_batch_ext_set_output_logits(decode_batch, b_idx, true);
+            if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, decode_batch) != 0) {
                 break;
             }
             ++n_past;
         }
 
+        if (decode_batch != nullptr) {
+            llama_batch_ext_free(decode_batch);
+        }
         llama_sampler_free(sampler);
         // Clear KV cache after completion so zero page state lingers in RAM/VRAM.
         reset_kv_cache_stateless(ctx);

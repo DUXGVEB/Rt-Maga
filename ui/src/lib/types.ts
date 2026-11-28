@@ -72,6 +72,7 @@ export interface AccessibilitySettings {
   bubbleAutoZoom: boolean;
   aiTranslationOverlay: boolean;
   translationModelTier: TranslationModelTier;
+  translationTargetLang: Language | null;
   firstAiPromptSeen: boolean;
 }
 
@@ -1095,17 +1096,30 @@ export interface AiModelEntryView {
   accelerator: string;
 }
 
+export interface AiNmtPackView {
+  id: string;
+  displayName: string;
+  sourceLang: string;
+  targetLang: string;
+  status: AiModelStatus;
+  installedBytes: number;
+  requiredBytes: number;
+  ready: boolean;
+}
+
 export interface AiStatusView {
   activeTier: TranslationModelTier;
   platform: string;
   storageDir: string;
   tier1Ready: boolean;
+  tier2Supported: boolean;
   tier2Ready: boolean;
   downloading: boolean;
   vulkanSupported: boolean;
   loadedInMemory: boolean;
   activeJobs: number;
   models: AiModelEntryView[];
+  nmtPacks: AiNmtPackView[];
 }
 
 export type AiDownloadStage =
@@ -1147,4 +1161,6 @@ export interface PageAiResultView {
   imageWidth: number;
   imageHeight: number;
   regions: TranslatedRegionView[];
+  missingNmtPacks?: AiNmtPackView[];
+  error?: string | null;
 }

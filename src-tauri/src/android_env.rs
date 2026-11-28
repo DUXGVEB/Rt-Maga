@@ -50,6 +50,16 @@ pub(crate) struct AndroidAiRegion {
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct AndroidTier1Reply {
     pub regions: Vec<AndroidAiRegion>,
+    pub missing_languages: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// Response returned by Android `AiRuntimePlugin.listMlKitModels`.
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct AndroidMlKitModelsReply {
+    pub languages: Vec<String>,
 }
 
 /// Response returned by Android `AiRuntimePlugin.runTier2Vlm`.
@@ -215,9 +225,9 @@ mod imp {
     use tauri::{AppHandle, Manager, Runtime};
 
     use super::{
-        AiRuntimeCapabilities, AndroidTier1Reply, AndroidTier2Reply, DeviceEnvInfo,
-        GallerySaveReply, NotificationPermissionInfo, OrientationLockReply, SafExportReply,
-        SafPickReply, Tier1RunMode,
+        AiRuntimeCapabilities, AndroidMlKitModelsReply, AndroidTier1Reply, AndroidTier2Reply,
+        DeviceEnvInfo, GallerySaveReply, NotificationPermissionInfo, OrientationLockReply,
+        SafExportReply, SafPickReply, Tier1RunMode,
     };
     use crate::error::AppError;
 
@@ -353,6 +363,38 @@ mod imp {
             .0
             .run_mobile_plugin::<HardUnloadReply>("hardUnloadAll", serde_json::json!({}))
             .is_ok_and(|r| r.unloaded)
+    }
+
+    pub(crate) fn list_ml_kit_models(app: &AppHandle) -> Vec<String> {
+        let Some(state) = app.try_state::<AiRuntimeState<tauri::Wry>>() else {
+            return Vec::new();
+        };
+        state
+            .0
+            .run_mobile_plugin::<AndroidMlKitModelsReply>("listMlKitModels", serde_json::json!({}))
+            .map_or_else(|_| Vec::new(), |r| r.languages)
+    }
+
+    pub(crate) fn download_ml_kit_model(app: &AppHandle, lang: &str) -> Result<(), AppError> {
+        let state = app.state::<AiRuntimeState<tauri::Wry>>();
+        let _: serde_json::Value = state
+            .0
+            .run_mobile_plugin("downloadMlKitModel", serde_json::json!({ "lang": lang }))
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to download ML Kit language model '{lang}': {e}"),
+            })?;
+        Ok(())
+    }
+
+    pub(crate) fn delete_ml_kit_model(app: &AppHandle, lang: &str) -> Result<(), AppError> {
+        let state = app.state::<AiRuntimeState<tauri::Wry>>();
+        let _: serde_json::Value = state
+            .0
+            .run_mobile_plugin("deleteMlKitModel", serde_json::json!({ "lang": lang }))
+            .map_err(|e| AppError::Internal {
+                message: format!("failed to delete ML Kit language model '{lang}': {e}"),
+            })?;
+        Ok(())
     }
 
     pub(crate) fn get_device_env(app: &AppHandle) -> Result<DeviceEnvInfo, AppError> {
@@ -538,8 +580,9 @@ mod imp {
 
 #[cfg(target_os = "android")]
 pub(crate) use imp::{
-    cancel_active_ai_jobs, check_notification_permission, export_backup_saf, get_ai_storage_dir,
-    get_device_env, get_runtime_capabilities, hard_unload_all_ai, init_ai_plugin, init_plugin,
+    cancel_active_ai_jobs, check_notification_permission, delete_ml_kit_model,
+    download_ml_kit_model, export_backup_saf, get_ai_storage_dir, get_device_env,
+    get_runtime_capabilities, hard_unload_all_ai, init_ai_plugin, init_plugin, list_ml_kit_models,
     open_external_url_android, pick_backup_saf, read_clipboard_text,
     request_notification_permission, run_tier1_ocr_and_translate, run_tier2_vlm,
     save_image_to_gallery, send_android_notification, set_immersive, set_keep_screen_on,

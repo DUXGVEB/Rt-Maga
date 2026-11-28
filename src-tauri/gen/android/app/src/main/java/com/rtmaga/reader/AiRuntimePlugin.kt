@@ -18,7 +18,9 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
@@ -55,6 +57,12 @@ class RunTier2Args {
   var mmprojPath: String = ""
   var targetLang: String = "en"
   var prompt: String = ""
+}
+
+@Keep
+@InvokeArg
+class MlKitModelArgs {
+  var lang: String = ""
 }
 
 @Keep
@@ -124,6 +132,12 @@ private data class NormalizedRegion(
   val y1: Int,
   val x2: Int,
   val y2: Int
+)
+
+private data class Tier1PipelineOutput(
+  val regions: List<NormalizedRegion>,
+  val missingLanguages: List<String> = emptyList(),
+  val error: String? = null
 )
 
 @Keep
@@ -269,13 +283,13 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
           return@execute
         }
 
-        val regions = runTier1Pipeline(
+        val output = runTier1Pipeline(
           bitmap = bitmap,
           targetLang = args.targetLang,
           detectOnly = args.detectOnly,
           myGen = myGen
         )
-        invoke.resolve(encodeRegionsReply(regions))
+        invoke.resolve(encodeRegionsReply(output.regions, output.missingLanguages, output.error))
       } catch (ex: Exception) {
         if (isCancelled(myGen)) {
           invoke.resolve(encodeRegionsReply(emptyList()))
@@ -392,6 +406,110 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
+  @Command
+  fun listMlKitModels(invoke: Invoke) {
+    aiExecutor.execute {
+      try {
+        val manager = RemoteModelManager.getInstance()
+        val task = manager.getDownloadedModels(TranslateRemoteModel::class.java)
+        val latch = CountDownLatch(1)
+        task.addOnCompleteListener { latch.countDown() }
+        val completed = latch.await(8_000L, TimeUnit.MILLISECONDS)
+        val arr = JSArray()
+        if (completed && task.isSuccessful) {
+          val models = task.result ?: emptySet()
+          for (model in models) {
+            arr.put(model.language)
+          }
+        }
+        val res = JSObject()
+        res.put("languages", arr)
+        invoke.resolve(res)
+      } catch (ex: Exception) {
+        invoke.reject(ex.message ?: ex.toString())
+      }
+    }
+  }
+
+  @Command
+  fun downloadMlKitModel(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(MlKitModelArgs::class.java)
+    } catch (ex: Exception) {
+      invoke.reject(ex.message ?: "Invalid downloadMlKitModel arguments")
+      return
+    }
+    val mlKitLang = mapToMlKitLanguage(args.lang)
+    if (mlKitLang == null) {
+      invoke.reject("Unsupported ML Kit translation language: ${args.lang}")
+      return
+    }
+
+    aiExecutor.execute {
+      try {
+        val manager = RemoteModelManager.getInstance()
+        val model = TranslateRemoteModel.Builder(mlKitLang).build()
+        val conditions = DownloadConditions.Builder().build()
+        val task = manager.download(model, conditions)
+        val latch = CountDownLatch(1)
+        task.addOnCompleteListener { latch.countDown() }
+        val finished = latch.await(120_000L, TimeUnit.MILLISECONDS)
+        if (!finished || !task.isSuccessful) {
+          val reason = task.exception?.message ?: "Timed out downloading ML Kit model ($mlKitLang)"
+          invoke.reject(reason)
+          return@execute
+        }
+        val res = JSObject()
+        res.put("downloaded", true)
+        res.put("lang", mlKitLang)
+        invoke.resolve(res)
+      } catch (ex: Exception) {
+        invoke.reject(ex.message ?: ex.toString())
+      }
+    }
+  }
+
+  @Command
+  fun deleteMlKitModel(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(MlKitModelArgs::class.java)
+    } catch (ex: Exception) {
+      invoke.reject(ex.message ?: "Invalid deleteMlKitModel arguments")
+      return
+    }
+    val mlKitLang = mapToMlKitLanguage(args.lang)
+    if (mlKitLang == null) {
+      invoke.reject("Unsupported ML Kit translation language: ${args.lang}")
+      return
+    }
+
+    aiExecutor.execute {
+      try {
+        synchronized(runtimeLock) {
+          translators.values.forEach { runCatching { it.close() } }
+          translators.clear()
+        }
+        val manager = RemoteModelManager.getInstance()
+        val model = TranslateRemoteModel.Builder(mlKitLang).build()
+        val task = manager.deleteDownloadedModel(model)
+        val latch = CountDownLatch(1)
+        task.addOnCompleteListener { latch.countDown() }
+        val finished = latch.await(15_000L, TimeUnit.MILLISECONDS)
+        if (!finished || !task.isSuccessful) {
+          val reason = task.exception?.message ?: "Failed to delete ML Kit model ($mlKitLang)"
+          invoke.reject(reason)
+          return@execute
+        }
+        val res = JSObject()
+        res.put("deleted", true)
+        res.put("lang", mlKitLang)
+        invoke.resolve(res)
+      } catch (ex: Exception) {
+        invoke.reject(ex.message ?: ex.toString())
+      }
+    }
+  }
+
   private fun cancelJobsInternal() {
     cancelFlag.set(true)
     jobGeneration.incrementAndGet()
@@ -429,7 +547,11 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  private fun encodeRegionsReply(regions: List<NormalizedRegion>): JSObject {
+  private fun encodeRegionsReply(
+    regions: List<NormalizedRegion>,
+    missingLanguages: List<String> = emptyList(),
+    error: String? = null
+  ): JSObject {
     val array = JSArray()
     for (region in regions) {
       val bbox = JSArray()
@@ -444,8 +566,16 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
       item.put("bbox", bbox)
       array.put(item)
     }
+    val missingArr = JSArray()
+    for (lang in missingLanguages) {
+      missingArr.put(lang)
+    }
     val res = JSObject()
     res.put("regions", array)
+    res.put("missingLanguages", missingArr)
+    if (!error.isNullOrBlank()) {
+      res.put("error", error)
+    }
     return res
   }
 
@@ -589,56 +719,99 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
     targetLang: String,
     detectOnly: Boolean,
     myGen: Long
-  ): List<NormalizedRegion> {
+  ): Tier1PipelineOutput {
     val detPair = runCatching { ensureDetSession() }.getOrNull()
-    val boxes = if (detPair != null) {
+    val lineBoxes = if (detPair != null) {
       detectTextBoxesOnnx(detPair.first, detPair.second, bitmap, myGen)
     } else {
       detectFallbackSpeechBubbles(bitmap, myGen)
     }
 
-    if (isCancelled(myGen) || boxes.isEmpty()) {
-      return emptyList()
+    if (isCancelled(myGen) || lineBoxes.isEmpty()) {
+      return Tier1PipelineOutput(emptyList())
     }
 
     if (detectOnly) {
-      return boxes.map { b ->
-        NormalizedRegion(text = "", sourceText = "", x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3])
-      }
+      val grouped = mergeNearbyBoxes(lineBoxes).take(MAX_REGIONS_PER_PAGE)
+      return Tier1PipelineOutput(
+        grouped.map { b ->
+          NormalizedRegion(text = "", sourceText = "", x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3])
+        }
+      )
     }
 
     val recBundle = runCatching { ensureRecSession() }.getOrNull()
-      ?: return boxes.map { b ->
-        NormalizedRegion(text = "", sourceText = "", x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3])
-      }
+      ?: return Tier1PipelineOutput(
+        regions = mergeNearbyBoxes(lineBoxes).take(MAX_REGIONS_PER_PAGE).map { b ->
+          NormalizedRegion(text = "", sourceText = "", x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3])
+        },
+        error = "Built-in Lite OCR recognition model (rec.onnx) failed to initialize"
+      )
 
     val (env, recSess, charDict) = recBundle
-    val recognized = ArrayList<Pair<IntArray, String>>(boxes.size)
-    for (box in boxes) {
+    val recognizedLines = ArrayList<Pair<IntArray, String>>(lineBoxes.size)
+    for (box in lineBoxes) {
       if (isCancelled(myGen)) {
-        return emptyList()
+        return Tier1PipelineOutput(emptyList())
       }
-      val srcText = recognizeBoxOnnx(env, recSess, charDict, bitmap, box)
+      val srcText = recognizeBoxAdaptiveOnnx(env, recSess, charDict, bitmap, box)
       if (srcText.isNotBlank()) {
-        recognized.add(box to srcText)
+        recognizedLines.add(box to srcText)
       }
     }
 
-    if (recognized.isEmpty() || isCancelled(myGen)) {
-      return emptyList()
+    if (recognizedLines.isEmpty() || isCancelled(myGen)) {
+      return Tier1PipelineOutput(emptyList())
     }
 
+    val groupedBubbles = groupRecognizedLinesIntoBubbles(recognizedLines)
     val dstMlKitLang = mapToMlKitLanguage(targetLang)
-    val results = ArrayList<NormalizedRegion>(recognized.size)
-    for ((box, sourceText) in recognized) {
+      ?: return Tier1PipelineOutput(
+        regions = groupedBubbles.map { (b, src) ->
+          NormalizedRegion(text = "", sourceText = src, x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3])
+        },
+        error = "Unsupported target language for ML Kit Translate: $targetLang"
+      )
+
+    // Pre-flight check downloaded ML Kit offline language models so we prompt explicitly before downloading.
+    val downloadedModels = getDownloadedMlKitLanguages(myGen)
+    val missingLangs = LinkedHashSet<String>()
+    for ((_, sourceText) in groupedBubbles) {
+      val srcMlKitLang = detectScriptLanguage(sourceText)
+      if (srcMlKitLang == dstMlKitLang) continue
+      if (srcMlKitLang !in downloadedModels) {
+        missingLangs.add(srcMlKitLang)
+      }
+      if (dstMlKitLang !in downloadedModels) {
+        missingLangs.add(dstMlKitLang)
+      }
+    }
+
+    if (missingLangs.isNotEmpty()) {
+      val bubbleRegions = groupedBubbles.map { (b, src) ->
+        NormalizedRegion(text = "", sourceText = src, x1 = b[0], y1 = b[1], x2 = b[2], y2 = b[3])
+      }
+      return Tier1PipelineOutput(
+        regions = bubbleRegions,
+        missingLanguages = missingLangs.toList()
+      )
+    }
+
+    val results = ArrayList<NormalizedRegion>(groupedBubbles.size)
+    var firstError: String? = null
+    for ((box, sourceText) in groupedBubbles) {
       if (isCancelled(myGen)) {
-        return emptyList()
+        return Tier1PipelineOutput(emptyList())
       }
       val srcMlKitLang = detectScriptLanguage(sourceText)
-      val translated = if (dstMlKitLang == null || srcMlKitLang == dstMlKitLang) {
+      val translated = if (srcMlKitLang == dstMlKitLang) {
         sourceText
       } else {
-        translateWithMlKit(sourceText, srcMlKitLang, dstMlKitLang, myGen) ?: sourceText
+        val out = translateOfflineWithMlKit(sourceText, srcMlKitLang, dstMlKitLang, myGen)
+        if (out == null && firstError == null) {
+          firstError = "Offline ML Kit translation failed for $srcMlKitLang -> $dstMlKitLang"
+        }
+        out ?: ""
       }
       results.add(
         NormalizedRegion(
@@ -651,7 +824,7 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
         )
       )
     }
-    return results
+    return Tier1PipelineOutput(regions = results, error = firstError)
   }
 
   private fun detectTextBoxesOnnx(
@@ -811,9 +984,20 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
       }
     }
 
-    return mergeNearbyBoxes(rawBoxes)
+    return rawBoxes
       .sortedWith(compareBy<IntArray>({ it[1] / 120 }, { -it[0] }))
-      .take(MAX_REGIONS_PER_PAGE)
+      .take(64)
+  }
+
+  private fun boxesBelongToSameBubble(a: IntArray, b: IntArray): Boolean {
+    val unionW = max(a[2], b[2]) - min(a[0], b[0])
+    val unionH = max(a[3], b[3]) - min(a[1], b[1])
+    if (unionW > 460 || unionH > 460) return false
+    val gapX = max(0, max(a[0] - b[2], b[0] - a[2]))
+    val gapY = max(0, max(a[1] - b[3], b[1] - a[3]))
+    val hOverlap = min(a[2], b[2]) - max(a[0], b[0])
+    val vOverlap = min(a[3], b[3]) - max(a[1], b[1])
+    return (gapX <= 24 && vOverlap > 0) || (gapY <= 22 && hOverlap > 0)
   }
 
   private fun mergeNearbyBoxes(boxes: List<IntArray>): List<IntArray> {
@@ -828,12 +1012,7 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
         while (j < merged.size) {
           val a = merged[i]
           val b = merged[j]
-          val gapX = max(0, max(a[0] - b[2], b[0] - a[2]))
-          val gapY = max(0, max(a[1] - b[3], b[1] - a[3]))
-          val hOverlap = min(a[2], b[2]) - max(a[0], b[0])
-          val vOverlap = min(a[3], b[3]) - max(a[1], b[1])
-          val shouldMerge = (gapX <= 14 && vOverlap > 0) || (gapY <= 14 && hOverlap > 0)
-          if (shouldMerge) {
+          if (boxesBelongToSameBubble(a, b)) {
             a[0] = min(a[0], b[0])
             a[1] = min(a[1], b[1])
             a[2] = max(a[2], b[2])
@@ -847,10 +1026,84 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
         i++
       }
     }
-    return merged
+    return merged.sortedWith(compareBy<IntArray>({ it[1] / 120 }, { -it[0] }))
   }
 
-  private fun recognizeBoxOnnx(
+  private fun isCjkOrKanaChar(ch: Char): Boolean {
+    val code = ch.code
+    return code in 0x3000..0x30FF ||
+      code in 0x31F0..0x31FF ||
+      code in 0x4E00..0x9FFF ||
+      code in 0x3400..0x4DBF ||
+      code in 0xFF00..0xFFEF
+  }
+
+  private fun groupRecognizedLinesIntoBubbles(
+    lines: List<Pair<IntArray, String>>
+  ): List<Pair<IntArray, String>> {
+    if (lines.isEmpty()) return emptyList()
+    val groups = lines.indices.map { mutableListOf(it) }.toMutableList()
+    val groupBoxes = lines.map { it.first.copyOf() }.toMutableList()
+
+    var changed = true
+    while (changed) {
+      changed = false
+      var i = 0
+      while (i < groups.size) {
+        var j = i + 1
+        while (j < groups.size) {
+          if (boxesBelongToSameBubble(groupBoxes[i], groupBoxes[j])) {
+            groups[i].addAll(groups.removeAt(j))
+            val b = groupBoxes.removeAt(j)
+            val a = groupBoxes[i]
+            a[0] = min(a[0], b[0])
+            a[1] = min(a[1], b[1])
+            a[2] = max(a[2], b[2])
+            a[3] = max(a[3], b[3])
+            changed = true
+          } else {
+            j++
+          }
+        }
+        i++
+      }
+    }
+
+    val out = ArrayList<Pair<IntArray, String>>(groups.size)
+    for (gIdx in groups.indices) {
+      val members = groups[gIdx]
+      val verticalCount = members.count { idx ->
+        val b = lines[idx].first
+        (b[3] - b[1]) * 10 > (b[2] - b[0]) * 13
+      }
+      if (verticalCount * 2 > members.size) {
+        members.sortWith(compareBy<Int>({ -lines[it].first[0] }, { lines[it].first[1] }))
+      } else {
+        members.sortWith(compareBy<Int>({ lines[it].first[1] / 18 }, { lines[it].first[0] }))
+      }
+      val sb = StringBuilder()
+      for (idx in members) {
+        val seg = lines[idx].second.trim()
+        if (seg.isEmpty()) continue
+        if (sb.isNotEmpty()) {
+          val prev = sb[sb.length - 1]
+          val next = seg[0]
+          if (!(isCjkOrKanaChar(prev) && isCjkOrKanaChar(next))) {
+            sb.append(' ')
+          }
+        }
+        sb.append(seg)
+      }
+      if (sb.isNotEmpty()) {
+        out.add(groupBoxes[gIdx] to sb.toString())
+      }
+    }
+    return out
+      .sortedWith(compareBy<Pair<IntArray, String>>({ it.first[1] / 120 }, { -it.first[0] }))
+      .take(MAX_REGIONS_PER_PAGE)
+  }
+
+  private fun recognizeBoxAdaptiveOnnx(
     env: OrtEnvironment,
     session: OrtSession,
     charDict: List<String>,
@@ -866,11 +1119,41 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
     if (cropW < 4 || cropH < 4) return ""
 
     val crop = Bitmap.createBitmap(bitmap, px1, py1, cropW, cropH)
-    val targetW = max(16, min(REC_MAX_WIDTH, ((cropW.toFloat() / cropH.toFloat()) * REC_HEIGHT).roundToInt()))
-    val resized = Bitmap.createScaledBitmap(crop, targetW, REC_HEIGHT, true)
-    if (resized !== crop) {
+    try {
+      if (cropH * 10 > cropW * 15 && cropW >= 6) {
+        val step = max(10, cropW)
+        val verticalText = StringBuilder()
+        var cy = 0
+        while (cy < cropH) {
+          val sliceH = min(cropH - cy, (step * 11) / 10)
+          if (sliceH < 6) break
+          val sub = Bitmap.createBitmap(crop, 0, cy, cropW, sliceH)
+          try {
+            val txt = recognizeCropOnnx(env, session, charDict, sub)
+            if (txt.isNotBlank()) verticalText.append(txt)
+          } finally {
+            sub.recycle()
+          }
+          cy += step
+        }
+        if (verticalText.isNotEmpty()) {
+          return verticalText.toString().trim()
+        }
+      }
+      return recognizeCropOnnx(env, session, charDict, crop)
+    } finally {
       crop.recycle()
     }
+  }
+
+  private fun recognizeCropOnnx(
+    env: OrtEnvironment,
+    session: OrtSession,
+    charDict: List<String>,
+    crop: Bitmap
+  ): String {
+    val targetW = max(16, min(REC_MAX_WIDTH, ((crop.width.toFloat() / max(1, crop.height).toFloat()) * REC_HEIGHT).roundToInt()))
+    val resized = Bitmap.createScaledBitmap(crop, targetW, REC_HEIGHT, true)
 
     try {
       val pixels = IntArray(targetW * REC_HEIGHT)
@@ -882,9 +1165,10 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
         val r = ((px ushr 16) and 0xFF) / 255.0f
         val g = ((px ushr 8) and 0xFF) / 255.0f
         val b = (px and 0xFF) / 255.0f
-        data[i] = (r - 0.5f) / 0.5f
+        // PaddleOCR recognition expects BGR channels normalized into [-1, 1].
+        data[i] = (b - 0.5f) / 0.5f
         data[planeSize + i] = (g - 0.5f) / 0.5f
-        data[2 * planeSize + i] = (b - 0.5f) / 0.5f
+        data[2 * planeSize + i] = (r - 0.5f) / 0.5f
       }
 
       val inputName = session.inputNames.first()
@@ -908,7 +1192,9 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
         }
       }
     } finally {
-      resized.recycle()
+      if (resized !== crop) {
+        resized.recycle()
+      }
     }
   }
 
@@ -945,29 +1231,28 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private fun parsePaddleCharDict(file: File): List<String> {
-    val chars = ArrayList<String>(4096)
+    val chars = ArrayList<String>(7000)
     var inDictSection = false
     file.bufferedReader(Charsets.UTF_8).useLines { lines ->
       for (rawLine in lines) {
-        val trimmed = rawLine.trim()
+        val leading = rawLine.trimStart(' ')
         if (!inDictSection) {
-          if (trimmed.startsWith("character_dict:")) {
+          if (leading.trimEnd(' ', '\t', '\r') == "character_dict:") {
             inDictSection = true
           }
           continue
         }
-        if (trimmed.isEmpty()) continue
-        if (!trimmed.startsWith("-")) {
+        if (leading.startsWith("- ")) {
+          var token = leading.substring(2).trimEnd('\r', '\n')
+          if ((token.startsWith("'") && token.endsWith("'") && token.length >= 2) ||
+              (token.startsWith("\"") && token.endsWith("\"") && token.length >= 2)
+          ) {
+            token = token.substring(1, token.length - 1).replace("''", "'")
+          }
+          chars.add(token)
+        } else if (leading.trimEnd(' ', '\t', '\r').isNotEmpty() && !leading.startsWith("#")) {
           if (chars.isNotEmpty()) break
-          continue
         }
-        var token = trimmed.removePrefix("-").trim()
-        if ((token.startsWith("'") && token.endsWith("'") && token.length >= 2) ||
-            (token.startsWith("\"") && token.endsWith("\"") && token.length >= 2)
-        ) {
-          token = token.substring(1, token.length - 1).replace("''", "'")
-        }
-        chars.add(token)
       }
     }
     return chars
@@ -1183,7 +1468,14 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
     return if (awaitTaskSuccess(task, timeoutMs, myGen)) task.result else null
   }
 
-  private fun translateWithMlKit(
+  private fun getDownloadedMlKitLanguages(myGen: Long): Set<String> {
+    if (isCancelled(myGen)) return emptySet()
+    val task = RemoteModelManager.getInstance().getDownloadedModels(TranslateRemoteModel::class.java)
+    val models = awaitTaskResult(task, 5_000L, myGen) ?: return emptySet()
+    return models.mapTo(HashSet()) { it.language }
+  }
+
+  private fun translateOfflineWithMlKit(
     sourceText: String,
     sourceLang: String,
     targetLang: String,
@@ -1203,12 +1495,6 @@ class AiRuntimePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     return runCatching {
-      val conditions = DownloadConditions.Builder().build()
-      val downloadTask = synchronized(runtimeLock) {
-        if (isCancelled(myGen) || translators[key] !== translator) return null
-        translator.downloadModelIfNeeded(conditions)
-      }
-      if (!awaitTaskSuccess(downloadTask, 60_000L, myGen)) return null
       if (isCancelled(myGen)) return null
       val translateTask = synchronized(runtimeLock) {
         if (isCancelled(myGen) || translators[key] !== translator) return null

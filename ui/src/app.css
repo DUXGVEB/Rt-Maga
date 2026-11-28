@@ -524,11 +524,11 @@ input[type="radio"] {
   animation-delay: var(--stagger-delay, 0ms);
 }
 
-/* Shared-element series detail metadata emergence from behind the landed cover (GPU-only). */
+/* Shared-element series detail metadata emergence (crisp vertical GPU-only glide). */
 @keyframes rtmaga-hero-emerge {
   from {
     opacity: 0;
-    transform: translate3d(-14px, 8px, 0);
+    transform: translate3d(0, 6px, 0);
   }
   to {
     opacity: 1;
@@ -537,7 +537,7 @@ input[type="radio"] {
 }
 
 .hero-emerge {
-  animation: rtmaga-hero-emerge 210ms var(--ease-out) both;
+  animation: rtmaga-hero-emerge 170ms var(--ease-out) both;
   animation-delay: var(--stagger-delay, 0ms);
 }
 

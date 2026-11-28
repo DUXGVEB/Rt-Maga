@@ -2,7 +2,9 @@ import { api, formatAppError } from "../api";
 import type {
   AiDownloadProgressEvent,
   AiModelEntryView,
+  AiNmtPackView,
   AiStatusView,
+  Language,
   PageAiResultView,
   TranslationModelTier,
 } from "../types";
@@ -17,6 +19,7 @@ const FALLBACK_STATUS: AiStatusView = {
   platform: "other",
   storageDir: "",
   tier1Ready: true,
+  tier2Supported: true,
   tier2Ready: false,
   downloading: false,
   vulkanSupported: false,
@@ -46,35 +49,58 @@ const FALLBACK_STATUS: AiStatusView = {
       accelerator: "Vulkan",
     },
   ],
+  nmtPacks: [],
 };
+
+function isNmtAssetId(assetId: string | null | undefined): boolean {
+  if (!assetId) return false;
+  return assetId.startsWith("opus-mt-") || assetId.startsWith("mlkit-");
+}
 
 class AiTranslateStore {
   status = $state<AiStatusView | null>(null);
   loadingStatus = $state(false);
   downloadProgress = $state<AiDownloadProgressEvent | null>(null);
   busyAction = $state<"tier" | "download" | "cancel" | "delete" | null>(null);
+  downloadingNmtPackId = $state<string | null>(null);
   lastError = $state<string | null>(null);
 
   firstUseModalOpen = $state(false);
   pendingEnableMode = $state<"translate" | "bubble" | null>(null);
+  missingNmtPrompt = $state<{ packs: AiNmtPackView[]; retryToken: string } | null>(null);
 
+  peekOriginal = $state(false);
   generation = $state(0);
   pageCache = $state<Record<string, PageAiResultView>>({});
   inFlightPages = $state<Record<string, boolean>>({});
+  pageErrors = $state<Record<string, string>>({});
+  pageMissingPacks = $state<Record<string, AiNmtPackView[]>>({});
 
   private initialized = false;
   private inFlightPromises = new Map<string, Promise<PageAiResultView | null>>();
   private cacheOrder: string[] = [];
   private purgePromise: Promise<void> | null = null;
+  private dismissedNmtPromptSig = "";
 
   activeTier = $derived<TranslationModelTier>(
     this.status?.activeTier ?? settingsStore.value.accessibility.translationModelTier ?? "lite"
   );
 
+  effectiveTargetLang = $derived<Language>(
+    settingsStore.value.accessibility.translationTargetLang ?? settingsStore.value.language
+  );
+
   tier1Ready = $derived(this.status?.tier1Ready ?? true);
+  tier2Supported = $derived(this.status?.tier2Supported ?? true);
   tier2Ready = $derived(this.status?.tier2Ready ?? false);
+  nmtPacks = $derived<AiNmtPackView[]>(this.status?.nmtPacks ?? []);
+
   downloading = $derived(
     Boolean(this.status?.downloading) || this.busyAction === "download"
+  );
+
+  isDownloadingNmtPack = $derived(
+    Boolean(this.downloadingNmtPackId) || isNmtAssetId(this.downloadProgress?.assetId)
   );
 
   liteModel = $derived<AiModelEntryView | null>(
@@ -95,9 +121,23 @@ class AiTranslateStore {
       await api.onAiDownloadProgress((ev) => {
         if (ev.stage === "completed" || ev.stage === "cancelled" || ev.stage === "failed") {
           this.downloadProgress = null;
+          this.downloadingNmtPackId = null;
           void this.refreshStatus();
         } else {
           this.downloadProgress = ev;
+          if (isNmtAssetId(ev.assetId)) {
+            this.downloadingNmtPackId = ev.assetId;
+          }
+        }
+      });
+    } catch {
+      // Outside Tauri runtime.
+    }
+    try {
+      await api.onSettingsChanged((nextSettings) => {
+        const nextTier = nextSettings.accessibility.translationModelTier;
+        if (this.status && nextTier !== this.status.activeTier) {
+          void this.refreshStatus();
         }
       });
     } catch {
@@ -112,6 +152,7 @@ class AiTranslateStore {
       this.status = next;
       if (!next.downloading) {
         this.downloadProgress = null;
+        this.downloadingNmtPackId = null;
       }
       return next;
     } catch {
@@ -124,8 +165,31 @@ class AiTranslateStore {
     }
   }
 
+  clearLastError() {
+    this.lastError = null;
+  }
+
+  setPeekOriginal(next: boolean) {
+    this.peekOriginal = next;
+  }
+
+  togglePeekOriginal() {
+    this.peekOriginal = !this.peekOriginal;
+  }
+
+  setTargetLanguage(lang: Language | null) {
+    this.dismissedNmtPromptSig = "";
+    this.missingNmtPrompt = null;
+    this.pageErrors = {};
+    this.pageMissingPacks = {};
+    this.generation += 1;
+    settingsStore.update((d) => {
+      d.accessibility.translationTargetLang = lang;
+    });
+  }
+
   private cacheKey(pageToken: string, detectOnly: boolean): string {
-    const lang = settingsStore.value.language;
+    const lang = this.effectiveTargetLang;
     const tier = this.activeTier;
     return `${pageToken}|${tier}|${lang}|${detectOnly ? "d" : "t"}`;
   }
@@ -145,8 +209,26 @@ class AiTranslateStore {
   private clearRamCache() {
     this.pageCache = {};
     this.inFlightPages = {};
+    this.pageErrors = {};
+    this.pageMissingPacks = {};
     this.inFlightPromises.clear();
     this.cacheOrder = [];
+  }
+
+  private clearPageError(pageToken: string) {
+    if (this.pageErrors[pageToken]) {
+      const next = { ...this.pageErrors };
+      delete next[pageToken];
+      this.pageErrors = next;
+    }
+  }
+
+  private clearPageMissingPacks(pageToken: string) {
+    if (this.pageMissingPacks[pageToken]) {
+      const next = { ...this.pageMissingPacks };
+      delete next[pageToken];
+      this.pageMissingPacks = next;
+    }
   }
 
   getPageResult(pageToken: string): PageAiResultView | null {
@@ -157,12 +239,24 @@ class AiTranslateStore {
     return null;
   }
 
+  getPageError(pageToken: string): string | null {
+    if (!pageToken) return null;
+    return this.pageErrors[pageToken] ?? null;
+  }
+
+  getPageMissingPacks(pageToken: string): AiNmtPackView[] {
+    if (!pageToken) return [];
+    return this.pageMissingPacks[pageToken] ?? [];
+  }
+
   isPageLoading(pageToken: string): boolean {
     return Boolean(this.inFlightPages[pageToken]);
   }
 
   requestToggleTranslation(next: boolean) {
     if (next) {
+      this.dismissedNmtPromptSig = "";
+      this.lastError = null;
       if (!settingsStore.value.accessibility.firstAiPromptSeen) {
         this.pendingEnableMode = "translate";
         this.firstUseModalOpen = true;
@@ -176,6 +270,8 @@ class AiTranslateStore {
       return;
     }
 
+    this.peekOriginal = false;
+    this.missingNmtPrompt = null;
     settingsStore.update((d) => {
       d.accessibility.aiTranslationOverlay = false;
     });
@@ -194,6 +290,28 @@ class AiTranslateStore {
   dismissFirstUseModal() {
     this.firstUseModalOpen = false;
     this.pendingEnableMode = null;
+  }
+
+  openMissingNmtPromptForPage(pageToken: string) {
+    const packs = this.pageMissingPacks[pageToken];
+    if (!packs || packs.length === 0) return;
+    this.missingNmtPrompt = { packs, retryToken: pageToken };
+  }
+
+  dismissMissingNmtPrompt() {
+    if (this.missingNmtPrompt) {
+      this.dismissedNmtPromptSig = this.missingNmtPrompt.packs.map((p) => p.id).sort().join(",");
+    }
+    this.missingNmtPrompt = null;
+  }
+
+  async confirmDownloadMissingNmtPacks(): Promise<boolean> {
+    const prompt = this.missingNmtPrompt;
+    if (!prompt) return false;
+    this.missingNmtPrompt = null;
+    this.dismissedNmtPromptSig = "";
+    const packIds = prompt.packs.map((p) => p.id);
+    return this.downloadNmtPacks(packIds, prompt.retryToken);
   }
 
   async confirmFirstUseWithLite() {
@@ -221,6 +339,11 @@ class AiTranslateStore {
   }
 
   async confirmFirstUseWithTier2() {
+    if (!this.tier2Supported) {
+      toasts.push(settingsStore.t.a11yTier2Unsupported, "info", 2800);
+      await this.confirmFirstUseWithLite();
+      return;
+    }
     const mode = this.pendingEnableMode ?? "translate";
     this.firstUseModalOpen = false;
     this.pendingEnableMode = null;
@@ -241,11 +364,12 @@ class AiTranslateStore {
   }
 
   async setTier(tier: TranslationModelTier): Promise<boolean> {
-    if (tier === "qwen3_vl_2b" && !this.tier2Ready) {
+    if (tier === "qwen3_vl_2b" && (!this.tier2Ready || !this.tier2Supported)) {
       return false;
     }
     this.busyAction = "tier";
     this.lastError = null;
+    this.missingNmtPrompt = null;
     try {
       const next = await api.aiSetTier(tier);
       this.status = next;
@@ -267,7 +391,12 @@ class AiTranslateStore {
 
   async downloadTier2(): Promise<boolean> {
     if (this.downloading) return false;
+    if (!this.tier2Supported) {
+      toasts.push(settingsStore.t.a11yTier2Unsupported, "info", 2800);
+      return false;
+    }
     this.busyAction = "download";
+    this.downloadingNmtPackId = null;
     this.lastError = null;
     this.downloadProgress = {
       stage: "starting",
@@ -311,6 +440,85 @@ class AiTranslateStore {
     }
   }
 
+  async downloadNmtPacks(packIds: string[], retryToken?: string): Promise<boolean> {
+    const cleanIds = Array.from(new Set(packIds.map((id) => id.trim()).filter(Boolean)));
+    if (cleanIds.length === 0 || this.downloading) return false;
+    this.busyAction = "download";
+    this.downloadingNmtPackId = cleanIds[0];
+    this.lastError = null;
+    this.dismissedNmtPromptSig = "";
+
+    const estimatedBytes = cleanIds.reduce((sum, id) => {
+      const found = this.nmtPacks.find((p) => p.id === id);
+      return sum + (found?.requiredBytes ?? 0);
+    }, 0);
+
+    this.downloadProgress = {
+      stage: "starting",
+      assetId: cleanIds[0],
+      fileIndex: 0,
+      fileCount: cleanIds.length,
+      downloadedBytes: 0,
+      totalBytes: estimatedBytes,
+      percent: 0,
+      speedBytesPerSec: 0,
+      message: null,
+    };
+
+    try {
+      const next = await api.aiDownloadNmtPacks(cleanIds, (ev) => {
+        this.downloadProgress = ev;
+        if (isNmtAssetId(ev.assetId)) {
+          this.downloadingNmtPackId = ev.assetId;
+        }
+      });
+      this.status = next;
+      this.downloadProgress = null;
+      this.downloadingNmtPackId = null;
+      this.generation += 1;
+      this.clearRamCache();
+      toasts.push(settingsStore.t.a11yNmtPackReadyToast, "success", 2600);
+      if (retryToken && settingsStore.value.accessibility.aiTranslationOverlay) {
+        void this.processPage(retryToken, { detectOnly: false });
+      }
+      return true;
+    } catch (err) {
+      this.downloadProgress = null;
+      this.downloadingNmtPackId = null;
+      const f = formatAppError(err, settingsStore.value.language);
+      const msg = f.detail || f.title;
+      if (!/cancel/i.test(msg)) {
+        this.lastError = msg;
+        toasts.push(msg, "error", 3600);
+      }
+      await this.refreshStatus();
+      return false;
+    } finally {
+      this.busyAction = null;
+    }
+  }
+
+  async deleteNmtPack(packId: string): Promise<boolean> {
+    if (!packId || this.busyAction) return false;
+    this.busyAction = "delete";
+    this.lastError = null;
+    try {
+      const next = await api.aiDeleteNmtPack(packId);
+      this.status = next;
+      this.generation += 1;
+      this.clearRamCache();
+      toasts.push(settingsStore.t.a11yNmtPackDeletedToast, "info", 2400);
+      return true;
+    } catch (err) {
+      const f = formatAppError(err, settingsStore.value.language);
+      this.lastError = f.detail || f.title;
+      toasts.push(this.lastError, "error", 3200);
+      return false;
+    } finally {
+      this.busyAction = null;
+    }
+  }
+
   async cancelDownload() {
     if (!this.downloading && this.busyAction !== "download") return;
     this.busyAction = "cancel";
@@ -318,6 +526,7 @@ class AiTranslateStore {
       const next = await api.aiCancelDownload();
       this.status = next;
       this.downloadProgress = null;
+      this.downloadingNmtPackId = null;
       toasts.push(settingsStore.t.a11yDownloadCancelledToast, "info", 2200);
     } catch (err) {
       const f = formatAppError(err, settingsStore.value.language);
@@ -351,6 +560,20 @@ class AiTranslateStore {
     }
   }
 
+  async retryPage(pageToken: string, detectOnly: boolean): Promise<PageAiResultView | null> {
+    if (!pageToken) return null;
+    const fullKey = this.cacheKey(pageToken, false);
+    const detectKey = this.cacheKey(pageToken, true);
+    const nextCache = { ...this.pageCache };
+    delete nextCache[fullKey];
+    delete nextCache[detectKey];
+    this.pageCache = nextCache;
+    this.clearPageError(pageToken);
+    this.clearPageMissingPacks(pageToken);
+    this.dismissedNmtPromptSig = "";
+    return this.processPage(pageToken, { detectOnly });
+  }
+
   async processPage(
     pageToken: string,
     opts: { detectOnly: boolean }
@@ -372,9 +595,12 @@ class AiTranslateStore {
     if (existing) return existing;
 
     const gen = this.generation;
-    const targetLang = settingsStore.value.language;
+    const targetLang = this.effectiveTargetLang;
 
+    this.clearPageError(pageToken);
+    this.clearPageMissingPacks(pageToken);
     this.inFlightPages = { ...this.inFlightPages, [pageToken]: true };
+
     const promise = (async (): Promise<PageAiResultView | null> => {
       try {
         if (this.purgePromise) {
@@ -391,6 +617,7 @@ class AiTranslateStore {
           pageToken,
           targetLang,
           detectOnly: effectiveDetectOnly,
+          generation: gen,
         });
         const cur = settingsStore.value.accessibility;
         if (
@@ -400,9 +627,38 @@ class AiTranslateStore {
         ) {
           return null;
         }
+
+        const missing = res.missingNmtPacks ?? [];
+        if (missing.length > 0) {
+          // Cache detected bubble bounding boxes under detectOnly so Bubble Auto-Zoom works
+          // immediately without claiming translation succeeded.
+          this.putCache(this.cacheKey(pageToken, true), { ...res, detectOnly: true });
+          this.pageMissingPacks = { ...this.pageMissingPacks, [pageToken]: missing };
+          const sig = missing.map((p) => p.id).sort().join(",");
+          if (!effectiveDetectOnly && !this.downloading && sig !== this.dismissedNmtPromptSig) {
+            this.missingNmtPrompt = { packs: missing, retryToken: pageToken };
+          }
+          return res;
+        }
+
+        if (res.error) {
+          this.pageErrors = { ...this.pageErrors, [pageToken]: res.error };
+          this.lastError = res.error;
+          if (res.regions.length > 0) {
+            this.putCache(this.cacheKey(pageToken, true), { ...res, detectOnly: true });
+          }
+          return res;
+        }
+
         this.putCache(key, res);
         return res;
-      } catch {
+      } catch (err) {
+        if (gen === this.generation) {
+          const f = formatAppError(err, settingsStore.value.language);
+          const msg = f.detail || f.title;
+          this.pageErrors = { ...this.pageErrors, [pageToken]: msg };
+          this.lastError = msg;
+        }
         return null;
       } finally {
         this.inFlightPromises.delete(key);
@@ -426,6 +682,8 @@ class AiTranslateStore {
   }
 
   async disableAndPurge() {
+    this.peekOriginal = false;
+    this.missingNmtPrompt = null;
     this.generation += 1;
     this.clearRamCache();
     const run = (async () => {

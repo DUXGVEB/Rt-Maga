@@ -4521,6 +4521,19 @@ interface V11Dictionary {
   a11yBubbleResetZoom: string;
   a11yAutoMangaBadge: string;
   a11yToastMangaDetected: string;
+  a11yTargetLangTitle: string;
+  a11yTargetLangAuto: string;
+  a11yNmtPacksTitle: string;
+  a11yNmtPromptTitle: string;
+  a11yNmtPromptBody: (packs: string, size: string) => string;
+  a11yNmtDownloadNowBtn: string;
+  a11yNmtPackReadyToast: string;
+  a11yNmtPackDeletedToast: string;
+  a11yTier2Unsupported: string;
+  a11yPeekOriginalLabel: string;
+  a11yRetryTranslateBtn: string;
+  a11yErrorStatus: string;
+  a11yMissingPackStatus: string;
   importMangaBtn: string;
   importFilesOption: string;
   importFolderOption: string;
@@ -4560,6 +4573,20 @@ const V11_EN: V11Dictionary = {
   a11yBubbleResetZoom: "Reset zoom",
   a11yAutoMangaBadge: "Manga",
   a11yToastMangaDetected: "Manga layout applied",
+  a11yTargetLangTitle: "Target Language",
+  a11yTargetLangAuto: "Follow App Language",
+  a11yNmtPacksTitle: "Offline Language Packs",
+  a11yNmtPromptTitle: "Download Offline Language Pack",
+  a11yNmtPromptBody: (packs, size) =>
+    `Download ${packs} (${size}) to translate this page completely offline?`,
+  a11yNmtDownloadNowBtn: "Download Now",
+  a11yNmtPackReadyToast: "Language pack ready",
+  a11yNmtPackDeletedToast: "Language pack deleted",
+  a11yTier2Unsupported: "Unavailable on this build",
+  a11yPeekOriginalLabel: "Peek original",
+  a11yRetryTranslateBtn: "Retry",
+  a11yErrorStatus: "Translation error",
+  a11yMissingPackStatus: "Download pack",
   importMangaBtn: "Import Manga",
   importFilesOption: "Files",
   importFolderOption: "Folder",
@@ -4599,6 +4626,20 @@ const V11_VI: V11Dictionary = {
   a11yBubbleResetZoom: "Đặt lại thu phóng",
   a11yAutoMangaBadge: "Manga",
   a11yToastMangaDetected: "Đã áp dụng bố cục Manga",
+  a11yTargetLangTitle: "Ngôn ngữ đích",
+  a11yTargetLangAuto: "Theo ngôn ngữ ứng dụng",
+  a11yNmtPacksTitle: "Gói ngôn ngữ ngoại tuyến",
+  a11yNmtPromptTitle: "Tải gói ngôn ngữ ngoại tuyến",
+  a11yNmtPromptBody: (packs, size) =>
+    `Tải ${packs} (${size}) để dịch trang này hoàn toàn ngoại tuyến?`,
+  a11yNmtDownloadNowBtn: "Tải ngay",
+  a11yNmtPackReadyToast: "Gói ngôn ngữ đã sẵn sàng",
+  a11yNmtPackDeletedToast: "Đã xóa gói ngôn ngữ",
+  a11yTier2Unsupported: "Không khả dụng trên bản dựng này",
+  a11yPeekOriginalLabel: "Xem bản gốc",
+  a11yRetryTranslateBtn: "Thử lại",
+  a11yErrorStatus: "Lỗi dịch",
+  a11yMissingPackStatus: "Thiếu gói dịch",
   importMangaBtn: "Nhập truyện",
   importFilesOption: "Tệp",
   importFolderOption: "Thư mục",
@@ -4638,6 +4679,19 @@ const V11_ZH: V11Dictionary = {
   a11yBubbleResetZoom: "重置缩放",
   a11yAutoMangaBadge: "漫画",
   a11yToastMangaDetected: "已应用漫画布局",
+  a11yTargetLangTitle: "目标语言",
+  a11yTargetLangAuto: "跟随应用语言",
+  a11yNmtPacksTitle: "离线语言包",
+  a11yNmtPromptTitle: "下载离线语言包",
+  a11yNmtPromptBody: (packs, size) => `下载 ${packs}（${size}）以离线翻译此页面？`,
+  a11yNmtDownloadNowBtn: "立即下载",
+  a11yNmtPackReadyToast: "语言包已就绪",
+  a11yNmtPackDeletedToast: "已删除语言包",
+  a11yTier2Unsupported: "此构建暂不支持",
+  a11yPeekOriginalLabel: "查看原图",
+  a11yRetryTranslateBtn: "重试",
+  a11yErrorStatus: "翻译错误",
+  a11yMissingPackStatus: "下载语言包",
   importMangaBtn: "导入漫画",
   importFilesOption: "文件",
   importFolderOption: "文件夹",
@@ -4677,6 +4731,20 @@ const V11_JA: V11Dictionary = {
   a11yBubbleResetZoom: "ズーム解除",
   a11yAutoMangaBadge: "マンガ",
   a11yToastMangaDetected: "マンガレイアウトを適用しました",
+  a11yTargetLangTitle: "翻訳先の言語",
+  a11yTargetLangAuto: "アプリの言語に合わせる",
+  a11yNmtPacksTitle: "オフライン言語パック",
+  a11yNmtPromptTitle: "オフライン言語パックをダウンロード",
+  a11yNmtPromptBody: (packs, size) =>
+    `${packs}（${size}）をダウンロードしてオフライン翻訳しますか？`,
+  a11yNmtDownloadNowBtn: "今すぐダウンロード",
+  a11yNmtPackReadyToast: "言語パックの準備が完了しました",
+  a11yNmtPackDeletedToast: "言語パックを削除しました",
+  a11yTier2Unsupported: "このビルドでは利用できません",
+  a11yPeekOriginalLabel: "原文を表示",
+  a11yRetryTranslateBtn: "再試行",
+  a11yErrorStatus: "翻訳エラー",
+  a11yMissingPackStatus: "パック取得",
   importMangaBtn: "マンガを取込",
   importFilesOption: "ファイル",
   importFolderOption: "フォルダ",
@@ -4716,6 +4784,20 @@ const V11_RU: V11Dictionary = {
   a11yBubbleResetZoom: "Сбросить зум",
   a11yAutoMangaBadge: "Манга",
   a11yToastMangaDetected: "Применён макет манги",
+  a11yTargetLangTitle: "Язык перевода",
+  a11yTargetLangAuto: "Как язык приложения",
+  a11yNmtPacksTitle: "Офлайн языковые пакеты",
+  a11yNmtPromptTitle: "Скачать языковой пакет",
+  a11yNmtPromptBody: (packs, size) =>
+    `Скачать ${packs} (${size}) для полного офлайн-перевода этой страницы?`,
+  a11yNmtDownloadNowBtn: "Скачать сейчас",
+  a11yNmtPackReadyToast: "Языковой пакет готов",
+  a11yNmtPackDeletedToast: "Языковой пакет удалён",
+  a11yTier2Unsupported: "Недоступно в этой сборке",
+  a11yPeekOriginalLabel: "Показать оригинал",
+  a11yRetryTranslateBtn: "Повторить",
+  a11yErrorStatus: "Ошибка перевода",
+  a11yMissingPackStatus: "Скачать пакет",
   importMangaBtn: "Импорт манги",
   importFilesOption: "Файлы",
   importFolderOption: "Папка",
@@ -4755,6 +4837,20 @@ const V11_KO: V11Dictionary = {
   a11yBubbleResetZoom: "확대 초기화",
   a11yAutoMangaBadge: "망가",
   a11yToastMangaDetected: "망가 레이아웃 적용됨",
+  a11yTargetLangTitle: "번역 대상 언어",
+  a11yTargetLangAuto: "앱 언어 따르기",
+  a11yNmtPacksTitle: "오프라인 언어 팩",
+  a11yNmtPromptTitle: "오프라인 언어 팩 다운로드",
+  a11yNmtPromptBody: (packs, size) =>
+    `이 페이지를 오프라인 번역하려면 ${packs} (${size})을(를) 다운로드할까요?`,
+  a11yNmtDownloadNowBtn: "지금 다운로드",
+  a11yNmtPackReadyToast: "언어 팩 준비 완료",
+  a11yNmtPackDeletedToast: "언어 팩 삭제됨",
+  a11yTier2Unsupported: "이 빌드에서는 지원되지 않음",
+  a11yPeekOriginalLabel: "원본 보기",
+  a11yRetryTranslateBtn: "다시 시도",
+  a11yErrorStatus: "번역 오류",
+  a11yMissingPackStatus: "팩 다운로드",
   importMangaBtn: "만화 가져오기",
   importFilesOption: "파일",
   importFolderOption: "폴더",
@@ -4794,6 +4890,20 @@ const V11_TH: V11Dictionary = {
   a11yBubbleResetZoom: "รีเซ็ตการซูม",
   a11yAutoMangaBadge: "มังงะ",
   a11yToastMangaDetected: "ใช้เลย์เอาต์มังงะแล้ว",
+  a11yTargetLangTitle: "ภาษาเป้าหมาย",
+  a11yTargetLangAuto: "ตามภาษาของแอป",
+  a11yNmtPacksTitle: "ชุดภาษาออฟไลน์",
+  a11yNmtPromptTitle: "ดาวน์โหลดชุดภาษาออฟไลน์",
+  a11yNmtPromptBody: (packs, size) =>
+    `ดาวน์โหลด ${packs} (${size}) เพื่อแปลหน้านี้ออฟไลน์ทั้งหมดหรือไม่?`,
+  a11yNmtDownloadNowBtn: "ดาวน์โหลดเลย",
+  a11yNmtPackReadyToast: "ชุดภาษาพร้อมใช้งานแล้ว",
+  a11yNmtPackDeletedToast: "ลบชุดภาษาแล้ว",
+  a11yTier2Unsupported: "ไม่รองรับในบิลด์นี้",
+  a11yPeekOriginalLabel: "ดูต้นฉบับ",
+  a11yRetryTranslateBtn: "ลองใหม่",
+  a11yErrorStatus: "ข้อผิดพลาดการแปล",
+  a11yMissingPackStatus: "ดาวน์โหลดชุดภาษา",
   importMangaBtn: "นำเข้ามังงะ",
   importFilesOption: "ไฟล์",
   importFolderOption: "โฟลเดอร์",

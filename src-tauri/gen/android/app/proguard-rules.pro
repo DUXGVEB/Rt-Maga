@@ -27,3 +27,10 @@
 -keep class com.rtmaga.reader.ImmersiveArgs { *; }
 -keep class com.rtmaga.reader.KeepScreenOnArgs { *; }
 -keep class com.rtmaga.reader.LocalNotificationArgs { *; }
+-keep class com.rtmaga.reader.AiRuntimePlugin { *; }
+-keep class com.rtmaga.reader.RunTier1Args { *; }
+-keep class com.rtmaga.reader.RunTier2Args { *; }
+-keep class com.rtmaga.reader.MlKitModelArgs { *; }
+-keep class com.rtmaga.reader.LlamaMtmdBridge { *; }
+-keep class ai.onnxruntime.** { *; }
+-keep class com.google.mlkit.** { *; }

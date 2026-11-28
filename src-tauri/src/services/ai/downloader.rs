@@ -16,12 +16,15 @@ use tokio::sync::watch;
 
 use crate::error::AppError;
 use crate::services::ai::cache::hex_lower;
+#[cfg(any(not(target_os = "android"), test))]
+use crate::services::ai::manifest::opus_mt_pack;
 use crate::services::ai::manifest::{
     AiArchiveFormat, ModelAssetSpec, SidecarTarget, TIER2_VLM_GGUF, TIER2_VLM_MMPROJ,
     WIN_LLAMA_SIDECAR_DIR, is_allowed_manifest_url, is_valid_sha256_hex, tier2_bundle_assets,
     total_bytes,
 };
 use crate::services::ai::{AiDownloadProgressEvent, AiDownloadStage};
+use mangacore::ProxyConfig;
 
 /// Exponential retry backoff delays for transient transport errors (3 attempts total).
 const RETRY_BACKOFF_MS: [u64; 3] = [500, 1500, 3500];
@@ -59,13 +62,21 @@ pub(crate) fn asset_destination(storage_root: &Path, spec: &ModelAssetSpec) -> P
 }
 
 /// Returns the expected extracted Windows `llama-mtmd-cli.exe` path inside `storage_root`.
+#[cfg(any(not(target_os = "android"), test))]
 pub(crate) fn win_llama_mtmd_cli_path(storage_root: &Path) -> PathBuf {
     storage_root
         .join(WIN_LLAMA_SIDECAR_DIR)
         .join("llama-mtmd-cli.exe")
 }
 
-/// Returns `true` when Tier 2 weights (and Windows `llama-mtmd-cli.exe` on Windows) are present
+/// Returns the expected extracted Windows `llama-server.exe` path inside `storage_root`.
+pub(crate) fn win_llama_server_path(storage_root: &Path) -> PathBuf {
+    storage_root
+        .join(WIN_LLAMA_SIDECAR_DIR)
+        .join("llama-server.exe")
+}
+
+/// Returns `true` when Tier 2 weights (and Windows `llama-server.exe` on Windows) are present
 /// with exact expected sizes on disk.
 pub(crate) fn is_tier2_installed(storage_root: &Path) -> bool {
     let gguf_ok = file_matches_size(
@@ -82,7 +93,8 @@ pub(crate) fn is_tier2_installed(storage_root: &Path) -> bool {
 
     #[cfg(target_os = "windows")]
     {
-        win_llama_mtmd_cli_path(storage_root).is_file()
+        win_llama_server_path(storage_root).is_file()
+            || win_llama_mtmd_cli_path(storage_root).is_file()
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -142,6 +154,7 @@ pub(crate) async fn delete_tier2_assets(storage_root: &Path) -> Result<(), AppEr
 pub(crate) async fn download_tier2_bundle<F>(
     storage_root: &Path,
     sidecar: SidecarTarget,
+    proxy: Option<&ProxyConfig>,
     cancel_rx: watch::Receiver<bool>,
     mut on_progress: F,
 ) -> Result<(), AppError>
@@ -152,7 +165,7 @@ where
     let bundle_total = total_bytes(&assets);
     let file_count = u32::try_from(assets.len()).unwrap_or(u32::MAX);
 
-    let client = build_download_client()?;
+    let client = build_download_client(proxy)?;
     let mut completed_prefix_bytes = 0_u64;
     let mut emit = |stage, id: &str, idx: u32, bytes: u64, speed: u64, msg: Option<String>| {
         on_progress(make_progress(
@@ -255,6 +268,157 @@ where
     Ok(())
 }
 
+/// Downloads and SHA-256 verifies one or more Windows offline OPUS-MT translation packs.
+///
+/// # Errors
+///
+/// Returns [`AppError`] on unknown pack ID, cancellation, network failure, or checksum mismatch.
+#[cfg(any(not(target_os = "android"), test))]
+pub(crate) async fn download_opus_nmt_packs<F>(
+    storage_root: &Path,
+    pack_ids: &[String],
+    proxy: Option<&ProxyConfig>,
+    cancel_rx: watch::Receiver<bool>,
+    mut on_progress: F,
+) -> Result<(), AppError>
+where
+    F: FnMut(AiDownloadProgressEvent) + Send,
+{
+    let mut assets = Vec::new();
+    for id in pack_ids {
+        let Some(pack_assets) = opus_mt_pack(id.as_str()) else {
+            return Err(AppError::NotFound {
+                message: format!("unknown offline OPUS-MT pack '{id}'"),
+            });
+        };
+        assets.extend_from_slice(pack_assets);
+    }
+    if assets.is_empty() {
+        return Ok(());
+    }
+
+    let bundle_total = total_bytes(&assets);
+    let file_count = u32::try_from(assets.len()).unwrap_or(u32::MAX);
+    let client = build_download_client(proxy)?;
+    let mut completed_prefix_bytes = 0_u64;
+    let mut emit = |stage, id: &str, idx: u32, bytes: u64, speed: u64, msg: Option<String>| {
+        on_progress(make_progress(
+            stage,
+            id,
+            idx,
+            file_count,
+            bytes,
+            bundle_total,
+            speed,
+            msg,
+        ));
+    };
+
+    for (idx, asset) in assets.iter().enumerate() {
+        let file_index = u32::try_from(idx.saturating_add(1)).unwrap_or(file_count);
+        if *cancel_rx.borrow() {
+            emit(
+                AiDownloadStage::Cancelled,
+                asset.id,
+                file_index,
+                completed_prefix_bytes,
+                0,
+                Some("Download cancelled".to_owned()),
+            );
+            return Err(AppError::Internal {
+                message: "NMT pack download cancelled".to_owned(),
+            });
+        }
+
+        let dest = asset_destination(storage_root, asset);
+        if is_asset_already_installed(storage_root, asset, &dest).await {
+            completed_prefix_bytes = completed_prefix_bytes.saturating_add(asset.expected_bytes);
+            emit(
+                AiDownloadStage::Downloading,
+                asset.id,
+                file_index,
+                completed_prefix_bytes,
+                0,
+                None,
+            );
+            continue;
+        }
+
+        let prefix = completed_prefix_bytes;
+        let res = download_verified_asset(
+            &client,
+            storage_root,
+            asset,
+            cancel_rx.clone(),
+            |stage, file_bytes, speed, msg| {
+                let agg = prefix.saturating_add(file_bytes.min(asset.expected_bytes));
+                emit(stage, asset.id, file_index, agg, speed, msg);
+            },
+        )
+        .await;
+
+        if let Err(err) = res {
+            let stage = if *cancel_rx.borrow() {
+                AiDownloadStage::Cancelled
+            } else {
+                AiDownloadStage::Failed
+            };
+            emit(
+                stage,
+                asset.id,
+                file_index,
+                completed_prefix_bytes,
+                0,
+                Some(err.to_string()),
+            );
+            return Err(err);
+        }
+
+        completed_prefix_bytes = completed_prefix_bytes.saturating_add(asset.expected_bytes);
+    }
+
+    let final_id = pack_ids.first().map_or("nmt", String::as_str);
+    emit(
+        AiDownloadStage::Completed,
+        final_id,
+        file_count,
+        bundle_total,
+        0,
+        Some("Offline translation pack ready".to_owned()),
+    );
+    Ok(())
+}
+
+/// Deletes a downloaded Windows OPUS-MT pack directory from `<storage_root>/nmt/<pack_id>`.
+///
+/// # Errors
+///
+/// Returns [`AppError`] if `pack_id` is invalid or removal fails.
+#[cfg(any(not(target_os = "android"), test))]
+pub(crate) async fn delete_opus_nmt_pack(
+    storage_root: &Path,
+    pack_id: &str,
+) -> Result<(), AppError> {
+    if opus_mt_pack(pack_id).is_none() {
+        return Err(AppError::NotFound {
+            message: format!("unknown offline OPUS-MT pack '{pack_id}'"),
+        });
+    }
+    let dir = storage_root.join("nmt").join(pack_id);
+    tokio::task::spawn_blocking(move || {
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(|e| AppError::Internal {
+                message: format!("failed to remove OPUS-MT pack '{}': {e}", dir.display()),
+            })?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Internal {
+        message: format!("OPUS-MT pack deletion worker failed: {e}"),
+    })?
+}
+
 async fn is_asset_already_installed(
     storage_root: &Path,
     asset: &ModelAssetSpec,
@@ -267,7 +431,7 @@ async fn is_asset_already_installed(
                     .await
                     .is_ok()
         }
-        AiArchiveFormat::ZipArchive => win_llama_mtmd_cli_path(storage_root).is_file(),
+        AiArchiveFormat::ZipArchive => win_llama_server_path(storage_root).is_file(),
     }
 }
 
@@ -770,14 +934,17 @@ pub(crate) fn extract_llama_sidecar_zip(
                     message: format!("failed to write sidecar file '{}': {e}", out_path.display()),
                 })?;
 
-            if file_name.eq_ignore_ascii_case("llama-mtmd-cli.exe") {
+            if file_name.eq_ignore_ascii_case("llama-mtmd-cli.exe")
+                || file_name.eq_ignore_ascii_case("llama-server.exe")
+            {
                 extracted_cli = true;
             }
         }
 
         if !extracted_cli {
             return Err(AppError::CorruptedData {
-                message: "llama.cpp archive did not contain llama-mtmd-cli.exe".to_owned(),
+                message: "llama.cpp archive did not contain llama-server.exe or llama-mtmd-cli.exe"
+                    .to_owned(),
             });
         }
         Ok(())
@@ -1052,14 +1219,33 @@ fn read_and_verify_zip_entry(
     Ok(decoded)
 }
 
-fn build_download_client() -> Result<Client, AppError> {
-    Client::builder()
+fn build_download_client(proxy: Option<&ProxyConfig>) -> Result<Client, AppError> {
+    let mut builder = Client::builder()
         .connect_timeout(Duration::from_secs(20))
-        .user_agent("RtMaga/3.3.0")
-        .build()
-        .map_err(|e| AppError::Network {
-            message: format!("failed to build model download HTTP client: {e}"),
-        })
+        .user_agent("RtMaga/3.3.1");
+
+    if let Some(cfg) = proxy
+        && cfg.enabled
+    {
+        let ep = &cfg.default_proxy;
+        let host = ep.host.trim();
+        if !host.is_empty() && ep.port > 0 {
+            let scheme = ep.protocol.as_reqwest_scheme();
+            let proxy_url = format!("{scheme}://{host}:{}", ep.port);
+            let mut req_proxy = reqwest::Proxy::all(&proxy_url).map_err(|e| AppError::Network {
+                message: format!("invalid proxy configuration for model download: {e}"),
+            })?;
+            if let Some(user) = ep.username.as_deref().filter(|s| !s.is_empty()) {
+                let pass = ep.password.as_deref().unwrap_or("");
+                req_proxy = req_proxy.basic_auth(user, pass);
+            }
+            builder = builder.proxy(req_proxy);
+        }
+    }
+
+    builder.build().map_err(|e| AppError::Network {
+        message: format!("failed to build model download HTTP client: {e}"),
+    })
 }
 
 async fn atomic_replace_file(src: &Path, dest: &Path) -> Result<(), AppError> {
@@ -1327,7 +1513,7 @@ mod tests {
             archive: AiArchiveFormat::RawFile,
         };
 
-        let client = build_download_client().expect("build test client");
+        let client = build_download_client(None).expect("build test client");
         let (_tx, rx) = watch::channel(false);
         let final_path = download_verified_asset(&client, &root, &spec, rx, |_, _, _, _| {})
             .await

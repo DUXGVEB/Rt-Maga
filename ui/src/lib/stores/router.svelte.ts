@@ -7,6 +7,8 @@ import { toasts } from "./toast.svelte";
 
 export type SettingsRouteSection = SettingsSection | "accessibility";
 
+export type SettingsSubTarget = "supplemental" | "feedback" | "hidden";
+
 export type Route =
   | { name: "home" }
   | { name: "sources"; initialQuery?: string }
@@ -27,7 +29,7 @@ export type Route =
       pageIndex?: number;
     }
   | { name: "history" }
-  | { name: "settings"; section?: SettingsRouteSection; subTarget?: "supplemental" | "feedback" };
+  | { name: "settings"; section?: SettingsRouteSection; subTarget?: SettingsSubTarget };
 
 type BackInterceptor = () => boolean;
 
@@ -191,8 +193,18 @@ class RouterStore {
     }
   }
 
-  goSettings(section?: SettingsRouteSection, subTarget?: "supplemental" | "feedback") {
+  goSettings(section?: SettingsRouteSection, subTarget?: SettingsSubTarget) {
     this.pushAndSet({ name: "settings", section, subTarget });
+  }
+
+  /**
+   * Stamps the active Settings route with an exact section/subTarget before navigating deeper
+   * (e.g. opening a hidden manga from Storage -> Hidden so Back returns directly to Hidden).
+   */
+  stampSettingsLocation(section?: SettingsRouteSection, subTarget?: SettingsSubTarget) {
+    if (this.current.name === "settings") {
+      this.current = { name: "settings", section, subTarget };
+    }
   }
 
   /**

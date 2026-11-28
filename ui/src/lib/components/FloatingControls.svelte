@@ -55,7 +55,9 @@
   let longPressFiredAt = 0;
 
   const floatingCfg = $derived(settingsStore.value.floating);
-  const oneHandedMode = $derived(settingsStore.value.accessibility.oneHandedMode);
+  const oneHandedMode = $derived(
+    deviceEnv.isMobile ? settingsStore.value.accessibility.oneHandedMode : "default"
+  );
   const t = $derived(settingsStore.t);
 
   function cancelHold() {
@@ -170,6 +172,7 @@
       {
         hasBottomNav: hasBottomNav || inReader,
         topToolbarHeightPx: inReader ? 58 : 52,
+        reserveBottomPx: inReader ? 54 : 0,
       }
     );
     const placed = resolveFloatingPositions(requests, bounds, oneHandedMode);
